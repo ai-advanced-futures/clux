@@ -1,0 +1,19 @@
+{
+  "name": "404pilo",
+  "owner": {
+    "name": "404pilo",
+    "email": "404pilo@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "Claude Code plugins by 404pilo",
+    "version": "1.0.3"
+  },
+  "plugins": [
+    {
+      "name": "tclux",
+      "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
+      "source": "./plugins/tclux",
+      "strict": false
+    }
+  ]
+}

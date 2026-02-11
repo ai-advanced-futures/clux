@@ -1,0 +1,13 @@
+{
+  "name": "tclux",
+  "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
+  "version": "1.0.5",
+  "author": {
+    "name": "404pilo"
+  },
+  "homepage": "https://github.com/404pilo/tclux",
+  "repository": "https://github.com/404pilo/tclux",
+  "license": "MIT",
+  "keywords": ["tmux", "notifications", "status-bar"],
+  "commands": "./commands"
+}
