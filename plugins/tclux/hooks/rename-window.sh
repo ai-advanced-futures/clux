@@ -64,14 +64,17 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
 
     debug_msg "Model: $OPENAI_MODEL"
 
+    ALLOWED_VERBS="snooping wrenching poking hammering scribbling tidying squashing grilling yeeting fiddling scheming doodling herding polishing forging dissecting squeezing gluing rigging blasting"
+
     # Truncate prompt to 500 chars — enough context to classify
     TRUNCATED_PROMPT="${PROMPT:0:500}"
 
     # Build JSON payload with structured outputs
     JSON_PAYLOAD=$(jq -n \
         --arg model "$OPENAI_MODEL" \
-        --arg instructions "Classify this prompt into ONE verb. Pick from: exploring, fixing, testing, coding, documenting, refactoring, debugging, reviewing, deploying, configuring, planning, designing, migrating, updating, building, analyzing, optimizing, integrating, scaffolding, publishing. Return ONLY the verb." \
+        --arg instructions "Classify this developer prompt into ONE verb that best describes the activity. Pick from: $ALLOWED_VERBS. Return ONLY the verb." \
         --arg input "$TRUNCATED_PROMPT" \
+        --arg verbs "$ALLOWED_VERBS" \
         '{
             model: $model,
             instructions: $instructions,
@@ -89,7 +92,8 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
                         properties: {
                             verb: {
                                 type: "string",
-                                description: "Single lowercase verb from the allowed list"
+                                description: "Single lowercase verb from the allowed list",
+                                enum: ($verbs | split(" "))
                             }
                         },
                         required: ["verb"],
@@ -147,12 +151,18 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
 
     debug_msg "Extracted verb: '$NAME'"
 
-    # Validate
-    NAME=$(printf '%s' "$NAME" | tr -d '[:space:]')
+    # Validate with graceful fallback
+    NAME=$(printf '%s' "$NAME" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
 
-    if [ -z "$NAME" ] || [ ${#NAME} -gt 20 ] || ! [[ "$NAME" =~ ^[a-z]+$ ]]; then
-        error_msg "Invalid verb: '$NAME'"
-        exit 1
+    if [ -n "$NAME" ] && [ ${#NAME} -le 20 ] && [[ "$NAME" =~ ^[a-z]+$ ]]; then
+        if echo "$ALLOWED_VERBS" | grep -qw "$NAME"; then
+            debug_msg "Verb in allowed list: $NAME"
+        else
+            debug_msg "Verb not in list but acceptable: $NAME"
+        fi
+    else
+        debug_msg "Invalid or empty verb '$NAME', falling back to 'working'"
+        NAME="working"
     fi
 
     # Handle window name collisions
