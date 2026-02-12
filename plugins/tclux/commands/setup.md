@@ -50,7 +50,22 @@ Prompt the agent to:
    - Current `status-interval` value
    - Current `status-left-length` value
    - Any existing tclux section markers
-3. Return: config file path(s) found, analysis results
+3. **Extract the color palette** from the config. Look for:
+   - `status-style` bg/fg values (e.g., `bg='#2E3440',fg='#88C0D0'`)
+   - `message-style` bg/fg values (e.g., `bg=#EBCB8B,fg=#2E3440`)
+   - `window-status-current-format` colors
+   - `pane-active-border-style` fg
+   - `mode-style` colors
+   - Any `@prefix_highlight_*` color options
+   - Build a color map with semantic names:
+     - `bg_dark`: main background (from status-style bg)
+     - `fg_primary`: main foreground (from status-style fg)
+     - `fg_snow`: bright white foreground (from prefix_highlight_fg or status-left fg)
+     - `bg_accent`: accent/session background (from status-left bg, e.g., `#81A1C1`)
+     - `bg_attention`: attention color (from message-style bg, e.g., `#EBCB8B`)
+     - `fg_on_attention`: text on attention bg (from message-style fg, e.g., `#2E3440`)
+     - `bg_alert`: alert/red color (from prefix_highlight_bg, e.g., `#BF616A`)
+4. Return: config file path(s) found, analysis results, **color map**
 
 ### Agent C: Hooks & Keybindings Check
 
@@ -83,11 +98,20 @@ tclux setup — analysis results:
     Plugin scripts: /Users/.../.claude/plugins/cache/404pilo/tclux/x.y.z/scripts/
 
   tmux.conf:
-    Config file: ~/.tmux.conf
+    Config file: ~/.config/tmux/tmux.conf
     Current status-left: "#[fg=green]#S #[fg=yellow]#I"
     status-interval: 15 (recommend: 1)
     status-left-length: 10 (recommend: 200)
     Already configured: no
+
+  Color palette detected:
+    bg_dark:         #2E3440   (status bar background)
+    fg_primary:      #88C0D0   (status bar text)
+    fg_snow:         #ECEFF4   (bright white)
+    bg_accent:       #81A1C1   (session highlight)
+    bg_attention:    #EBCB8B   (message/notification)
+    fg_on_attention: #2E3440   (text on attention bg)
+    bg_alert:        #BF616A   (prefix/alert)
 
   Hooks & keybindings:
     hooks.json: OK (Stop, Notification events configured)
@@ -111,6 +135,22 @@ set -g status-interval 1
 set -g status-left-length 200
 set -g monitor-bell on
 set -g bell-action any
+```
+
+### B2. Notification colors (from detected palette)
+
+If a color palette was detected, set `@claude-notify-bg` and `@claude-notify-fg` to match the user's theme instead of using generic defaults. Use the **attention** colors from the detected palette (these are the message-style colors, designed for high-visibility transient notifications):
+
+```tmux
+set -g @claude-notify-bg "<bg_attention>"    # e.g., #EBCB8B (Nord yellow)
+set -g @claude-notify-fg "<fg_on_attention>"  # e.g., #2E3440 (Nord dark)
+```
+
+If no color palette was detected, skip this section and let the defaults (`yellow`/`black`) apply.
+
+Present the chosen colors to the user in the summary, showing a visual preview like:
+```
+Notification style: bg=#EBCB8B fg=#2E3440 (matches your message-style)
 ```
 
 ### C. Keybindings
@@ -175,12 +215,16 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
 
 - Modify `status-left` in-place if it exists: insert ` #(DEPLOY_DIR/show-notification.sh)` before the closing `"`
 - If no `status-left`, add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within tclux section markers
-- Add supporting settings and keybindings within tclux section markers:
+- Add supporting settings, **notification color options**, and keybindings within tclux section markers:
   ```
   # --- tclux: Claude Code notifications (added by /tclux:setup) ---
-  ...tclux settings and keybindings...
+  ...tclux settings...
+  set -g @claude-notify-bg "<bg_attention>"
+  set -g @claude-notify-fg "<fg_on_attention>"
+  ...keybindings...
   # --- end tclux ---
   ```
+  Only include the `@claude-notify-bg`/`@claude-notify-fg` lines if a color palette was detected.
 - Preserve ALL existing content outside the tclux markers
 - If tclux markers already exist, replace the content between them
 - Always use double quotes for status-left
