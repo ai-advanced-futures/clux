@@ -34,12 +34,11 @@ fi
 [ -n "$TMUX" ] || exit 0
 
 SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}')
-WINDOW_INDEX=$(tmux display-message -t "$TMUX_PANE" -p '#{window_index}')
 WINDOW_NAME=$(tmux display-message -t "$TMUX_PANE" -p '#{window_name}')
 
-[ -n "$SESSION" ] && [ -n "$WINDOW_INDEX" ] || exit 0
+[ -n "$SESSION" ] && [ -n "$WINDOW_NAME" ] || exit 0
 
-CONTEXT="[$SESSION:$WINDOW_INDEX:$WINDOW_NAME]"
+CONTEXT="$SESSION:$WINDOW_NAME"
 
 acquire_lock
 

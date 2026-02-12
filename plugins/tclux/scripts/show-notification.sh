@@ -9,8 +9,8 @@ source "$CURRENT_DIR/helpers.sh"
 [ -f "$NOTIFY_FILE" ] || exit 0
 
 CURRENT_SESSION=$(tmux display-message -p '#{session_name}')
-CURRENT_WINDOW=$(tmux display-message -p '#{window_index}')
-CURRENT_CONTEXT="[$CURRENT_SESSION:$CURRENT_WINDOW:"
+CURRENT_WINDOW_NAME=$(tmux display-message -p '#{window_name}')
+CURRENT_CONTEXT="$CURRENT_SESSION:$CURRENT_WINDOW_NAME "
 
 acquire_lock
 
