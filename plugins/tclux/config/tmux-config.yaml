@@ -8,7 +8,7 @@ version: "1.0"
 
 # Core additions that must be present
 required_settings:
-  status-left-prefix: '#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} '
+  status-left-suffix: ' #{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)}'
   status-interval: 1
 
 # Optional but recommended settings
@@ -16,10 +16,25 @@ optional_settings:
   monitor-bell: on
   bell-action: any
 
+# Default keybindings
+keybindings:
+  jump-to-notification:
+    key: "N"
+    command: "run-shell \"${CLAUDE_PLUGIN_ROOT}/scripts/jump-to-notification.sh\""
+    description: "Jump to the window that triggered the notification"
+  dismiss-notification:
+    key: "`"
+    command: "run-shell \"${CLAUDE_PLUGIN_ROOT}/scripts/dismiss-notification.sh\""
+    description: "Dismiss the current notification"
+  notification-picker:
+    key: "M"
+    command: "display-popup -w 80% -h 60% -E \"${CLAUDE_PLUGIN_ROOT}/scripts/notification-picker.sh\""
+    description: "Open interactive notification picker (requires fzf)"
+
 # Integration strategy
 strategy:
   # How to handle status-left modification
-  status-left-merge: prepend
+  status-left-merge: append
 
   # Comment markers for identification
   section-start: "# --- tclux: Claude Code notifications (added by /tclux:auto-setup) ---"
@@ -50,7 +65,7 @@ cases:
   case_c:
     name: "Existing status-left"
     description: "File has existing status-left configuration"
-    action: "Prepend notification to existing value, preserving all syntax"
+    action: "Append notification to existing value, preserving all syntax"
 
   case_d:
     name: "Already configured"

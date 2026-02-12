@@ -1,326 +1,182 @@
 ---
 name: auto-setup
-description: Intelligently configure tmux for tclux using Claude API
+description: Interactively configure tmux for tclux notifications
 allowed-tools: Read, Write, Bash, AskUserQuestion
 ---
 
-# tclux Auto-Setup: Intelligent tmux Configuration
+# tclux Auto-Setup: Interactive tmux Configuration
 
-This command uses Claude to intelligently merge tclux notification integration into your tmux.conf while preserving all existing configuration.
+You are configuring the user's tmux.conf to integrate tclux notifications. Follow each step below precisely using your tools (Read, Write, Bash, AskUserQuestion). You ARE the LLM — never call external APIs.
+
+## CRITICAL RULES
+
+- **Never call external APIs** — you are Claude Code running inside the user's session
+- **Never overwrite existing status-left** — always READ the current value and APPEND the notification snippet after it
+- **Always use absolute paths** — expand `$CLAUDE_PLUGIN_ROOT` to the real path on disk
+- **Always use double quotes** for status-left values (required for `#{E:}` expansion)
+- **Always ask before modifying files** — use AskUserQuestion for confirmation
+- **Idempotent** — if already configured, report and offer to skip
+
+## Step 1: Detect Environment
+
+Run these checks using Bash:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+# Verify tmux is installed
+command -v tmux
 
-# Resolve plugin paths
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
-STRATEGY_DOC="$PLUGIN_ROOT/docs/REFERENCE-tmux-setup-strategy.md"
-CONFIG_YAML="$PLUGIN_ROOT/config/tmux-config.yaml"
-TMUX_CONF="$HOME/.tmux.conf"
-BACKUP_DIR="$HOME/.config/tclux/backups"
+# Resolve plugin root (CLAUDE_PLUGIN_ROOT should be set)
+echo "$CLAUDE_PLUGIN_ROOT"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-info()    { printf "${BLUE}ℹ${NC} %s\n" "$*"; }
-success() { printf "${GREEN}✓${NC} %s\n" "$*"; }
-warn()    { printf "${YELLOW}⚠${NC} %s\n" "$*"; }
-error()   { printf "${RED}✗${NC} %s\n" "$*"; }
-bold()    { printf "${BOLD}%s${NC}\n" "$*"; }
-
-# === STEP 1: Verify prerequisites ===
-info "Checking prerequisites..."
-
-if [ ! -f "$STRATEGY_DOC" ]; then
-    error "Strategy documentation not found: $STRATEGY_DOC"
-    exit 1
-fi
-
-if [ ! -f "$CONFIG_YAML" ]; then
-    error "Configuration not found: $CONFIG_YAML"
-    exit 1
-fi
-
-if [ -z "$OPENAI_API_KEY" ]; then
-    error "OPENAI_API_KEY not set. Claude API is required for intelligent configuration."
-    exit 1
-fi
-
-if ! command -v jq &>/dev/null; then
-    error "jq is required for JSON parsing"
-    exit 1
-fi
-
-if ! command -v tmux &>/dev/null; then
-    error "tmux is not installed"
-    exit 1
-fi
-
-success "Prerequisites verified"
-
-# === STEP 2: Read current configuration ===
-info "Reading current tmux configuration..."
-
-CURRENT_CONFIG=""
-if [ -f "$TMUX_CONF" ]; then
-    CURRENT_CONFIG=$(cat "$TMUX_CONF")
-    info "Current config size: $(echo "$CURRENT_CONFIG" | wc -c) bytes"
-else
-    info "No existing ~/.tmux.conf found"
-fi
-
-# === STEP 3: Load strategy documentation ===
-info "Loading configuration strategy..."
-STRATEGY_DOC_CONTENT=$(cat "$STRATEGY_DOC")
-CONFIG_YAML_CONTENT=$(cat "$CONFIG_YAML")
-
-# === STEP 4: Build Claude API request ===
-info "Preparing intelligent configuration merge..."
-
-# Determine expansion path for show-notification.sh
-SCRIPT_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
-
-# Create the system prompt for Claude
-read -r -d '' SYSTEM_PROMPT << 'EOF' || true
-You are an expert tmux configuration assistant. Your task is to intelligently merge tclux notification integration into a tmux configuration file while preserving all existing settings.
-
-**CRITICAL REQUIREMENTS:**
-1. Preserve ALL existing tmux configuration exactly as-is
-2. Intelligently handle all 4 modification cases (see strategy doc)
-3. Detect if already configured and skip if needed (idempotent)
-4. Never remove or modify user's existing settings
-5. Preserve all conditional syntax, formatting, and comments
-6. Double-quote the status-left value (required for #{E:} expansion)
-7. Expand ${CLAUDE_PLUGIN_ROOT} to the ABSOLUTE PATH provided
-
-**OUTPUT FORMAT:**
-Return ONLY valid tmux configuration as the response, no explanations. The output will be written directly to ~/.tmux.conf.
-
-**IMPORTANT:**
-- Do not add explanations or markdown
-- Output must be valid tmux syntax
-- The configuration will be verified with: tmux source-file ~/.tmux.conf
-EOF
-
-# Create the user prompt with context
-read -r -d '' USER_PROMPT << EOF || true
-Please intelligently merge tclux notification integration into this tmux configuration.
-
-**Current Configuration:**
-\`\`\`
-${CURRENT_CONFIG:-# (no existing config)}
-\`\`\`
-
-**Integration Strategy:**
-Reference the following strategy document for guidance on how to handle all cases:
-
-\`\`\`markdown
-$STRATEGY_DOC_CONTENT
-\`\`\`
-
-**Configuration Requirements:**
-\`\`\`yaml
-$CONFIG_YAML_CONTENT
-\`\`\`
-
-**Specific values to use:**
-- Absolute path to show-notification.sh: $SCRIPT_PATH
-- Status-left prefix command: #{E:#($SCRIPT_PATH)}
-
-**What to do:**
-1. If show-notification.sh is already in the config → return config unchanged (idempotent)
-2. If status-left exists → prepend the notification command to its value
-3. If no status-left but config exists → append tclux section with markers
-4. If no config exists → create new config with tclux settings
-
-Return the complete, valid tmux configuration.
-EOF
-
-# === STEP 5: Call Claude API ===
-info "Calling Claude API for intelligent configuration..."
-
-API_RESPONSE=$(curl -s -X POST https://api.anthropic.com/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: $OPENAI_API_KEY" \
-  -d @- << PAYLOAD
-{
-  "model": "claude-opus-4-6",
-  "max_tokens": 4096,
-  "system": $(printf '%s' "$SYSTEM_PROMPT" | jq -Rs .),
-  "messages": [
-    {
-      "role": "user",
-      "content": $(printf '%s' "$USER_PROMPT" | jq -Rs .)
-    }
-  ]
-}
-PAYLOAD
-)
-
-# Check for API errors
-if echo "$API_RESPONSE" | jq -e '.error' &>/dev/null; then
-    ERROR_MSG=$(echo "$API_RESPONSE" | jq -r '.error.message')
-    error "Claude API error: $ERROR_MSG"
-    exit 1
-fi
-
-# Extract the generated configuration
-GENERATED_CONFIG=$(echo "$API_RESPONSE" | jq -r '.content[0].text')
-
-if [ -z "$GENERATED_CONFIG" ]; then
-    error "Claude returned empty configuration"
-    exit 1
-fi
-
-success "Configuration generated by Claude"
-
-# === STEP 6: Show preview and ask for approval ===
-bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-bold "  tclux Auto-Setup: Configuration Preview"
-bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-if [ -z "$CURRENT_CONFIG" ]; then
-    echo "Creating new ~/.tmux.conf with:"
-else
-    echo "Modifying ~/.tmux.conf:"
-fi
-
-echo ""
-echo "New configuration:"
-echo "————————————————————————————————————"
-echo "$GENERATED_CONFIG"
-echo "————————————————————————————————————"
-echo ""
-
-# Use AskUserQuestion to get approval
-# This simulates the tool interaction - in actual implementation, use the AskUserQuestion tool
-printf "Apply this configuration? [y/N] "
-read -r response
-
-case "$response" in
-    [yY]|[yY][eE][sS])
-        ;;
-    *)
-        warn "Setup cancelled by user"
-        exit 1
-        ;;
-esac
-
-# === STEP 7: Backup existing config ===
-if [ -f "$TMUX_CONF" ]; then
-    info "Creating backup..."
-    mkdir -p "$BACKUP_DIR"
-
-    local timestamp
-    timestamp=$(date +%Y%m%d_%H%M%S)
-    local backup="$BACKUP_DIR/tmux.conf.$timestamp"
-
-    if cp "$TMUX_CONF" "$backup"; then
-        success "Backup saved: $backup"
-    else
-        error "Failed to create backup"
-        exit 1
-    fi
-
-    # Keep only 5 most recent backups
-    ls -1t "$BACKUP_DIR"/tmux.conf.* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-fi
-
-# === STEP 8: Apply configuration ===
-info "Applying configuration..."
-
-# Write generated config to temporary file first for validation
-TMPFILE="/tmp/tmux.conf.$$"
-echo "$GENERATED_CONFIG" > "$TMPFILE"
-
-# Validate syntax with tmux
-if ! tmux -f "$TMPFILE" source-file "$TMPFILE" 2>&1 | grep -q "no server running"; then
-    # Some other error occurred (not just "no server running")
-    error "tmux configuration has syntax errors"
-    cat "$TMPFILE"
-    rm -f "$TMPFILE"
-    exit 1
-fi
-
-# Apply the configuration
-mkdir -p "$(dirname "$TMUX_CONF")"
-mv "$TMPFILE" "$TMUX_CONF"
-
-success "Configuration applied: $TMUX_CONF"
-
-# === STEP 9: Reload tmux ===
-info "Reloading tmux configuration..."
-
-if tmux source-file "$TMUX_CONF" 2>/dev/null; then
-    success "tmux configuration reloaded"
-else
-    warn "Could not reload tmux (server may not be running)"
-    info "Reload manually with: tmux source-file ~/.tmux.conf"
-fi
-
-# === STEP 10: Report success ===
-echo ""
-bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-success "tclux setup complete!"
-bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-if [ -f "$backup" ]; then
-    info "To undo: cp '$backup' '$TMUX_CONF' && tmux source-file '$TMUX_CONF'"
-fi
-
-echo ""
-info "Next steps:"
-echo "  1. Verify notifications appear: /tclux:validate"
-echo "  2. Customize colors: edit ~/.tmux.conf"
-echo "  3. Learn more: https://github.com/404pilo/tclux"
-echo ""
-
-exit 0
+# Verify show-notification.sh exists
+ls -la "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh"
 ```
 
-## How It Works
+Store `PLUGIN_ROOT` as the resolved absolute path of `$CLAUDE_PLUGIN_ROOT`. Verify these scripts exist:
+- `$PLUGIN_ROOT/scripts/show-notification.sh`
+- `$PLUGIN_ROOT/scripts/jump-to-notification.sh`
+- `$PLUGIN_ROOT/scripts/dismiss-notification.sh`
+- `$PLUGIN_ROOT/scripts/notification-picker.sh`
 
-1. **Prerequisite Check**: Verifies OPENAI_API_KEY, jq, tmux are available
-2. **Read Configuration**: Loads current ~/.tmux.conf (if exists) and reference strategy
-3. **Build Claude Prompt**: Combines strategy, config requirements, and user's current settings
-4. **Call Claude API**: Uses claude-opus-4-6 for intelligent configuration merging
-5. **Show Preview**: Displays what will be written before applying
-6. **Get Approval**: Prompts user for confirmation
-7. **Backup**: Creates timestamped backup before modification
-8. **Apply**: Writes generated config and validates syntax
-9. **Reload**: Reloads tmux configuration
-10. **Report**: Shows success and rollback instructions
+If any are missing, tell the user and stop.
 
-## Advantages of LLM-Driven Approach
+## Step 2: Locate tmux.conf
 
-- **Intelligent merging**: Understands tmux syntax and user's existing configuration
-- **Edge case handling**: Claude naturally handles complex conditionals, multi-line syntax, etc.
-- **Idempotent**: Detects if already configured and skips
-- **User-safe**: Shows diff before applying, creates backups automatically
-- **Flexible**: Can adapt to new edge cases without code changes
-- **Maintainable**: Logic described in documentation, not fragile regex patterns
+Check for existing config files in order:
+1. `$HOME/.tmux.conf`
+2. `${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf`
 
-## When to Use
+**If neither exists:** Note that you'll create `$HOME/.tmux.conf`.
+**If only one exists:** Use that one.
+**If both exist:** Use AskUserQuestion to ask the user which to use.
 
-- **First-time setup**: Configure tmux for tclux integration
-- **Re-run safely**: Idempotent - safe to run multiple times
-- **Undo if needed**: Backups provided with rollback instructions
+## Step 3: Analyze Current Configuration
 
-## Troubleshooting
+Read the tmux.conf file (if it exists) using the Read tool. Check for:
 
-If Claude returns an empty configuration:
-- Check OPENAI_API_KEY is set and valid
-- Verify jq is installed for JSON parsing
-- Check API rate limits haven't been exceeded
+1. **Already configured?** — Search for `show-notification.sh` in the file. If found, report "tclux is already configured" and use AskUserQuestion to ask if user wants to reconfigure or skip.
+2. **Existing status-left** — Extract the current `set -g status-left` value (if any). This is what you will APPEND to — never replace.
+3. **status-interval** — Check current value. Recommend `1` if higher than `5`.
+4. **status-left-length** — Check current value. Recommend `100` if lower than `80`.
+5. **Existing keybindings on N, backtick, M** — Run `tmux list-keys 2>/dev/null | grep -E "bind-key\s+(N|M|\`)"` to detect conflicts.
 
-If tmux validation fails:
-- Check error message in command output
-- Verify your current ~/.tmux.conf is valid: `tmux source-file ~/.tmux.conf`
-- Check backups at `~/.config/tclux/backups/`
+## Step 4: Report Findings
+
+Present a clear summary to the user. Example:
+
+```
+tmux.conf analysis:
+  - Config file: ~/.tmux.conf
+  - Current status-left: "#[fg=green]#S #[fg=yellow]#I"
+  - status-interval: 15 (recommend: 1)
+  - status-left-length: 10 (recommend: 100)
+  - Keybinding conflicts: none
+  - tclux already configured: no
+```
+
+## Step 5: Recommend Changes
+
+Present grouped changes using the resolved absolute paths:
+
+### A. Status-left (APPEND notification after existing value)
+
+- If no existing status-left: `set -g status-left "#S #{E:#($PLUGIN_ROOT/scripts/show-notification.sh)} "`
+- If existing status-left: Append ` #{E:#($PLUGIN_ROOT/scripts/show-notification.sh)}` before the closing quote
+- **Never prepend. Never overwrite.** The user's session name and existing content stay first.
+
+### B. Supporting settings
+
+```tmux
+set -g status-interval 1
+set -g status-left-length 100
+set -g monitor-bell on
+set -g bell-action any
+```
+
+### C. Keybindings
+
+Offer these defaults, and use AskUserQuestion to let the user customize the keys:
+
+| Key | Action | Command |
+|-----|--------|---------|
+| `N` | Jump to notification window | `bind-key N run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"` |
+| `` ` `` | Dismiss notification | `bind-key \` run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"` |
+| `DC` (Delete) | Dismiss notification | `bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"` |
+| `M` | Open notification picker | `bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"` |
+
+Use AskUserQuestion with options like:
+- "Use defaults (N / ` / M)" (Recommended)
+- "Customize keybindings"
+
+If user chooses to customize, ask for each key individually.
+
+### D. Hooks
+
+Check that the plugin hooks file exists and is correct:
+```bash
+cat "$PLUGIN_ROOT/hooks/hooks.json"
+```
+
+Report whether hooks are properly configured (should contain `notify-tmux.sh` entries for `Stop` and `Notification` events).
+
+## Step 6: Confirm
+
+Use AskUserQuestion to confirm before making any changes. Show the exact changes that will be made. Options:
+- "Apply all changes" (Recommended)
+- "Apply without keybindings"
+- "Cancel"
+
+## Step 7: Backup
+
+Before writing, backup the existing config:
+
+```bash
+mkdir -p ~/.config/tclux/backups
+cp "$TMUX_CONF" ~/.config/tclux/backups/tmux.conf.$(date +%Y%m%d_%H%M%S)
+# Keep only 5 most recent
+ls -1t ~/.config/tclux/backups/tmux.conf.* | tail -n +6 | xargs rm -f 2>/dev/null
+```
+
+Tell the user the backup path.
+
+## Step 8: Apply
+
+Read the current config content, modify it, and write back using the Write tool. All changes go within tclux section markers:
+
+```
+# --- tclux: Claude Code notifications (added by /tclux:auto-setup) ---
+...tclux settings and keybindings...
+# --- end tclux ---
+```
+
+**For status-left specifically:**
+- If the file has an existing `set -g status-left "..."` line, modify that line in-place by inserting ` #{E:#($PLUGIN_ROOT/scripts/show-notification.sh)}` before the closing `"`.
+- If no status-left exists, add `set -g status-left "#S #{E:#($PLUGIN_ROOT/scripts/show-notification.sh)} "` within the tclux section.
+- Always ensure double quotes around the status-left value.
+
+Preserve ALL existing content outside the tclux markers.
+
+## Step 9: Verify
+
+Run verification commands:
+
+```bash
+# Reload config
+tmux source-file "$TMUX_CONF"
+
+# Check status-left contains notification
+tmux show-option -gv status-left
+
+# Check keybindings registered
+tmux list-keys | grep -E "jump-to-notification|dismiss-notification|notification-picker"
+```
+
+Report success or failure for each check.
+
+## Step 10: Summary
+
+Show the user:
+- What was changed
+- Backup location and rollback command: `cp <backup_path> <tmux_conf> && tmux source-file <tmux_conf>`
+- Keybinding quick reference (N = jump, ` = dismiss, M = picker)
+- Suggest running `/tclux:validate` for full validation

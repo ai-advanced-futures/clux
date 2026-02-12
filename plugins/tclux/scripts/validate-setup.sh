@@ -27,7 +27,7 @@ tmux info &>/dev/null
 check "tmux is running" $?
 
 # 2. keybindings registered
-tmux list-keys 2>/dev/null | grep -q "claude" || tmux list-keys 2>/dev/null | grep -q "dismiss-notification\|jump-to-notification"
+tmux list-keys 2>/dev/null | grep -q "claude" || tmux list-keys 2>/dev/null | grep -q "dismiss-notification\|jump-to-notification\|notification-picker"
 check "keybindings registered" $?
 
 # 3. status-left contains show-notification

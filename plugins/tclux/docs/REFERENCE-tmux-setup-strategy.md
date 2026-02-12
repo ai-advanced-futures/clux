@@ -4,7 +4,7 @@ This document describes the logical approach for autonomously configuring tmux.c
 
 ## Overview
 
-Transform user's tmux.conf to display Claude Code notifications in the status bar by intelligently prepending a notification display to the status-left setting while preserving all existing configuration.
+Transform user's tmux.conf to display Claude Code notifications in the status bar by intelligently appending a notification display to the status-left setting while preserving all existing configuration.
 
 ## State Detection Logic
 
@@ -27,7 +27,7 @@ Examine the file to determine one of four states:
 
 **State B: Has status-left**
 - Detection: `grep -q '^[[:space:]]*set.*status-left' ~/.tmux.conf`
-- Action: Prepend notification to existing value
+- Action: Append notification to existing value
 - Output: Show current status-left, then show modified version
 
 **State C: No status-left**
@@ -84,11 +84,11 @@ Benefits of section markers:
 - Support re-running setup (detect and skip tclux section)
 - Enable clean removal if user uninstalls
 
-### Case C: Prepend to Existing status-left
+### Case C: Append to Existing status-left
 
 When file has existing `status-left` setting, this is the complex case.
 
-**Goal:** Insert the notification display at the beginning of the status-left value while preserving all existing content and syntax.
+**Goal:** Insert the notification display at the end of the status-left value (before the closing quote) while preserving all existing content and syntax.
 
 **Example transformations:**
 
@@ -99,7 +99,7 @@ set -g status-left " #S "
 
 After:
 ```
-set -g status-left "#{E:#(/absolute/path/to/show-notification.sh)}  #S "
+set -g status-left " #S #{E:#(/absolute/path/to/show-notification.sh)} "
 ```
 
 ---
@@ -111,7 +111,7 @@ set -g status-left "#{?client_prefix,[PREFIX] ,}#S "
 
 After (conditionals preserved):
 ```
-set -g status-left "#{E:#(/absolute/path/to/show-notification.sh)} #{?client_prefix,[PREFIX] ,}#S "
+set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{E:#(/absolute/path/to/show-notification.sh)} "
 ```
 
 ---
@@ -123,30 +123,31 @@ set -g status-left "#[fg=green]#S #[fg=yellow]#I"
 
 After (all formatting preserved):
 ```
-set -g status-left "#{E:#(/absolute/path/to/show-notification.sh)} #[fg=green]#S #[fg=yellow]#I"
+set -g status-left "#[fg=green]#S #[fg=yellow]#I #{E:#(/absolute/path/to/show-notification.sh)} "
 ```
 
 **Algorithm:**
 
 1. Find the line containing `set.*status-left`
-2. Extract the quoted value (everything after the opening quote)
-3. Inject the notification command right after the opening quote
+2. Extract the quoted value
+3. Inject the notification command right before the closing quote
 4. Preserve everything else exactly
 
 **Pattern matching approach (reference):**
 
 Regex pattern to match:
 ```
-^(\s*set\s+(?:-option\s+)?\-g\s+status\-left\s+["'])(.*)$
+^(\s*set\s+(?:-option\s+)?\-g\s+status\-left\s+["'])(.*)(["'])$
 ```
 
 Components:
 - `\1`: The full prefix up to and including the opening quote
 - `\2`: The existing value
+- `\3`: The closing quote
 
 Replacement:
 ```
-\1#{E:#(/absolute/path/to/show-notification.sh)} \2
+\1\2 #{E:#(/absolute/path/to/show-notification.sh)} \3
 ```
 
 ## Backup Strategy
@@ -247,12 +248,12 @@ set -g status-left " #S "      # double quotes
 **Handling:**
 - Detect if using single quotes
 - Convert to double quotes on that line only
-- Prepend notification
+- Append notification
 
 Example:
 ```
 Before: set -g status-left ' #S '
-After:  set -g status-left "#{E:#(...)} #S "
+After:  set -g status-left "#S #{E:#(...)} "
 ```
 
 ### Conditional Syntax
@@ -265,11 +266,11 @@ set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{window_index}:#I"
 
 **Handling:**
 - Do not try to parse conditionals
-- Simply prepend notification before first character of value
+- Simply append notification before closing quote of value
 - Result:
 
 ```
-set -g status-left "#{E:#(...)} #{?client_prefix,[PREFIX] ,}#S #{window_index}:#I"
+set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{window_index}:#I #{E:#(...)} "
 ```
 
 ### status-left Set in Sourced File
@@ -329,12 +330,32 @@ Result after second run: File unchanged
 | Aspect | Decision | Reason |
 |--------|----------|--------|
 | **Variable expansion** | Hardcode absolute path | tmux doesn't expand `${}` syntax |
-| **Injection position** | Prepend to status-left | Notifications should appear first |
+| **Injection position** | Append to status-left | Session name stays first |
 | **Quoting** | Double quotes | Required for `#{E:...}` expansion |
 | **Backup location** | `~/.config/tclux/backups/` | Persistent, namespaced, not in tmux dir |
 | **Section markers** | Comment-based | Enable clean detection and removal |
 | **Idempotency** | grep for script name | Simple, reliable, catches all cases |
 | **Permissions** | Check before modification | Fail early with clear error message |
+
+## Keybinding Integration
+
+tclux registers three keybindings for notification management:
+
+| Key | Action | Script |
+|-----|--------|--------|
+| `N` | Jump to notification window | `jump-to-notification.sh` |
+| `` ` `` | Dismiss current notification | `dismiss-notification.sh` |
+| `M` | Open notification picker (fzf) | `notification-picker.sh` |
+
+These keybindings are added within the tclux section markers and use absolute paths to the plugin scripts. Users can customize the key assignments during interactive setup.
+
+### Keybinding Format
+
+```tmux
+bind-key N run-shell "/absolute/path/to/jump-to-notification.sh"
+bind-key ` run-shell "/absolute/path/to/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "/absolute/path/to/notification-picker.sh"
+```
 
 ## Implementation for LLM
 
@@ -350,3 +371,5 @@ When implementing via LLM-based configuration:
 8. **Apply** changes
 9. **Verify** syntax with tmux source-file
 10. **Report** success with rollback instructions
+
+The auto-setup command follows a Socratic/interactive design principle: it analyzes the user's configuration, presents findings, recommends changes, and asks for confirmation before modifying any files. Claude Code itself drives the interactive flow using its built-in tools (Read, Write, Bash, AskUserQuestion) — no external API calls are needed.

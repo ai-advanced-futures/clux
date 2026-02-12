@@ -10,6 +10,7 @@ set -euo pipefail
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$CURRENT_DIR/.." && pwd)"
 SNIPPET_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
+source "$CURRENT_DIR/helpers.sh"
 
 BACKUP_DIR="$HOME/.config/tclux/backups"
 DRY_RUN=0
@@ -104,15 +105,20 @@ portable_sed_inplace() {
 inject_snippet() {
     local conf="$1"
     local state="$2"
-    local notification="#{E:#($SNIPPET_PATH)} "
+    local notification=" #{E:#($SNIPPET_PATH)}"
 
     case "$state" in
         no-file)
             # Case A: No tmux.conf — create new file
             cat > "$conf" <<EOF
-# tclux: Claude Code tmux notification plugin
-set -g status-left "${notification}"
+# --- tclux: Claude Code notifications (added by /tclux:setup) ---
+set -g status-left "#S${notification} "
 set -g status-interval 1
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
+# --- end tclux ---
 EOF
             ;;
 
@@ -121,18 +127,21 @@ EOF
             cat >> "$conf" <<EOF
 
 # --- tclux: Claude Code notifications (added by /tclux:setup) ---
-set -g status-left "${notification}"
+set -g status-left "#S${notification} "
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
 # --- end tclux ---
 EOF
             ;;
 
         has-status-left)
-            # Case C: Existing status-left — prepend snippet into value
+            # Case C: Existing status-left — append snippet to value
 
             # Handle single-quoted values by converting to double quotes
             if check_single_quotes "$conf"; then
                 warn "status-left uses single quotes. Converting to double quotes for tclux compatibility."
-                # Convert single quotes to double quotes on status-left lines
                 portable_sed_inplace "s|^\([[:space:]]*set\(-option\)\{0,1\}[[:space:]].*status-left[[:space:]]*\)'\(.*\)'|\1\"\3\"|" "$conf"
             fi
 
@@ -140,8 +149,23 @@ EOF
             local escaped_snippet
             escaped_snippet=$(printf '%s\n' "$notification" | sed 's/[&/\]/\\&/g')
 
-            # Inject after the opening quote of the last status-left value
-            portable_sed_inplace "s|\(set\(-option\)\{0,1\}[[:space:]].*-g[[:space:]]\{1,\}status-left[[:space:]]\{1,\}\"\)|\1${escaped_snippet}|" "$conf"
+            # Inject before the closing quote of the last status-left value
+            portable_sed_inplace "s|\(set\(-option\)\{0,1\}[[:space:]].*-g[[:space:]]\{1,\}status-left[[:space:]]\{1,\}\"[^\"]*\)\"|\1${escaped_snippet}\"|" "$conf"
+
+            # Add keybindings after status-left line (within tclux markers)
+            # Find the status-left line and append keybindings after it
+            local keybind_block
+            keybind_block=$(cat <<KEYBINDS
+# --- tclux: Claude Code notifications (added by /tclux:setup) ---
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
+# --- end tclux ---
+KEYBINDS
+)
+            # Append keybindings to end of file
+            printf '\n%s\n' "$keybind_block" >> "$conf"
             ;;
     esac
 }
@@ -235,7 +259,7 @@ main() {
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
-    local notification="#{E:#($SNIPPET_PATH)} "
+    local notification=" #{E:#($SNIPPET_PATH)}"
 
     case "$state" in
         no-file)
@@ -259,14 +283,14 @@ main() {
             local existing_line
             existing_line=$(grep '^[[:space:]]*set\(-option\)\?[[:space:]].*status-left' "$tmux_conf" | tail -1)
             info "Detected: $tmux_conf has existing status-left"
-            info "Action: Prepend notification display to existing value"
+            info "Action: Append notification display to existing value"
             echo ""
             echo "Current:"
             echo "  $existing_line"
             echo ""
             echo "After:"
             # Show a preview of the modified line
-            echo "  (notification snippet prepended to status-left value)"
+            echo "  (notification snippet appended to status-left value)"
             ;;
     esac
 
