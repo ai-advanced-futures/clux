@@ -1,43 +1,57 @@
 ---
 name: setup
-description: Autonomously configure tmux.conf for tclux notifications
+description: Intelligently configure tmux for tclux notifications using Claude
 ---
 
-Run the tclux autonomous setup script to configure your tmux.conf:
+# tclux Setup
+
+This command intelligently configures your tmux.conf to display Claude Code notifications in the status bar.
+
+## Default: LLM-Driven Setup (Recommended)
+
+For intelligent configuration that preserves your existing tmux settings, run:
+
+```bash
+/tclux:auto-setup
+```
+
+This uses Claude API to:
+
+1. **Analyze** your current tmux.conf
+2. **Intelligently merge** tclux notification integration
+3. **Preview** changes before applying
+4. **Backup** your existing config automatically
+5. **Verify** the configuration is syntactically correct
+6. **Reload** tmux with the new settings
+
+**Requires:** `OPENAI_API_KEY` environment variable set
+
+## Alternative: Script-Based Setup
+
+For a simpler, no-API script-based approach, run:
 
 ```bash
 $CLAUDE_PLUGIN_ROOT/scripts/setup-tmux-conf.sh
 ```
 
-This command will:
+Or with the newer implementation:
 
-1. **Detect** your current tmux.conf state (missing, existing, or already configured)
-2. **Show** you exactly what will change before making modifications
-3. **Ask** for confirmation before proceeding
-4. **Backup** your existing ~/.tmux.conf with timestamp
-5. **Modify** your config to add the tclux notification display
-6. **Verify** the changes are correct
-7. **Provide** rollback instructions if needed
+```bash
+$CLAUDE_PLUGIN_ROOT/scripts/configure-tmux.sh
+```
 
-## What it configures
+## What Gets Configured
 
-The script will add or update your tmux.conf to include:
+Both methods add or update your tmux.conf to include:
 
 ```tmux
-set -g status-left "#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} "
+set -g status-left "#{E:#(/absolute/path/to/show-notification.sh)} "
 set -g status-interval 1
 set -g monitor-bell on
 set -g bell-action any
 ```
 
-## Edge cases handled
-
-- **No ~/.tmux.conf** → Creates new file with tclux config
-- **Existing status-left** → Prepends notification display
-- **Already configured** → Detects and skips (no changes)
-- **Complex status-left** → Preserves existing formatting and variables
-
-## After setup
+## After Setup
 
 Reload your tmux configuration:
 
@@ -57,12 +71,26 @@ Then validate the integration:
 $CLAUDE_PLUGIN_ROOT/scripts/validate-setup.sh
 ```
 
-## Manual setup
+## Manual Setup
 
-If you prefer manual configuration, add this to your ~/.tmux.conf:
+If you prefer manual configuration, add this to your `~/.tmux.conf`:
 
 ```tmux
-set -g status-left "#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} "
+set -g status-left "#{E:#(/absolute/path/to/show-notification.sh)} "
 ```
 
-Note: The `${CLAUDE_PLUGIN_ROOT}` variable is automatically set by Claude Code and should remain as-is (do not expand to an absolute path).
+Replace `/absolute/path/to` with the actual path to the tclux plugin installation.
+
+## Documentation
+
+For detailed strategy and edge case handling, see:
+
+```bash
+$CLAUDE_PLUGIN_ROOT/docs/REFERENCE-tmux-setup-strategy.md
+```
+
+For configuration definition:
+
+```bash
+$CLAUDE_PLUGIN_ROOT/config/tmux-config.yaml
+```

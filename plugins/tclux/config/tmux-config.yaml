@@ -1,0 +1,92 @@
+# tclux tmux Configuration Definition
+# This file defines the desired state for tmux.conf integration.
+# It is consumed by the /tclux:auto-setup command for intelligent configuration merging.
+
+name: tclux-tmux-configuration
+description: Claude Code tmux notification integration
+version: "1.0"
+
+# Core additions that must be present
+required_settings:
+  status-left-prefix: '#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} '
+  status-interval: 1
+
+# Optional but recommended settings
+optional_settings:
+  monitor-bell: on
+  bell-action: any
+
+# Integration strategy
+strategy:
+  # How to handle status-left modification
+  status-left-merge: prepend
+
+  # Comment markers for identification
+  section-start: "# --- tclux: Claude Code notifications (added by /tclux:auto-setup) ---"
+  section-end: "# --- end tclux ---"
+
+  # Detection method for idempotency
+  detection-pattern: "show-notification.sh"
+
+# Backup configuration
+backup:
+  enabled: true
+  location: "~/.config/tclux/backups"
+  retention-count: 5
+  naming-format: "tmux.conf.%Y%m%d_%H%M%S"
+
+# Modification cases this handles
+cases:
+  case_a:
+    name: "Missing tmux.conf"
+    description: "No ~/.tmux.conf exists"
+    action: "Create new file with tclux configuration"
+
+  case_b:
+    name: "Existing config without status-left"
+    description: "File exists but has no status-left setting"
+    action: "Append tclux configuration section with markers"
+
+  case_c:
+    name: "Existing status-left"
+    description: "File has existing status-left configuration"
+    action: "Prepend notification to existing value, preserving all syntax"
+
+  case_d:
+    name: "Already configured"
+    description: "show-notification.sh already present in config"
+    action: "Skip modification (idempotent)"
+
+# Edge cases to consider
+edge_cases:
+  - name: "Multi-line status-left"
+    description: "status-left spans multiple lines with backslash continuation"
+    handling: "Collapse to single line or document limitation"
+
+  - name: "Single-quoted status-left"
+    description: "status-left uses single quotes instead of double quotes"
+    handling: "Convert to double quotes for tmux #{E:} expansion"
+
+  - name: "Conditional status-left"
+    description: "status-left contains tmux conditionals like #{?...}"
+    handling: "Preserve all conditional syntax when prepending"
+
+  - name: "Sourced configuration"
+    description: "status-left defined in sourced file, not main tmux.conf"
+    handling: "Detect via tmux show-option runtime check"
+
+# Verification checks
+verification:
+  - check: "File syntax"
+    method: "tmux -f <file> source-file <file>"
+
+  - check: "Content presence"
+    method: "grep -q 'show-notification.sh' <file>"
+
+  - check: "Idempotency"
+    method: "Run command twice, verify second run makes no changes"
+
+# Rollback information
+rollback:
+  method: "Restore from timestamped backup"
+  command-template: "cp ~/.config/tclux/backups/tmux.conf.YYYYMMDD_HHMMSS ~/.tmux.conf && tmux source-file ~/.tmux.conf"
