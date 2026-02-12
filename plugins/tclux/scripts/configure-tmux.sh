@@ -9,9 +9,10 @@ set -euo pipefail
 # --- Resolve paths ---
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$CURRENT_DIR/.." && pwd)"
-SNIPPET_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
 source "$CURRENT_DIR/helpers.sh"
 
+DEPLOY_DIR="$HOME/.config/tclux/scripts"
+SNIPPET_PATH="$DEPLOY_DIR/show-notification.sh"
 BACKUP_DIR="$HOME/.config/tclux/backups"
 DRY_RUN=0
 
@@ -37,6 +38,22 @@ for arg in "$@"; do
 done
 
 # --- Functions ---
+
+deploy_scripts() {
+    mkdir -p "$DEPLOY_DIR"
+    local scripts=(
+        helpers.sh
+        show-notification.sh
+        jump-to-notification.sh
+        dismiss-notification.sh
+        notification-picker.sh
+    )
+    for script in "${scripts[@]}"; do
+        cp "$PLUGIN_ROOT/scripts/$script" "$DEPLOY_DIR/$script"
+        chmod +x "$DEPLOY_DIR/$script"
+    done
+    success "Scripts deployed to $DEPLOY_DIR"
+}
 
 find_tmux_conf() {
     for candidate in \
@@ -114,10 +131,10 @@ inject_snippet() {
 # --- tclux: Claude Code notifications (added by /tclux:setup) ---
 set -g status-left "#S${notification} "
 set -g status-interval 1
-bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
-bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
 # --- end tclux ---
 EOF
             ;;
@@ -128,10 +145,10 @@ EOF
 
 # --- tclux: Claude Code notifications (added by /tclux:setup) ---
 set -g status-left "#S${notification} "
-bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
-bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
 # --- end tclux ---
 EOF
             ;;
@@ -157,10 +174,10 @@ EOF
             local keybind_block
             keybind_block=$(cat <<KEYBINDS
 # --- tclux: Claude Code notifications (added by /tclux:setup) ---
-bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$PLUGIN_ROOT/scripts/jump-to-notification.sh"
-bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key DC run-shell "$PLUGIN_ROOT/scripts/dismiss-notification.sh"
-bind-key M display-popup -w 80% -h 60% -E "$PLUGIN_ROOT/scripts/notification-picker.sh"
+bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
+bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
+bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
 # --- end tclux ---
 KEYBINDS
 )
@@ -211,15 +228,11 @@ suggest_settings() {
 
 # --- Main ---
 main() {
-    # 1. Verify show-notification.sh exists and is executable
-    if [ ! -f "$SNIPPET_PATH" ]; then
-        error "show-notification.sh not found at: $SNIPPET_PATH"
+    # 1. Verify source scripts exist in plugin tree
+    if [ ! -f "$PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+        error "show-notification.sh not found in plugin at: $PLUGIN_ROOT/scripts/"
         error "Please reinstall the tclux plugin."
         exit 1
-    fi
-    if [ ! -x "$SNIPPET_PATH" ]; then
-        warn "show-notification.sh is not executable, fixing..."
-        chmod +x "$SNIPPET_PATH"
     fi
 
     # 2. Find tmux.conf
@@ -318,7 +331,10 @@ main() {
         backup_path=$(create_backup "$tmux_conf")
     fi
 
-    # 9. Apply modification
+    # 9. Deploy scripts to stable location
+    deploy_scripts
+
+    # 10. Apply modification
     inject_snippet "$tmux_conf" "$state"
 
     # 10. Verify
