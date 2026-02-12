@@ -24,7 +24,7 @@ Hooks auto-register via `${CLAUDE_PLUGIN_ROOT}` (automatically set by Claude Cod
 Add the notification display to `status-left` or `status-right` in `tmux.conf`:
 
 ```bash
-set -g status-left "#{E:#(~/.claude/plugins/tclux/scripts/show-notification.sh)} "
+set -g status-left "#(~/.claude/plugins/tclux/scripts/show-notification.sh) "
 ```
 
 ### Recommended tmux settings
@@ -65,7 +65,7 @@ Add the following to `~/.claude/settings.json` under `"hooks"`:
 Add to your status bar:
 
 ```bash
-set -g status-left "#{E:#(~/.tmux/plugins/tclux/scripts/show-notification.sh)} "
+set -g status-left "#(~/.tmux/plugins/tclux/scripts/show-notification.sh) "
 ```
 
 ## Configuration

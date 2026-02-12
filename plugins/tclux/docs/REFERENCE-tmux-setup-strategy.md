@@ -54,7 +54,7 @@ When no `~/.tmux.conf` exists, create with:
 
 ```
 # tclux — Claude Code tmux notification plugin
-set -g status-left "#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} "
+set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
 set -g bell-action any
@@ -64,7 +64,7 @@ Key points:
 - `${CLAUDE_PLUGIN_ROOT}` must be **expanded** to absolute path at setup time
 - Example: `/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh`
 - This is not a shell variable; tmux.conf doesn't expand `${}` syntax
-- The `#{E:#(...)}` is tmux's command substitution syntax
+- `#(command)` is tmux's command substitution syntax — runs the command and inserts its stdout
 
 ### Case B: Append to Existing Config
 
@@ -72,7 +72,7 @@ When file exists but has no `status-left`, append:
 
 ```
 # --- tclux: Claude Code notifications (added by /tclux:auto-setup) ---
-set -g status-left "#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} "
+set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
 set -g bell-action any
@@ -99,7 +99,7 @@ set -g status-left " #S "
 
 After:
 ```
-set -g status-left " #S #{E:#(/absolute/path/to/show-notification.sh)} "
+set -g status-left " #S #(/absolute/path/to/show-notification.sh) "
 ```
 
 ---
@@ -111,7 +111,7 @@ set -g status-left "#{?client_prefix,[PREFIX] ,}#S "
 
 After (conditionals preserved):
 ```
-set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{E:#(/absolute/path/to/show-notification.sh)} "
+set -g status-left "#{?client_prefix,[PREFIX] ,}#S #(/absolute/path/to/show-notification.sh) "
 ```
 
 ---
@@ -123,7 +123,7 @@ set -g status-left "#[fg=green]#S #[fg=yellow]#I"
 
 After (all formatting preserved):
 ```
-set -g status-left "#[fg=green]#S #[fg=yellow]#I #{E:#(/absolute/path/to/show-notification.sh)} "
+set -g status-left "#[fg=green]#S #[fg=yellow]#I #(/absolute/path/to/show-notification.sh) "
 ```
 
 **Algorithm:**
@@ -147,7 +147,7 @@ Components:
 
 Replacement:
 ```
-\1\2 #{E:#(/absolute/path/to/show-notification.sh)} \3
+\1\2 #(/absolute/path/to/show-notification.sh) \3
 ```
 
 ## Backup Strategy
@@ -182,7 +182,7 @@ The tmux.conf file is parsed by tmux at runtime. Environment variables like `$CL
 
 In tmux.conf, only these syntaxes have meaning:
 - `#{variable}` — tmux session/pane variables
-- `#{E:command}` — external command substitution
+- `#(command)` — command substitution (runs command, inserts stdout)
 - `$` is just a literal character
 
 ### The Solution
@@ -197,12 +197,12 @@ SNIPPET_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
 # Now $SNIPPET_PATH is: /Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh
 
 # Inject into tmux.conf as literal string:
-echo "set -g status-left \"#{E:#($SNIPPET_PATH)} \"" >> ~/.tmux.conf
+echo "set -g status-left \"#($SNIPPET_PATH) \"" >> ~/.tmux.conf
 ```
 
 The resulting line in tmux.conf:
 ```
-set -g status-left "#{E:#(/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh)} "
+set -g status-left "#(/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh) "
 ```
 
 ### Why Not Use Environment Variables?
@@ -210,12 +210,12 @@ set -g status-left "#{E:#(/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/
 Tempting but wrong:
 ```bash
 # DO NOT DO THIS
-echo "set -g status-left \"#{E:#($CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh)} \"" >> ~/.tmux.conf
+echo "set -g status-left \"#($CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh)\"" >> ~/.tmux.conf
 ```
 
 Result (wrong):
 ```
-set -g status-left "#{E:#($CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh)} "
+set -g status-left "#($CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh) "
 ```
 
 When tmux parses this, it sees literally: `$CLAUDE_PLUGIN_ROOT/scripts/...`. Since tmux doesn't expand shell variables, the command substitution fails.
@@ -243,17 +243,15 @@ set -g status-left ' #S '      # single quotes
 set -g status-left " #S "      # double quotes
 ```
 
-**Issue:** The `#{E:...}` expansion **requires** double quotes.
-
 **Handling:**
-- Detect if using single quotes
-- Convert to double quotes on that line only
+- Either quote style works with `#(...)` syntax
+- For consistency, prefer double quotes
 - Append notification
 
 Example:
 ```
 Before: set -g status-left ' #S '
-After:  set -g status-left "#S #{E:#(...)} "
+After:  set -g status-left "#S #(...)"
 ```
 
 ### Conditional Syntax
@@ -270,7 +268,7 @@ set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{window_index}:#I"
 - Result:
 
 ```
-set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{window_index}:#I #{E:#(...)} "
+set -g status-left "#{?client_prefix,[PREFIX] ,}#S #{window_index}:#I #(...)"
 ```
 
 ### status-left Set in Sourced File
@@ -295,7 +293,7 @@ If user hasn't set `status-left-length`, default is 10 characters.
 
 **Handling:**
 - Show warning: "Consider increasing status-left-length for full notification display"
-- Suggest: `set -g status-left-length 100`
+- Suggest: `set -g status-left-length 200`
 
 ## Verification Steps
 
@@ -331,7 +329,7 @@ Result after second run: File unchanged
 |--------|----------|--------|
 | **Variable expansion** | Hardcode absolute path | tmux doesn't expand `${}` syntax |
 | **Injection position** | Append to status-left | Session name stays first |
-| **Quoting** | Double quotes | Required for `#{E:...}` expansion |
+| **Quoting** | Double quotes | Consistent convention for `#(...)` syntax |
 | **Backup location** | `~/.config/tclux/backups/` | Persistent, namespaced, not in tmux dir |
 | **Section markers** | Comment-based | Enable clean detection and removal |
 | **Idempotency** | grep for script name | Simple, reliable, catches all cases |

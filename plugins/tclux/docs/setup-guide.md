@@ -33,9 +33,9 @@ Both methods add or update your tmux.conf to include:
 
 ```tmux
 # Status-left with notification appended after existing content
-set -g status-left "<your existing value> #{E:#(~/.config/tclux/scripts/show-notification.sh)} "
+set -g status-left "<your existing value> #(~/.config/tclux/scripts/show-notification.sh) "
 set -g status-interval 1
-set -g status-left-length 100
+set -g status-left-length 200
 set -g monitor-bell on
 set -g bell-action any
 
@@ -50,10 +50,10 @@ Scripts are deployed to `~/.config/tclux/scripts/` so your tmux.conf doesn't bre
 
 ## After Setup
 
-Reload your tmux configuration:
+Reload your tmux configuration and refresh the status bar:
 
 ```bash
-tmux source-file ~/.tmux.conf
+tmux source-file ~/.tmux.conf && tmux refresh-client -S
 ```
 
 Or restart tmux:
@@ -67,7 +67,7 @@ tmux kill-server && tmux
 If you prefer manual configuration, add this to your `~/.tmux.conf`:
 
 ```tmux
-set -g status-left "<your existing value> #{E:#(~/.config/tclux/scripts/show-notification.sh)} "
+set -g status-left "<your existing value> #(~/.config/tclux/scripts/show-notification.sh) "
 ```
 
 You'll need to manually copy the plugin scripts to `~/.config/tclux/scripts/` first.

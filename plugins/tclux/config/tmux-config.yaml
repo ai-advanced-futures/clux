@@ -8,7 +8,7 @@ version: "1.0"
 
 # Core additions that must be present
 required_settings:
-  status-left-suffix: ' #{E:#(~/.config/tclux/scripts/show-notification.sh)}'
+  status-left-suffix: ' #(~/.config/tclux/scripts/show-notification.sh)'
   status-interval: 1
 
 # Optional but recommended settings
@@ -80,7 +80,7 @@ edge_cases:
 
   - name: "Single-quoted status-left"
     description: "status-left uses single quotes instead of double quotes"
-    handling: "Convert to double quotes for tmux #{E:} expansion"
+    handling: "Convert to double quotes for consistency"
 
   - name: "Conditional status-left"
     description: "status-left contains tmux conditionals like #{?...}"

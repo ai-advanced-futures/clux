@@ -5,7 +5,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
 TMUX_CONF="${HOME}/.tmux.conf"
-NOTIFICATION_CMD='#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)}'
+NOTIFICATION_CMD='#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)'
 
 # Colors for output
 RED='\033[0;31m'
@@ -140,7 +140,7 @@ modify_config() {
         missing)
             cat > "$tmpfile" <<'EOF'
 # tclux — Claude Code tmux notifications
-set -g status-left "#{E:#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh)} "
+set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
 set -g bell-action any

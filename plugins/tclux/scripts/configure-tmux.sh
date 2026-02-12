@@ -122,7 +122,7 @@ portable_sed_inplace() {
 inject_snippet() {
     local conf="$1"
     local state="$2"
-    local notification=" #{E:#($SNIPPET_PATH)}"
+    local notification=" #($SNIPPET_PATH)"
 
     case "$state" in
         no-file)
@@ -219,10 +219,10 @@ suggest_settings() {
     # Check status-left-length
     local length
     length=$(tmux show-option -gv status-left-length 2>/dev/null || echo "10")
-    if [ "${length:-10}" -lt 80 ]; then
+    if [ "${length:-10}" -lt 200 ]; then
         echo ""
         info "Consider increasing status-left-length for full notification display:"
-        info "  set -g status-left-length 100"
+        info "  set -g status-left-length 200"
     fi
 }
 
@@ -272,7 +272,7 @@ main() {
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
-    local notification=" #{E:#($SNIPPET_PATH)}"
+    local notification=" #($SNIPPET_PATH)"
 
     case "$state" in
         no-file)
@@ -349,11 +349,12 @@ main() {
 
     success "tmux.conf updated"
 
-    # 11. Reload tmux config
+    # 11. Reload tmux config and refresh status bar
     if tmux source-file "$tmux_conf" 2>/dev/null; then
+        tmux refresh-client -S 2>/dev/null
         success "tmux config reloaded"
     else
-        info "Run manually: tmux source-file \"$tmux_conf\""
+        info "Run manually: tmux source-file \"$tmux_conf\" && tmux refresh-client -S"
     fi
 
     # 12. Print summary
