@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Validate tclux integration — 10 checks
+# Validate clux integration — 10 checks
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
@@ -19,7 +19,7 @@ check() {
     fi
 }
 
-echo "tclux validation"
+echo "clux validation"
 echo "================"
 
 # 1. tmux running

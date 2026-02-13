@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # configure-tmux.sh — Autonomously detect, back up, and modify tmux.conf
-# for tclux notification integration.
+# for clux notification integration.
 #
 # Exit codes: 0 = success (or already configured), 1 = cancel/error
 
@@ -11,9 +11,9 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$CURRENT_DIR/.." && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
-DEPLOY_DIR="$HOME/.config/tclux/scripts"
+DEPLOY_DIR="$HOME/.config/clux/scripts"
 SNIPPET_PATH="$DEPLOY_DIR/show-notification.sh"
-BACKUP_DIR="$HOME/.config/tclux/backups"
+BACKUP_DIR="$HOME/.config/clux/backups"
 DRY_RUN=0
 
 # Colors
@@ -128,14 +128,14 @@ inject_snippet() {
         no-file)
             # Case A: No tmux.conf — create new file
             cat > "$conf" <<EOF
-# --- tclux: Claude Code notifications (added by /tclux:setup) ---
+# --- clux: Claude Code notifications (added by /clux:setup) ---
 set -g status-left "#S${notification} "
 set -g status-interval 1
 bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
 bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
-# --- end tclux ---
+# --- end clux ---
 EOF
             ;;
 
@@ -143,13 +143,13 @@ EOF
             # Case B: File exists, no status-left — append with markers
             cat >> "$conf" <<EOF
 
-# --- tclux: Claude Code notifications (added by /tclux:setup) ---
+# --- clux: Claude Code notifications (added by /clux:setup) ---
 set -g status-left "#S${notification} "
 bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
 bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
-# --- end tclux ---
+# --- end clux ---
 EOF
             ;;
 
@@ -158,7 +158,7 @@ EOF
 
             # Handle single-quoted values by converting to double quotes
             if check_single_quotes "$conf"; then
-                warn "status-left uses single quotes. Converting to double quotes for tclux compatibility."
+                warn "status-left uses single quotes. Converting to double quotes for clux compatibility."
                 portable_sed_inplace "s|^\([[:space:]]*set\(-option\)\{0,1\}[[:space:]].*status-left[[:space:]]*\)'\(.*\)'|\1\"\3\"|" "$conf"
             fi
 
@@ -169,16 +169,16 @@ EOF
             # Inject before the closing quote of the last status-left value
             portable_sed_inplace "s|\(set\(-option\)\{0,1\}[[:space:]].*-g[[:space:]]\{1,\}status-left[[:space:]]\{1,\}\"[^\"]*\)\"|\1${escaped_snippet}\"|" "$conf"
 
-            # Add keybindings after status-left line (within tclux markers)
+            # Add keybindings after status-left line (within clux markers)
             # Find the status-left line and append keybindings after it
             local keybind_block
             keybind_block=$(cat <<KEYBINDS
-# --- tclux: Claude Code notifications (added by /tclux:setup) ---
+# --- clux: Claude Code notifications (added by /clux:setup) ---
 bind-key ${NOTIFY_JUMP_KEY:-N} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
 bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key M display-popup -w 80% -h 60% -E "$DEPLOY_DIR/notification-picker.sh"
-# --- end tclux ---
+# --- end clux ---
 KEYBINDS
 )
             # Append keybindings to end of file
@@ -231,7 +231,7 @@ main() {
     # 1. Verify source scripts exist in plugin tree
     if [ ! -f "$PLUGIN_ROOT/scripts/show-notification.sh" ]; then
         error "show-notification.sh not found in plugin at: $PLUGIN_ROOT/scripts/"
-        error "Please reinstall the tclux plugin."
+        error "Please reinstall the clux plugin."
         exit 1
     fi
 
@@ -242,7 +242,7 @@ main() {
     # 3. Check if already configured — exit early (idempotent)
     if is_already_configured "$tmux_conf"; then
         echo ""
-        success "tclux is already configured in $tmux_conf. Nothing to do."
+        success "clux is already configured in $tmux_conf. Nothing to do."
         echo ""
         info "Run: tmux source-file \"$tmux_conf\" (or restart tmux)"
         exit 0
@@ -268,7 +268,7 @@ main() {
     # 6. Show preview
     echo ""
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    bold "  tclux setup — tmux.conf configuration"
+    bold "  clux setup — tmux.conf configuration"
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
@@ -277,7 +277,7 @@ main() {
     case "$state" in
         no-file)
             info "Detected: $tmux_conf does not exist"
-            info "Action: Create new file with tclux configuration"
+            info "Action: Create new file with clux configuration"
             echo ""
             echo "Will create:"
             echo "  set -g status-left \"${notification}\""
@@ -285,12 +285,12 @@ main() {
             ;;
         no-status-left)
             info "Detected: $tmux_conf exists without status-left"
-            info "Action: Append tclux notification section"
+            info "Action: Append clux notification section"
             echo ""
             echo "Will add:"
-            echo "  # --- tclux: Claude Code notifications (added by /tclux:setup) ---"
+            echo "  # --- clux: Claude Code notifications (added by /clux:setup) ---"
             echo "  set -g status-left \"${notification}\""
-            echo "  # --- end tclux ---"
+            echo "  # --- end clux ---"
             ;;
         has-status-left)
             local existing_line

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-tmux-conf.sh — Autonomously configure tmux.conf for tclux notifications
+# setup-tmux-conf.sh — Autonomously configure tmux.conf for clux notifications
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
@@ -50,14 +50,14 @@ show_changes() {
 
     echo ""
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    bold "  tclux setup — tmux.conf configuration"
+    bold "  clux setup — tmux.conf configuration"
     bold "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
     case "$state" in
         missing)
             info "File: $TMUX_CONF does not exist"
-            info "Action: Create new file with tclux configuration"
+            info "Action: Create new file with clux configuration"
             echo ""
             echo "Will create:"
             echo "  set -g status-left \"${NOTIFICATION_CMD} \""
@@ -82,7 +82,7 @@ show_changes() {
             ;;
         exists)
             info "File: $TMUX_CONF exists without status-left"
-            info "Action: Add tclux configuration"
+            info "Action: Add clux configuration"
             echo ""
             echo "Will add:"
             echo "  set -g status-left \"${NOTIFICATION_CMD} \""
@@ -139,7 +139,7 @@ modify_config() {
     case "$state" in
         missing)
             cat > "$tmpfile" <<'EOF'
-# tclux — Claude Code tmux notifications
+# clux — Claude Code tmux notifications
 set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
@@ -187,7 +187,7 @@ EOF
             {
                 cat "$TMUX_CONF"
                 echo ""
-                echo "# tclux — Claude Code tmux notifications"
+                echo "# clux — Claude Code tmux notifications"
                 echo "set -g status-left \"${NOTIFICATION_CMD} \""
                 echo "set -g status-interval 1"
                 echo "set -g monitor-bell on"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared utilities for tclux plugin
+# Shared utilities for clux plugin
 
 get_tmux_option() {
     local option="$1"

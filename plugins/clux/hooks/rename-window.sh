@@ -5,18 +5,18 @@
 # and renames the tmux window accordingly.
 #
 # Requires: jq, curl
-# Debug log: /tmp/tclux.log (only when TCLUX_DEBUG=1)
+# Debug log: /tmp/clux.log (only when CLUX_DEBUG=1)
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/../scripts/helpers.sh"
 
-DEBUG_LOG="/tmp/tclux.log"
-TCLUX_DEBUG="${TCLUX_DEBUG:-0}"
+DEBUG_LOG="/tmp/clux.log"
+CLUX_DEBUG="${CLUX_DEBUG:-0}"
 
 # --- Logging (file logging only when debug is enabled) ---
 
 debug_msg() {
-    if [ "$TCLUX_DEBUG" = "1" ]; then
+    if [ "$CLUX_DEBUG" = "1" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$DEBUG_LOG"
         tmux display-message "DEBUG: $1" 2>/dev/null
     fi
@@ -24,7 +24,7 @@ debug_msg() {
 
 error_msg() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "$DEBUG_LOG"
-    tmux display-message "TCLUX ERROR: $1" 2>/dev/null
+    tmux display-message "CLUX ERROR: $1" 2>/dev/null
 }
 
 # --- Early exit guards (fast path, no API calls) ---
@@ -32,8 +32,8 @@ error_msg() {
 [ "$NOTIFY_SMART_TITLE" = "off" ] && exit 0
 [ -z "$TMUX" ] && exit 0
 
-if [ -z "$TCLUX_OPENAI_API_KEY" ]; then
-    error_msg "TCLUX_OPENAI_API_KEY not set"
+if [ -z "$CLUX_OPENAI_API_KEY" ]; then
+    error_msg "CLUX_OPENAI_API_KEY not set"
     exit 0
 fi
 
@@ -59,8 +59,8 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
 
 # --- Background the API call so the hook returns immediately ---
 (
-    OPENAI_MODEL="${TCLUX_OPENAI_MODEL:-gpt-5-nano}"
-    OPENAI_TIMEOUT="${TCLUX_OPENAI_TIMEOUT:-10}"
+    OPENAI_MODEL="${CLUX_OPENAI_MODEL:-gpt-5-nano}"
+    OPENAI_TIMEOUT="${CLUX_OPENAI_TIMEOUT:-10}"
 
     debug_msg "Model: $OPENAI_MODEL"
 
@@ -111,7 +111,7 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
         -H @- \
         -d "$JSON_PAYLOAD" \
         https://api.openai.com/v1/responses \
-        <<< "Authorization: Bearer $TCLUX_OPENAI_API_KEY" 2>/dev/null)
+        <<< "Authorization: Bearer $CLUX_OPENAI_API_KEY" 2>/dev/null)
 
     CURL_EXIT=$?
     if [ "$CURL_EXIT" -ne 0 ]; then

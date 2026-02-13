@@ -1,4 +1,4 @@
-# tclux
+# clux
 
 tmux status bar notifications for Claude Code — know when tasks finish or need input.
 
@@ -14,7 +14,7 @@ tmux status bar notifications for Claude Code — know when tasks finish or need
 ## Install (Claude Code Plugin)
 
 ```bash
-claude plugin install 404pilo/tclux --scope user
+claude plugin install 404pilo/clux --scope user
 ```
 
 Hooks auto-register via `${CLAUDE_PLUGIN_ROOT}` (automatically set by Claude Code). No manual JSON editing needed.
@@ -24,7 +24,7 @@ Hooks auto-register via `${CLAUDE_PLUGIN_ROOT}` (automatically set by Claude Cod
 Add the notification display to `status-left` or `status-right` in `tmux.conf`:
 
 ```bash
-set -g status-left "#(~/.claude/plugins/tclux/scripts/show-notification.sh) "
+set -g status-left "#(~/.claude/plugins/clux/scripts/show-notification.sh) "
 ```
 
 ### Recommended tmux settings
@@ -37,10 +37,10 @@ set -g bell-action any
 
 ### Validate
 
-Run `/tclux:setup` inside Claude Code, or:
+Run `/clux:setup` inside Claude Code, or:
 
 ```bash
-~/.claude/plugins/tclux/scripts/validate-setup.sh
+~/.claude/plugins/clux/scripts/validate-setup.sh
 ```
 
 ## Alternative: TPM Install
@@ -48,7 +48,7 @@ Run `/tclux:setup` inside Claude Code, or:
 Add to `~/.tmux.conf`:
 
 ```bash
-set -g @plugin '404pilo/tclux'
+set -g @plugin '404pilo/clux'
 ```
 
 Then `prefix + I` to install.
@@ -57,15 +57,15 @@ Add the following to `~/.claude/settings.json` under `"hooks"`:
 
 ```json
 {
-  "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/tclux/hooks/notify-tmux.sh", "timeout": 5 }] }],
-  "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/tclux/hooks/notify-tmux.sh", "timeout": 5 }] }]
+  "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }],
+  "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }]
 }
 ```
 
 Add to your status bar:
 
 ```bash
-set -g status-left "#(~/.tmux/plugins/tclux/scripts/show-notification.sh) "
+set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 ```
 
 ## Configuration
@@ -100,7 +100,7 @@ set -g @claude-notify-fg "#1e1e2e"
 ### Powerline
 
 ```bash
-set -g status-left "#(~/.claude/plugins/tclux/scripts/show-notification.sh)#[fg=colour235,bg=colour252,bold] #S "
+set -g status-left "#(~/.claude/plugins/clux/scripts/show-notification.sh)#[fg=colour235,bg=colour252,bold] #S "
 ```
 
 ### Minimal
@@ -118,28 +118,28 @@ set -g @claude-notify-fg "yellow"
 
 **Solution:** Run validation:
 ```bash
-~/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/validate-setup.sh
+~/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/validate-setup.sh
 ```
 
 Or inside Claude Code:
 ```
-/tclux:setup
+/clux:setup
 ```
 
 ### Plugin path issues
 
 Claude Code automatically sets `${CLAUDE_PLUGIN_ROOT}` when executing hooks. If you see path-related errors:
 
-1. Verify plugin is installed: `ls ~/.claude/plugins/cache/404pilo/tclux/`
-2. Check hooks.json references: `cat ~/.claude/plugins/cache/404pilo/tclux/*/hooks/hooks.json`
-3. For TPM installations, ensure hooks point to `~/.tmux/plugins/tclux/`
+1. Verify plugin is installed: `ls ~/.claude/plugins/cache/404pilo/clux/`
+2. Check hooks.json references: `cat ~/.claude/plugins/cache/404pilo/clux/*/hooks/hooks.json`
+3. For TPM installations, ensure hooks point to `~/.tmux/plugins/clux/`
 
 ### Smart window renaming fails
 
 If window names aren't auto-updating:
 
 1. Check API key: `echo $OPENAI_API_KEY` (should not be empty)
-2. Enable debug mode: `TCLUX_DEBUG=1` (logs to `/tmp/tclux.log`)
+2. Enable debug mode: `CLUX_DEBUG=1` (logs to `/tmp/clux.log`)
 3. Verify jq installed: `jq --version`
 
 ### Notifications disappear immediately

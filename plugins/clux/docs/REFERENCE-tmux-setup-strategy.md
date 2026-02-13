@@ -1,6 +1,6 @@
 # Reference: tmux Configuration Strategy
 
-This document describes the logical approach for autonomously configuring tmux.conf for tclux integration. This is reference documentation for LLM-driven configuration merging (not an executable script).
+This document describes the logical approach for autonomously configuring tmux.conf for clux integration. This is reference documentation for LLM-driven configuration merging (not an executable script).
 
 ## Overview
 
@@ -37,7 +37,7 @@ Examine the file to determine one of four states:
 
 **State D: No tmux.conf**
 - Detection: File doesn't exist
-- Action: Create new file with tclux configuration
+- Action: Create new file with clux configuration
 - Output: Show new file content
 
 ### Step 3: Permission Check
@@ -53,7 +53,7 @@ Before modification:
 When no `~/.tmux.conf` exists, create with:
 
 ```
-# tclux — Claude Code tmux notification plugin
+# clux — Claude Code tmux notification plugin
 set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
@@ -62,7 +62,7 @@ set -g bell-action any
 
 Key points:
 - `${CLAUDE_PLUGIN_ROOT}` must be **expanded** to absolute path at setup time
-- Example: `/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh`
+- Example: `/Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh`
 - This is not a shell variable; tmux.conf doesn't expand `${}` syntax
 - `#(command)` is tmux's command substitution syntax — runs the command and inserts its stdout
 
@@ -71,17 +71,17 @@ Key points:
 When file exists but has no `status-left`, append:
 
 ```
-# --- tclux: Claude Code notifications (added by /tclux:auto-setup) ---
+# --- clux: Claude Code notifications (added by /clux:auto-setup) ---
 set -g status-left "#(${CLAUDE_PLUGIN_ROOT}/scripts/show-notification.sh) "
 set -g status-interval 1
 set -g monitor-bell on
 set -g bell-action any
-# --- end tclux ---
+# --- end clux ---
 ```
 
 Benefits of section markers:
 - Enable clean detection of added vs. existing config
-- Support re-running setup (detect and skip tclux section)
+- Support re-running setup (detect and skip clux section)
 - Enable clean removal if user uninstalls
 
 ### Case C: Append to Existing status-left
@@ -154,8 +154,8 @@ Replacement:
 
 ### Before Any Modification
 
-1. Create backup directory: `mkdir -p ~/.config/tclux/backups`
-2. Copy existing config: `cp ~/.tmux.conf ~/.config/tclux/backups/tmux.conf.YYYYMMDD_HHMMSS`
+1. Create backup directory: `mkdir -p ~/.config/clux/backups`
+2. Copy existing config: `cp ~/.tmux.conf ~/.config/clux/backups/tmux.conf.YYYYMMDD_HHMMSS`
 3. Preserve timestamp for reference
 
 ### Backup Retention
@@ -163,7 +163,7 @@ Replacement:
 Keep only 5 most recent backups:
 
 ```
-ls -1t ~/.config/tclux/backups/tmux.conf.* | tail -n +6 | xargs rm -f
+ls -1t ~/.config/clux/backups/tmux.conf.* | tail -n +6 | xargs rm -f
 ```
 
 ### Rollback Instructions
@@ -171,7 +171,7 @@ ls -1t ~/.config/tclux/backups/tmux.conf.* | tail -n +6 | xargs rm -f
 After modification, provide user with:
 
 ```
-To undo: cp ~/.config/tclux/backups/tmux.conf.YYYYMMDD_HHMMSS ~/.tmux.conf && tmux source-file ~/.tmux.conf
+To undo: cp ~/.config/clux/backups/tmux.conf.YYYYMMDD_HHMMSS ~/.tmux.conf && tmux source-file ~/.tmux.conf
 ```
 
 ## Variable Expansion: Critical
@@ -194,7 +194,7 @@ Example:
 ```bash
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SNIPPET_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
-# Now $SNIPPET_PATH is: /Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh
+# Now $SNIPPET_PATH is: /Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh
 
 # Inject into tmux.conf as literal string:
 echo "set -g status-left \"#($SNIPPET_PATH) \"" >> ~/.tmux.conf
@@ -202,7 +202,7 @@ echo "set -g status-left \"#($SNIPPET_PATH) \"" >> ~/.tmux.conf
 
 The resulting line in tmux.conf:
 ```
-set -g status-left "#(/Users/user/.claude/plugins/cache/404pilo/tclux/1.0.0/scripts/show-notification.sh) "
+set -g status-left "#(/Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh) "
 ```
 
 ### Why Not Use Environment Variables?
@@ -330,14 +330,14 @@ Result after second run: File unchanged
 | **Variable expansion** | Hardcode absolute path | tmux doesn't expand `${}` syntax |
 | **Injection position** | Append to status-left | Session name stays first |
 | **Quoting** | Double quotes | Consistent convention for `#(...)` syntax |
-| **Backup location** | `~/.config/tclux/backups/` | Persistent, namespaced, not in tmux dir |
+| **Backup location** | `~/.config/clux/backups/` | Persistent, namespaced, not in tmux dir |
 | **Section markers** | Comment-based | Enable clean detection and removal |
 | **Idempotency** | grep for script name | Simple, reliable, catches all cases |
 | **Permissions** | Check before modification | Fail early with clear error message |
 
 ## Keybinding Integration
 
-tclux registers three keybindings for notification management:
+clux registers three keybindings for notification management:
 
 | Key | Action | Script |
 |-----|--------|--------|
@@ -345,7 +345,7 @@ tclux registers three keybindings for notification management:
 | `` ` `` | Dismiss current notification | `dismiss-notification.sh` |
 | `M` | Open notification picker (fzf) | `notification-picker.sh` |
 
-These keybindings are added within the tclux section markers and use absolute paths to the plugin scripts. Users can customize the key assignments during interactive setup.
+These keybindings are added within the clux section markers and use absolute paths to the plugin scripts. Users can customize the key assignments during interactive setup.
 
 ### Keybinding Format
 

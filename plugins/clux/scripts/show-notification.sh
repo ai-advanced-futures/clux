@@ -41,7 +41,7 @@ release_lock
 TOTAL=$(wc -l < "$NOTIFY_FILE" | tr -d ' ')
 
 if [ "$TOTAL" -gt 1 ]; then
-    printf '#[bg=%s,fg=%s,bold] [%d/%d] %-60s #[default]' "$NOTIFY_BG" "$NOTIFY_FG" 1 "$TOTAL" "$FIRST"
+    printf '#[bg=%s,fg=%s,bold] [%d/%d] %s #[default]' "$NOTIFY_BG" "$NOTIFY_FG" 1 "$TOTAL" "$FIRST"
 else
-    printf '#[bg=%s,fg=%s,bold] %-70s #[default]' "$NOTIFY_BG" "$NOTIFY_FG" "$FIRST"
+    printf '#[bg=%s,fg=%s,bold] %s #[default]' "$NOTIFY_BG" "$NOTIFY_FG" "$FIRST"
 fi

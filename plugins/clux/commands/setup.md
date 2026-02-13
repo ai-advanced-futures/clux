@@ -1,11 +1,11 @@
 ---
-description: Interactively configure tmux for tclux notifications
+description: Interactively configure tmux for clux notifications
 allowed-tools: Read, Write, Bash, Glob, Grep, AskUserQuestion, Task
 ---
 
-# tclux Setup: Interactive tmux Configuration
+# clux Setup: Interactive tmux Configuration
 
-You are configuring the user's tmux.conf to integrate tclux notifications. You ARE the LLM — never call external APIs.
+You are configuring the user's tmux.conf to integrate clux notifications. You ARE the LLM — never call external APIs.
 
 **Use subagents (Task tool) to parallelize independent work.** Launch multiple agents concurrently wherever steps don't depend on each other. This speeds up the setup significantly.
 
@@ -13,8 +13,8 @@ You are configuring the user's tmux.conf to integrate tclux notifications. You A
 
 - **Never call external APIs** — you are Claude Code running inside the user's session
 - **Never overwrite existing status-left** — always READ the current value and APPEND the notification snippet after it
-- **Deploy scripts to `~/.config/tclux/scripts/`** — copy from plugin source so tmux.conf survives plugin version updates
-- **Always use `~/.config/tclux/scripts/` paths** in tmux.conf — never reference the plugin cache directly
+- **Deploy scripts to `~/.config/clux/scripts/`** — copy from plugin source so tmux.conf survives plugin version updates
+- **Always use `~/.config/clux/scripts/` paths** in tmux.conf — never reference the plugin cache directly
 - **Always use double quotes** for status-left values
 - **Always ask before modifying files** — use AskUserQuestion for confirmation
 - **Idempotent** — if already configured, report and offer to skip
@@ -31,7 +31,7 @@ Prompt the agent to:
 2. Get tmux version: `tmux -V`
 3. Find the plugin source scripts:
    ```bash
-   find ~/.claude -path "*/tclux/scripts/show-notification.sh" -type f 2>/dev/null | head -1
+   find ~/.claude -path "*/clux/scripts/show-notification.sh" -type f 2>/dev/null | head -1
    ```
 4. Derive `PLUGIN_SCRIPTS_DIR` from the result (parent directory of that file)
 5. Verify all required scripts exist in `PLUGIN_SCRIPTS_DIR`:
@@ -49,7 +49,7 @@ Prompt the agent to:
    - Current `set -g status-left` value (if any)
    - Current `status-interval` value
    - Current `status-left-length` value
-   - Any existing tclux section markers
+   - Any existing clux section markers
 3. **Extract the color palette** from the config. Look for:
    - `status-style` bg/fg values (e.g., `bg='#2E3440',fg='#88C0D0'`)
    - `message-style` bg/fg values (e.g., `bg=#EBCB8B,fg=#2E3440`)
@@ -72,7 +72,7 @@ Prompt the agent to:
 Prompt the agent to:
 1. Find and read the plugin hooks file:
    ```bash
-   find ~/.claude -path "*/tclux/hooks/hooks.json" -type f 2>/dev/null | head -1
+   find ~/.claude -path "*/clux/hooks/hooks.json" -type f 2>/dev/null | head -1
    ```
 2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop` and `Notification` events
 3. Check existing tmux keybindings for conflicts:
@@ -91,11 +91,11 @@ If Agent B finds both config files, use AskUserQuestion to ask the user which to
 Present a clear summary to the user combining results from all three agents:
 
 ```
-tclux setup — analysis results:
+clux setup — analysis results:
 
   Environment:
     tmux: /usr/local/bin/tmux (v3.6a)
-    Plugin scripts: /Users/.../.claude/plugins/cache/404pilo/tclux/x.y.z/scripts/
+    Plugin scripts: /Users/.../.claude/plugins/cache/404pilo/clux/x.y.z/scripts/
 
   tmux.conf:
     Config file: ~/.config/tmux/tmux.conf
@@ -120,7 +120,7 @@ tclux setup — analysis results:
 
 ## Phase 3: Recommend Changes
 
-Present grouped changes. Use the absolute expanded path for `DEPLOY_DIR` (e.g., `/Users/user/.config/tclux/scripts`):
+Present grouped changes. Use the absolute expanded path for `DEPLOY_DIR` (e.g., `/Users/user/.config/clux/scripts`):
 
 ### A. Status-left (APPEND notification after existing value)
 
@@ -190,13 +190,13 @@ Run **two subagents sequentially** (backup must complete before config is writte
 Prompt the agent to:
 1. Backup existing tmux.conf:
    ```bash
-   mkdir -p ~/.config/tclux/backups
-   cp "$TMUX_CONF" ~/.config/tclux/backups/tmux.conf.$(date +%Y%m%d_%H%M%S)
-   ls -1t ~/.config/tclux/backups/tmux.conf.* | tail -n +6 | xargs rm -f 2>/dev/null
+   mkdir -p ~/.config/clux/backups
+   cp "$TMUX_CONF" ~/.config/clux/backups/tmux.conf.$(date +%Y%m%d_%H%M%S)
+   ls -1t ~/.config/clux/backups/tmux.conf.* | tail -n +6 | xargs rm -f 2>/dev/null
    ```
 2. Deploy scripts from plugin source to stable location:
    ```bash
-   DEPLOY_DIR="$HOME/.config/tclux/scripts"
+   DEPLOY_DIR="$HOME/.config/clux/scripts"
    mkdir -p "$DEPLOY_DIR"
    for script in helpers.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
        cp "$PLUGIN_SCRIPTS_DIR/$script" "$DEPLOY_DIR/$script"
@@ -214,19 +214,19 @@ Pass the actual resolved paths for `$TMUX_CONF` and `$PLUGIN_SCRIPTS_DIR` to thi
 Prompt the agent to read the current tmux.conf content (pass it in the prompt) and generate the new content following these rules:
 
 - Modify `status-left` in-place if it exists: insert ` #(DEPLOY_DIR/show-notification.sh)` before the closing `"`
-- If no `status-left`, add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within tclux section markers
-- Add supporting settings, **notification color options**, and keybindings within tclux section markers:
+- If no `status-left`, add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within clux section markers
+- Add supporting settings, **notification color options**, and keybindings within clux section markers:
   ```
-  # --- tclux: Claude Code notifications (added by /tclux:setup) ---
-  ...tclux settings...
+  # --- clux: Claude Code notifications (added by /clux:setup) ---
+  ...clux settings...
   set -g @claude-notify-bg "<bg_attention>"
   set -g @claude-notify-fg "<fg_on_attention>"
   ...keybindings...
-  # --- end tclux ---
+  # --- end clux ---
   ```
   Only include the `@claude-notify-bg`/`@claude-notify-fg` lines if a color palette was detected.
-- Preserve ALL existing content outside the tclux markers
-- If tclux markers already exist, replace the content between them
+- Preserve ALL existing content outside the clux markers
+- If clux markers already exist, replace the content between them
 - Always use double quotes for status-left
 - Return: the complete new file content
 
@@ -256,4 +256,4 @@ Show the user:
 - What was changed
 - Backup location and rollback command: `cp <backup_path> <tmux_conf> && tmux source-file <tmux_conf>`
 - Keybinding quick reference (N = jump, ` = dismiss, M = picker)
-- Suggest running `/tclux:validate` for full validation
+- Suggest running `/clux:validate` for full validation

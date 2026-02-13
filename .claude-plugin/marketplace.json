@@ -1,5 +1,5 @@
 {
-  "name": "404pilo",
+  "name": "404pilo-experimental",
   "owner": {
     "name": "404pilo",
     "email": "404pilo@users.noreply.github.com"
@@ -10,9 +10,9 @@
   },
   "plugins": [
     {
-      "name": "tclux",
+      "name": "clux",
       "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
-      "source": "./plugins/tclux",
+      "source": "./plugins/clux",
       "strict": false
     }
   ]
