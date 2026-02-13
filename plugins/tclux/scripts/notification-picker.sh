@@ -47,10 +47,12 @@ if [ "$key" = "ctrl-d" ]; then
     release_lock
 else
     # Enter: jump to the window
-    # Parse [SESSION:WINDOW_INDEX:WINDOW_NAME] from the line
-    if [[ "$line" =~ \[([^:]+):([^:]+):([^\]]+)\] ]]; then
-        session="${BASH_REMATCH[1]}"
-        window_index="${BASH_REMATCH[2]}"
-        tmux select-window -t "${session}:${window_index}"
+    # Parse SESSION:WINDOW_NAME from bare format
+    session="${line%%:*}"
+    remainder="${line#*:}"
+    window="${remainder%% *}"
+    if [ -n "$session" ] && [ -n "$window" ]; then
+        tmux select-window -t "${session}:${window}" 2>/dev/null && \
+          tmux switch-client -t "${session}" 2>/dev/null
     fi
 fi

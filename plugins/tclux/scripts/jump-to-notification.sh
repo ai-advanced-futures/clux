@@ -11,9 +11,10 @@ source "$CURRENT_DIR/helpers.sh"
 FIRST=$(head -1 "$NOTIFY_FILE")
 [ -n "$FIRST" ] || exit 0
 
-# Parse [SESSION:WINDOW_INDEX:...]
-SESSION=$(echo "$FIRST" | sed -n 's/.*\[\([^:]*\):.*/\1/p')
-WINDOW=$(echo "$FIRST" | sed -n 's/.*\[[^:]*:\([^:]*\):.*/\1/p')
+# Parse SESSION:WINDOW_NAME from bare format
+SESSION="${FIRST%%:*}"
+REMAINDER="${FIRST#*:}"
+WINDOW="${REMAINDER%% *}"
 
 [ -n "$SESSION" ] && [ -n "$WINDOW" ] || exit 0
 
