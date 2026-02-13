@@ -11,7 +11,31 @@ source "$CURRENT_DIR/helpers.sh"
 FIRST=$(head -1 "$NOTIFY_FILE")
 [ -n "$FIRST" ] || exit 0
 
-# Parse SESSION:WINDOW_NAME from bare format
+# Try ||| marker first (format: ...|||session_id:window_id)
+if [[ "$FIRST" == *"|||"* ]]; then
+  ID_PART="${FIRST##*|||}"
+  SESSION_ID="${ID_PART%%:*}"
+  WINDOW_ID="${ID_PART#*:}"
+  if [ -n "$SESSION_ID" ] && [ -n "$WINDOW_ID" ]; then
+    tmux select-window -t "$SESSION_ID:$WINDOW_ID" 2>/dev/null && \
+      tmux switch-client -t "$SESSION_ID" 2>/dev/null
+    exit 0
+  fi
+fi
+
+# Fall back to legacy |ID: marker (format: ...|ID:session_id:window_id)
+if [[ "$FIRST" == *"|ID:"* ]]; then
+  ID_PART="${FIRST##*|ID:}"
+  SESSION_ID="${ID_PART%%:*}"
+  WINDOW_ID="${ID_PART#*:}"
+  if [ -n "$SESSION_ID" ] && [ -n "$WINDOW_ID" ]; then
+    tmux select-window -t "$SESSION_ID:$WINDOW_ID" 2>/dev/null && \
+      tmux switch-client -t "$SESSION_ID" 2>/dev/null
+    exit 0
+  fi
+fi
+
+# Fall back to name-based navigation (bare format: SESSION:WINDOW_NAME ...)
 SESSION="${FIRST%%:*}"
 REMAINDER="${FIRST#*:}"
 WINDOW="${REMAINDER%% *}"

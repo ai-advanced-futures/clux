@@ -35,6 +35,8 @@ fi
 
 SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}')
 WINDOW_NAME=$(tmux display-message -t "$TMUX_PANE" -p '#{window_name}')
+SESSION_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{session_id}')
+WINDOW_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}')
 
 [ -n "$SESSION" ] && [ -n "$WINDOW_NAME" ] || exit 0
 
@@ -48,7 +50,7 @@ if [ -f "$NOTIFY_FILE" ] && grep -qF "$CONTEXT" "$NOTIFY_FILE"; then
     exit 0
 fi
 
-echo "$CONTEXT $MESSAGE" >> "$NOTIFY_FILE"
+echo "$CONTEXT $MESSAGE|||$SESSION_ID:$WINDOW_ID" >> "$NOTIFY_FILE"
 release_lock
 
 # Bell alert + sound + refresh
