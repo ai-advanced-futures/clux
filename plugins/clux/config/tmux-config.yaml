@@ -19,7 +19,7 @@ optional_settings:
 # Default keybindings
 keybindings:
   jump-to-notification:
-    key: "N"
+    key: "m"
     command: "run-shell \"~/.config/clux/scripts/jump-to-notification.sh\""
     description: "Jump to the window that triggered the notification"
   dismiss-notification:

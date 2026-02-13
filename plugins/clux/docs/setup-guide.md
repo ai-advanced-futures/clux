@@ -40,7 +40,7 @@ set -g monitor-bell on
 set -g bell-action any
 
 # Keybindings
-bind-key N run-shell "~/.config/clux/scripts/jump-to-notification.sh"
+bind-key m run-shell "~/.config/clux/scripts/jump-to-notification.sh"
 bind-key ` run-shell "~/.config/clux/scripts/dismiss-notification.sh"
 bind-key DC run-shell "~/.config/clux/scripts/dismiss-notification.sh"
 bind-key M display-popup -w 80% -h 60% -E "~/.config/clux/scripts/notification-picker.sh"

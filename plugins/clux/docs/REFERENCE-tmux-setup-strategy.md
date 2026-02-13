@@ -350,7 +350,7 @@ These keybindings are added within the clux section markers and use absolute pat
 ### Keybinding Format
 
 ```tmux
-bind-key N run-shell "/absolute/path/to/jump-to-notification.sh"
+bind-key m run-shell "/absolute/path/to/jump-to-notification.sh"
 bind-key ` run-shell "/absolute/path/to/dismiss-notification.sh"
 bind-key M display-popup -w 80% -h 60% -E "/absolute/path/to/notification-picker.sh"
 ```

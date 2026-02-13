@@ -12,10 +12,10 @@ You are configuring the user's tmux.conf to integrate clux notifications. You AR
 ## CRITICAL RULES
 
 - **Never call external APIs** — you are Claude Code running inside the user's session
-- **Never overwrite existing status-left** — always READ the current value and APPEND the notification snippet after it
+- **Never overwrite existing status display** — always READ the current value and APPEND the notification snippet
+- **Prefer `status-format[0]`** — if the config uses `status-format[0]`, inject the notification there (it overrides `status-left`). Fall back to `status-left` only if no `status-format[0]` exists.
 - **Deploy scripts to `~/.config/clux/scripts/`** — copy from plugin source so tmux.conf survives plugin version updates
 - **Always use `~/.config/clux/scripts/` paths** in tmux.conf — never reference the plugin cache directly
-- **Always use double quotes** for status-left values
 - **Always ask before modifying files** — use AskUserQuestion for confirmation
 - **Idempotent** — if already configured, report and offer to skip
 - **Use subagents** — delegate independent detection, analysis, and verification tasks to subagents running in parallel
@@ -46,7 +46,9 @@ Prompt the agent to:
    - `${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf`
 2. If a config file exists, read it and extract:
    - Whether `show-notification.sh` is already present (already configured?)
-   - Current `set -g status-left` value (if any)
+   - Whether it uses `status-format[0]` (custom status bar layout) or traditional `status-left`
+   - Current `status-format[0]` value (if any)
+   - Current `set -g status-left` value (if any, and no `status-format[0]`)
    - Current `status-interval` value
    - Current `status-left-length` value
    - Any existing clux section markers
@@ -77,7 +79,7 @@ Prompt the agent to:
 2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop` and `Notification` events
 3. Check existing tmux keybindings for conflicts:
    ```bash
-   tmux list-keys 2>/dev/null | grep -E "bind-key\s+(N|M|\`)"
+   tmux list-keys 2>/dev/null | grep -E "bind-key\s+(m|M|\`)"
    ```
 4. Return: hooks file path, hooks status (ok/missing/incomplete), conflicting keybindings (if any)
 
@@ -99,7 +101,7 @@ clux setup — analysis results:
 
   tmux.conf:
     Config file: ~/.config/tmux/tmux.conf
-    Current status-left: "#[fg=green]#S #[fg=yellow]#I"
+    Status display: status-format[0] (or status-left if no format override)
     status-interval: 15 (recommend: 1)
     status-left-length: 10 (recommend: 200)
     Already configured: no
@@ -122,11 +124,15 @@ clux setup — analysis results:
 
 Present grouped changes. Use the absolute expanded path for `DEPLOY_DIR` (e.g., `/Users/user/.config/clux/scripts`):
 
-### A. Status-left (APPEND notification after existing value)
+### A. Status display (APPEND notification — never overwrite)
 
-- If no existing status-left: `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "`
-- If existing status-left: Append ` #(DEPLOY_DIR/show-notification.sh)` before the closing quote
-- **Never prepend. Never overwrite.** The user's session name and existing content stay first.
+Determine where to inject the notification snippet `#(DEPLOY_DIR/show-notification.sh)`:
+
+1. **If `status-format[0]` exists** (preferred): Insert a centre-aligned notification section into the existing `status-format[0]` value. Place `#[align=centre]#(DEPLOY_DIR/show-notification.sh)` between the left-aligned content and the `#[align=right]` section. This keeps the notification centered in the status bar. Preserve all existing conditionals and formatting.
+2. **If only `status-left` exists** (fallback): Append ` #(DEPLOY_DIR/show-notification.sh)` before the closing quote of the existing value.
+3. **If neither exists**: Add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within clux section markers.
+
+- **Never prepend. Never overwrite.** The user's existing content stays intact.
 
 ### B. Supporting settings
 
@@ -159,13 +165,13 @@ Offer these defaults, and use AskUserQuestion to let the user customize the keys
 
 | Key | Action | Command |
 |-----|--------|---------|
-| `N` | Jump to notification window | `bind-key N run-shell "DEPLOY_DIR/jump-to-notification.sh"` |
+| `m` | Jump to notification window | `bind-key m run-shell "DEPLOY_DIR/jump-to-notification.sh"` |
 | `` ` `` | Dismiss notification | `bind-key \` run-shell "DEPLOY_DIR/dismiss-notification.sh"` |
 | `DC` (Delete) | Dismiss notification | `bind-key DC run-shell "DEPLOY_DIR/dismiss-notification.sh"` |
 | `M` | Open notification picker | `bind-key M display-popup -w 80% -h 60% -E "DEPLOY_DIR/notification-picker.sh"` |
 
 Use AskUserQuestion with options like:
-- "Use defaults (N / ` / M)" (Recommended)
+- "Use defaults (m / ` / M)" (Recommended)
 - "Customize keybindings"
 
 If user chooses to customize, ask for each key individually.
@@ -213,8 +219,9 @@ Pass the actual resolved paths for `$TMUX_CONF` and `$PLUGIN_SCRIPTS_DIR` to thi
 
 Prompt the agent to read the current tmux.conf content (pass it in the prompt) and generate the new content following these rules:
 
-- Modify `status-left` in-place if it exists: insert ` #(DEPLOY_DIR/show-notification.sh)` before the closing `"`
-- If no `status-left`, add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within clux section markers
+- **If `status-format[0]` exists**: Modify it in-place — insert `#[align=centre]#(DEPLOY_DIR/show-notification.sh)` immediately before the `#[align=right]` section. This centres the notification in the status bar. Preserve all existing conditionals and single-quote wrapping.
+- **If only `status-left` exists**: Modify it in-place — insert ` #(DEPLOY_DIR/show-notification.sh)` before the closing `"`.
+- **If neither exists**: Add `set -g status-left "#S #(DEPLOY_DIR/show-notification.sh) "` within clux section markers.
 - Add supporting settings, **notification color options**, and keybindings within clux section markers:
   ```
   # --- clux: Claude Code notifications (added by /clux:setup) ---
@@ -227,7 +234,6 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
   Only include the `@claude-notify-bg`/`@claude-notify-fg` lines if a color palette was detected.
 - Preserve ALL existing content outside the clux markers
 - If clux markers already exist, replace the content between them
-- Always use double quotes for status-left
 - Return: the complete new file content
 
 **Write the new tmux.conf** using the Write tool with Agent E's output.
@@ -241,8 +247,9 @@ Run verification commands:
 tmux source-file "$TMUX_CONF"
 tmux refresh-client -S
 
-# Check status-left contains notification
-tmux show-option -gv status-left
+# Check notification is present (check both status-format and status-left)
+tmux show-option -g 'status-format[0]' 2>/dev/null | grep -q "show-notification.sh" || \
+  tmux show-option -gv status-left 2>/dev/null | grep -q "show-notification.sh"
 
 # Check keybindings registered
 tmux list-keys | grep -E "jump-to-notification|dismiss-notification|notification-picker"
@@ -255,5 +262,5 @@ Report success or failure for each check.
 Show the user:
 - What was changed
 - Backup location and rollback command: `cp <backup_path> <tmux_conf> && tmux source-file <tmux_conf>`
-- Keybinding quick reference (N = jump, ` = dismiss, M = picker)
+- Keybinding quick reference (m = jump, ` = dismiss, M = picker)
 - Suggest running `/clux:validate` for full validation

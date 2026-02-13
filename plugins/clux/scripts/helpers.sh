@@ -15,7 +15,7 @@ NOTIFY_FILE=$(get_tmux_option "@claude-notify-file" "$HOME/.config/tmux/claude_n
 NOTIFY_BG=$(get_tmux_option "@claude-notify-bg" "yellow")
 NOTIFY_FG=$(get_tmux_option "@claude-notify-fg" "black")
 NOTIFY_SOUND=$(get_tmux_option "@claude-notify-sound" "on")
-NOTIFY_JUMP_KEY=$(get_tmux_option "@claude-notify-jump" "N")
+NOTIFY_JUMP_KEY=$(get_tmux_option "@claude-notify-jump" "m")
 NOTIFY_DISMISS_KEY=$(get_tmux_option "@claude-notify-dismiss" '`')
 NOTIFY_SMART_TITLE=$(get_tmux_option "@claude-notify-smart-title" "on")
 
