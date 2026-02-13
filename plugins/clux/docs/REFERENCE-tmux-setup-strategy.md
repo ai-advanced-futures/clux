@@ -293,7 +293,7 @@ If user hasn't set `status-left-length`, default is 10 characters.
 
 **Handling:**
 - Show warning: "Consider increasing status-left-length for full notification display"
-- Suggest: `set -g status-left-length 200`
+- Suggest: `set -g status-left-length 150`
 
 ## Verification Steps
 

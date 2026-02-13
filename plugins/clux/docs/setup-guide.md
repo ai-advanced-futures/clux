@@ -35,7 +35,7 @@ Both methods add or update your tmux.conf to include:
 # Status-left with notification appended after existing content
 set -g status-left "<your existing value> #(~/.config/clux/scripts/show-notification.sh) "
 set -g status-interval 1
-set -g status-left-length 200
+set -g status-left-length 150
 set -g monitor-bell on
 set -g bell-action any
 

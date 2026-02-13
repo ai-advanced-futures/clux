@@ -103,7 +103,7 @@ clux setup — analysis results:
     Config file: ~/.config/tmux/tmux.conf
     Status display: status-format[0] (or status-left if no format override)
     status-interval: 15 (recommend: 1)
-    status-left-length: 10 (recommend: 200)
+    status-left-length: 10 (recommend: 150)
     Already configured: no
 
   Color palette detected:
@@ -138,7 +138,7 @@ Determine where to inject the notification snippet `#(DEPLOY_DIR/show-notificati
 
 ```tmux
 set -g status-interval 1
-set -g status-left-length 200
+set -g status-left-length 150
 set -g monitor-bell on
 set -g bell-action any
 ```

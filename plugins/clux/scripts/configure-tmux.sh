@@ -222,7 +222,7 @@ suggest_settings() {
     if [ "${length:-10}" -lt 200 ]; then
         echo ""
         info "Consider increasing status-left-length for full notification display:"
-        info "  set -g status-left-length 200"
+        info "  set -g status-left-length 150"
     fi
 }
 

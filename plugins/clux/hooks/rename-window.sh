@@ -32,6 +32,10 @@ error_msg() {
 [ "$NOTIFY_SMART_TITLE" = "off" ] && exit 0
 [ -z "$TMUX" ] && exit 0
 
+# Skip if window was already named
+ALREADY_NAMED=$(tmux show-window-option -v @clux_named 2>/dev/null)
+[ "$ALREADY_NAMED" = "1" ] && exit 0
+
 if [ -z "$CLUX_OPENAI_API_KEY" ]; then
     error_msg "CLUX_OPENAI_API_KEY not set"
     exit 0
@@ -64,15 +68,18 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
 
     debug_msg "Model: $OPENAI_MODEL"
 
-    ALLOWED_VERBS="snooping wrenching poking hammering scribbling tidying squashing grilling yeeting fiddling scheming doodling herding polishing forging dissecting squeezing gluing rigging blasting"
+    ALLOWED_VERBS="snoop wrench poke hammer scrawl tidy squash grill yeet fiddle scheme doodle herd polish forge dissect squeez glue rig blast probe rewire sculpt tweak purge patch decode untanl splice debug refact"
 
     # Truncate prompt to 500 chars — enough context to classify
     TRUNCATED_PROMPT="${PROMPT:0:500}"
 
+    # Collect current window names to avoid collisions
+    CURRENT_WINDOWS=$(tmux list-windows -F '#{window_name}' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+
     # Build JSON payload with structured outputs
     JSON_PAYLOAD=$(jq -n \
         --arg model "$OPENAI_MODEL" \
-        --arg instructions "Classify this developer prompt into ONE verb that best describes the activity. Pick from: $ALLOWED_VERBS. Return ONLY the verb." \
+        --arg instructions "Classify this developer prompt into ONE word (max 6 characters) that best describes the activity. Pick from: $ALLOWED_VERBS. AVOID these already-used window names: $CURRENT_WINDOWS. If all good options collide, pick the next best verb from the list. Return ONLY the verb." \
         --arg input "$TRUNCATED_PROMPT" \
         --arg verbs "$ALLOWED_VERBS" \
         '{
@@ -92,7 +99,7 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
                         properties: {
                             verb: {
                                 type: "string",
-                                description: "Single lowercase verb from the allowed list",
+                                description: "Single lowercase verb from the allowed list, max 6 chars",
                                 enum: ($verbs | split(" "))
                             }
                         },
@@ -154,7 +161,7 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
     # Validate with graceful fallback
     NAME=$(printf '%s' "$NAME" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
 
-    if [ -n "$NAME" ] && [ ${#NAME} -le 20 ] && [[ "$NAME" =~ ^[a-z]+$ ]]; then
+    if [ -n "$NAME" ] && [ ${#NAME} -le 6 ] && [[ "$NAME" =~ ^[a-z]+$ ]]; then
         if echo "$ALLOWED_VERBS" | grep -qw "$NAME"; then
             debug_msg "Verb in allowed list: $NAME"
         else
@@ -176,6 +183,7 @@ debug_msg "Prompt: ${#PROMPT} chars — ${PROMPT:0:50}..."
     # Rename the tmux window
     if tmux rename-window -t "$TMUX_PANE" "$NAME" 2>/dev/null; then
         tmux set-window-option -t "$TMUX_PANE" automatic-rename off 2>/dev/null
+        tmux set-option -w -t "$TMUX_PANE" @clux_named 1 2>/dev/null
         debug_msg "Window renamed to: $NAME"
     else
         error_msg "Failed to rename window"
