@@ -159,6 +159,85 @@ Present the chosen colors to the user in the summary, showing a visual preview l
 Notification style: bg=#EBCB8B fg=#2E3440 (matches your message-style)
 ```
 
+### B3. Per-notification preferences (interactive — one hook at a time)
+
+Walk the user through each Claude Code hook event, asking whether they want **visual** (status bar badge) and **sound** enabled. Present one event at a time using AskUserQuestion.
+
+The three event types and their defaults (from `helpers.sh`):
+
+| Event | When it fires | Visual default | Sound default |
+|-------|---------------|----------------|---------------|
+| **Notification** | Claude sends a notification (e.g., tool permission request) | `on` | `on` |
+| **Stop** | Claude finishes a task | `off` | `off` |
+| **Prompt** | User submits a prompt (UserPromptSubmit hook) | `off` | `off` |
+
+**Flow — ask one event at a time:**
+
+**Step 1:** Ask about **Notification** events:
+```
+Use AskUserQuestion:
+  question: "Notification events (Claude needs attention, e.g., tool permission).
+             What should happen?"
+  header: "Notification"
+  multiSelect: true
+  options:
+    - label: "Visual (status bar badge)"
+      description: "Show a notification badge in the tmux status bar (currently: on)"
+    - label: "Sound"
+      description: "Play a sound alert (currently: on)"
+```
+
+**Step 2:** Ask about **Stop** events:
+```
+Use AskUserQuestion:
+  question: "Stop events (Claude finished a task).
+             What should happen?"
+  header: "Stop"
+  multiSelect: true
+  options:
+    - label: "Visual (status bar badge)"
+      description: "Show a notification badge in the tmux status bar (currently: off)"
+    - label: "Sound"
+      description: "Play a sound alert (currently: off)"
+```
+
+**Step 3:** Ask about **Prompt** events:
+```
+Use AskUserQuestion:
+  question: "Prompt events (you submitted a prompt to Claude).
+             What should happen?"
+  header: "Prompt"
+  multiSelect: true
+  options:
+    - label: "Visual (status bar badge)"
+      description: "Show a notification badge in the tmux status bar (currently: off)"
+    - label: "Sound"
+      description: "Play a sound alert (currently: off)"
+```
+
+After collecting all preferences, present a summary table:
+
+```
+Per-notification preferences:
+  Notification:  visual=on   sound=on
+  Stop:          visual=off  sound=off
+  Prompt:        visual=off  sound=off
+```
+
+Map the user's choices to tmux variables that will be written to the clux section in Phase 5:
+
+```tmux
+# Per-notification controls
+set -g @claude-notify-notification-visual "on"
+set -g @claude-notify-notification-sound "on"
+set -g @claude-notify-stop-visual "off"
+set -g @claude-notify-stop-sound "off"
+set -g @claude-notify-prompt-visual "off"
+set -g @claude-notify-prompt-sound "off"
+```
+
+**Only include variables that differ from the built-in defaults** (to keep tmux.conf clean). The defaults are defined in `helpers.sh` — if the user's choice matches the default, omit that variable.
+
 ### C. Keybindings
 
 Offer these defaults, and use AskUserQuestion to let the user customize the keys:
@@ -228,10 +307,14 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
   ...clux settings...
   set -g @claude-notify-bg "<bg_attention>"
   set -g @claude-notify-fg "<fg_on_attention>"
+  # Per-notification controls (only vars that differ from defaults)
+  set -g @claude-notify-stop-sound "on"
+  set -g @claude-notify-stop-visual "on"
   ...keybindings...
   # --- end clux ---
   ```
   Only include the `@claude-notify-bg`/`@claude-notify-fg` lines if a color palette was detected.
+  Only include per-notification `@claude-notify-{type}-{sound|visual}` lines for values that differ from the built-in defaults in `helpers.sh`. The defaults are: notification sound=on, notification visual=on, stop sound=off, stop visual=off, prompt sound=off, prompt visual=off.
 - Preserve ALL existing content outside the clux markers
 - If clux markers already exist, replace the content between them
 - Return: the complete new file content
