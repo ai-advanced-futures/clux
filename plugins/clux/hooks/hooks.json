@@ -1,6 +1,9 @@
 {
   "hooks": {
-    "UserPromptSubmit": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/rename-window.sh", "timeout": 5 }] }],
+    "UserPromptSubmit": [{ "matcher": "", "hooks": [
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/rename-window.sh", "timeout": 5 },
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 }
+    ] }],
     "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 }] }],
     "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 }] }]
   }
