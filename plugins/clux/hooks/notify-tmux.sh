@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude hook bridge — writes notifications to queue file
-# Called by Claude Code hooks on Stop and Notification events
+# Called by Claude Code hooks on Stop, Notification, and UserPromptSubmit events
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/../scripts/helpers.sh"
@@ -26,9 +26,13 @@ if [ -z "$MESSAGE" ]; then
     case "$EVENT" in
         Stop) MESSAGE="Task complete" ;;
         Notification) MESSAGE="Waiting for input" ;;
+        UserPromptSubmit) MESSAGE="Prompt submitted" ;;
         *) MESSAGE="Notification" ;;
     esac
 fi
+
+# Resolve notification type from event
+TYPE=$(map_event_to_type "$EVENT")
 
 # Must be in tmux
 [ -n "$TMUX" ] || exit 0
@@ -42,20 +46,25 @@ WINDOW_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}')
 
 CONTEXT="$SESSION:$WINDOW_NAME"
 
-acquire_lock
+# Check if visual notification is enabled for this type
+VISUAL_ENABLED=$(get_notification_visual_enabled "$TYPE")
 
-# Skip duplicate for same session/window
-if [ -f "$NOTIFY_FILE" ] && grep -qF "$CONTEXT" "$NOTIFY_FILE"; then
-    release_lock
-    exit 0
+if [ "$VISUAL_ENABLED" != "off" ]; then
+    acquire_lock
+
+    # Skip duplicate for same session/window
+    if [ -f "$NOTIFY_FILE" ] && grep -qF "$CONTEXT" "$NOTIFY_FILE"; then
+        release_lock
+    else
+        echo "$CONTEXT $MESSAGE|||$SESSION_ID:$WINDOW_ID" >> "$NOTIFY_FILE"
+        release_lock
+        # Bell alert + refresh
+        printf '\a'
+        tmux refresh-client -S 2>/dev/null
+    fi
 fi
 
-echo "$CONTEXT $MESSAGE|||$SESSION_ID:$WINDOW_ID" >> "$NOTIFY_FILE"
-release_lock
-
-# Bell alert + sound + refresh
-printf '\a'
-play_sound
-tmux refresh-client -S 2>/dev/null
+# Play sound (independent of visual — handled by notify-sound.sh)
+"$CURRENT_DIR/../scripts/notify-sound.sh" "$TYPE" &
 
 exit 0
