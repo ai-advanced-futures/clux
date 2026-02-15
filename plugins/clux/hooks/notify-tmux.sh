@@ -34,7 +34,10 @@ fi
 # Resolve notification type from event
 TYPE=$(map_event_to_type "$EVENT")
 
-# Must be in tmux
+# Play sound (independent of visual and tmux session — handled by notify-sound.sh)
+"$CURRENT_DIR/../scripts/notify-sound.sh" "$TYPE" &
+
+# Visual notifications require tmux session context
 [ -n "$TMUX" ] || exit 0
 
 SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}')
@@ -63,8 +66,5 @@ if [ "$VISUAL_ENABLED" != "off" ]; then
         tmux refresh-client -S 2>/dev/null
     fi
 fi
-
-# Play sound (independent of visual — handled by notify-sound.sh)
-"$CURRENT_DIR/../scripts/notify-sound.sh" "$TYPE" &
 
 exit 0

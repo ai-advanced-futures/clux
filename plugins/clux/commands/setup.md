@@ -69,19 +69,24 @@ Prompt the agent to:
      - `bg_alert`: alert/red color (from prefix_highlight_bg, e.g., `#BF616A`)
 4. Return: config file path(s) found, analysis results, **color map**
 
-### Agent C: Hooks & Keybindings Check
+### Agent C: Hooks, System Settings & Keybindings Check
 
 Prompt the agent to:
 1. Find and read the plugin hooks file:
    ```bash
    find ~/.claude -path "*/clux/hooks/hooks.json" -type f 2>/dev/null | head -1
    ```
-2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop` and `Notification` events
-3. Check existing tmux keybindings for conflicts:
+2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop`, `Notification`, and `UserPromptSubmit` events
+3. Read `~/.claude/settings.json` and check for existing system hooks:
+   - Look for `hooks.Stop`, `hooks.Notification`, `hooks.UserPromptSubmit` entries
+   - These are **conflicting** — the plugin's `hooks.json` handles all notification events via `notify-tmux.sh` → `notify-sound.sh`. System-level hooks for these events cause double-firing (e.g., double sounds)
+   - Note any `hooks.SessionEnd` entries — these are NOT managed by clux and must be preserved
+   - Report each conflicting hook found with its current command
+4. Check existing tmux keybindings for conflicts:
    ```bash
    tmux list-keys 2>/dev/null | grep -E "bind-key\s+(m|M|\`)"
    ```
-4. Return: hooks file path, hooks status (ok/missing/incomplete), conflicting keybindings (if any)
+5. Return: hooks file path, hooks status (ok/missing/incomplete), conflicting system hooks (list of event names + commands), preserved hooks (SessionEnd etc.), conflicting keybindings (if any)
 
 **Wait for all three agents to complete before proceeding.**
 
@@ -116,8 +121,14 @@ clux setup — analysis results:
     bg_alert:        #BF616A   (prefix/alert)
 
   Hooks & keybindings:
-    hooks.json: OK (Stop, Notification events configured)
+    hooks.json: OK (Stop, Notification, UserPromptSubmit events configured)
     Keybinding conflicts: none
+
+  System hooks (~/.claude/settings.json):
+    Stop: afplay /System/Library/Sounds/Glass.aiff (CONFLICTING — will be removed)
+    Notification: afplay /System/Library/Sounds/Submarine.aiff (CONFLICTING — will be removed)
+    UserPromptSubmit: afplay /System/Library/Sounds/Pop.aiff (CONFLICTING — will be removed)
+    SessionEnd: afplay /System/Library/Sounds/Hero.aiff (preserved — not managed by clux)
 ```
 
 ## Phase 3: Recommend Changes
@@ -255,9 +266,25 @@ Use AskUserQuestion with options like:
 
 If user chooses to customize, ask for each key individually.
 
-### D. Hooks status
+### D. System hooks cleanup (`~/.claude/settings.json`)
 
-Report what Agent C found. Plugin hooks auto-merge with user settings — no manual settings.json editing needed.
+The plugin's `hooks.json` registers `notify-tmux.sh` for Stop, Notification, and UserPromptSubmit events. The script handles both visual notifications (via tmux status bar) and sound (via `notify-sound.sh`), respecting the per-notification preferences configured in Phase B3.
+
+**Any system-level hooks in `~/.claude/settings.json` for these same events are redundant and cause conflicts** (e.g., double sounds, sounds playing when the user disabled them).
+
+Based on Agent C's findings:
+1. **Remove** any `hooks.Stop`, `hooks.Notification`, and `hooks.UserPromptSubmit` entries from settings.json
+2. **Preserve** all other hook entries (e.g., `hooks.SessionEnd`) — these are not managed by clux
+3. If the hooks object becomes empty after removal, keep it as `"hooks": {}`
+
+Present the changes clearly to the user:
+```
+System hooks (settings.json):
+  Remove: Stop (afplay Glass.aiff) — handled by plugin notify-sound.sh
+  Remove: Notification (afplay Submarine.aiff) — handled by plugin notify-sound.sh
+  Remove: UserPromptSubmit (afplay Pop.aiff) — handled by plugin notify-sound.sh
+  Keep:   SessionEnd (afplay Hero.aiff) — not managed by clux
+```
 
 ## Phase 4: Confirm
 
@@ -321,6 +348,17 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
 
 **Write the new tmux.conf** using the Write tool with Agent E's output.
 
+### Agent F: Update system hooks in settings.json (run after Agent E)
+
+Read the current `~/.claude/settings.json` and update it:
+
+1. Remove `hooks.Stop`, `hooks.Notification`, and `hooks.UserPromptSubmit` entries if they exist
+2. Preserve all other hook entries (e.g., `hooks.SessionEnd`) and all non-hook settings
+3. Preserve the exact JSON formatting (2-space indent)
+4. Write the updated file using the Edit tool (not Write — to avoid overwriting concurrent changes)
+
+**Important**: Only remove hooks that Agent C identified as conflicting. If a hook entry doesn't exist, skip it. If the `hooks` key has no remaining entries after removal, keep it as an empty object `{}`.
+
 ## Phase 6: Verify
 
 Run verification commands:
@@ -336,6 +374,19 @@ tmux show-option -g 'status-format[0]' 2>/dev/null | grep -q "show-notification.
 
 # Check keybindings registered
 tmux list-keys | grep -E "jump-to-notification|dismiss-notification|notification-picker"
+
+# Check system hooks — no conflicting entries should remain
+python3 -c "
+import json
+with open('$HOME/.claude/settings.json') as f:
+    s = json.load(f)
+hooks = s.get('hooks', {})
+conflicts = [e for e in ('Stop', 'Notification', 'UserPromptSubmit') if e in hooks]
+if conflicts:
+    print(f'FAIL: conflicting system hooks still present: {conflicts}')
+    exit(1)
+print('OK: no conflicting system hooks')
+"
 ```
 
 Report success or failure for each check.
@@ -343,7 +394,8 @@ Report success or failure for each check.
 ## Phase 7: Summary
 
 Show the user:
-- What was changed
+- What was changed (tmux.conf + settings.json)
+- System hooks removed and why (plugin handles them via notify-tmux.sh → notify-sound.sh)
 - Backup location and rollback command: `cp <backup_path> <tmux_conf> && tmux source-file <tmux_conf>`
 - Keybinding quick reference (m = jump, ` = dismiss, M = picker)
 - Suggest running `/clux:validate` for full validation
