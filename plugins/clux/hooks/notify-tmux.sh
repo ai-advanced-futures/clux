@@ -40,10 +40,12 @@ TYPE=$(map_event_to_type "$EVENT")
 # Visual notifications require tmux session context
 [ -n "$TMUX" ] || exit 0
 
-SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}')
-WINDOW_NAME=$(tmux display-message -t "$TMUX_PANE" -p '#{window_name}')
-SESSION_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{session_id}')
-WINDOW_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}')
+# Single tmux IPC call for all 4 identifiers
+_TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}')"
+SESSION="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
+WINDOW_NAME="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
+SESSION_ID="${_TMUX_INFO%%|||*}"
+WINDOW_ID="${_TMUX_INFO#*|||}"
 
 [ -n "$SESSION" ] && [ -n "$WINDOW_NAME" ] || exit 0
 

@@ -2,8 +2,8 @@
 
 # Interactive notification picker using fzf
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$CURRENT_DIR/helpers.sh"
+NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
+LOCKDIR="${NOTIFY_FILE}.lock"
 
 # Check fzf is installed
 if ! command -v fzf &>/dev/null; then
@@ -41,10 +41,15 @@ line=$(tail -1 <<< "$selected")
 
 if [ "$key" = "ctrl-d" ]; then
     # Dismiss: remove the selected line from the queue
-    acquire_lock
+    # Retry briefly (user-triggered: 500ms max)
+    _i=0
+    while ! mkdir "$LOCKDIR" 2>/dev/null; do
+        _i=$((_i + 1)); [ "$_i" -ge 5 ] && exit 0
+        sleep 0.1
+    done
+    trap 'rm -rf "$LOCKDIR"' EXIT
     grep -vF "$line" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp" 2>/dev/null
     mv "${NOTIFY_FILE}.tmp" "$NOTIFY_FILE"
-    release_lock
 else
     # Enter: jump to the window
     # Parse SESSION:WINDOW_NAME from bare format

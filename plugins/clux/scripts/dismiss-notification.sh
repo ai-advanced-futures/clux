@@ -2,18 +2,28 @@
 
 # Dismiss the top notification without jumping to it
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$CURRENT_DIR/helpers.sh"
+NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
+LOCKDIR="${NOTIFY_FILE}.lock"
 
 [ -f "$NOTIFY_FILE" ] || exit 0
 
-acquire_lock
+# Clean up stale lock (guard against kill -9 leaving orphaned lock)
+if [ -d "$LOCKDIR" ]; then
+    _now=$(date +%s)
+    _mtime=$(stat -f %m "$LOCKDIR" 2>/dev/null || stat -c %Y "$LOCKDIR" 2>/dev/null || echo "$_now")
+    [ $(( _now - _mtime )) -gt 10 ] && rm -rf "$LOCKDIR"
+fi
+
+# Retry briefly (user-triggered keybind: 500ms max)
+_i=0
+while ! mkdir "$LOCKDIR" 2>/dev/null; do
+    _i=$((_i + 1)); [ "$_i" -ge 5 ] && exit 0
+    sleep 0.1
+done
+trap 'rm -rf "$LOCKDIR"' EXIT
 
 FIRST=$(head -1 "$NOTIFY_FILE")
-if [ -z "$FIRST" ]; then
-    release_lock
-    exit 0
-fi
+[ -z "$FIRST" ] && exit 0
 
 REMAINING=$(tail -n +2 "$NOTIFY_FILE")
 if [ -n "$REMAINING" ]; then
@@ -22,5 +32,4 @@ else
     rm -f "$NOTIFY_FILE"
 fi
 
-release_lock
 exit 0

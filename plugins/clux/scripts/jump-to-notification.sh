@@ -3,8 +3,7 @@
 # Jump to tmux session/window from top notification
 # Status bar auto-pops notification on arrival
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$CURRENT_DIR/helpers.sh"
+NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
 
 [ -f "$NOTIFY_FILE" ] || exit 0
 

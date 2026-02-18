@@ -8,6 +8,12 @@ source "$CURRENT_DIR/scripts/helpers.sh"
 # Ensure notification directory exists
 mkdir -p "$(dirname "$NOTIFY_FILE")"
 
+# Cache tmux options in global env so status-bar scripts avoid IPC on every cycle
+# (env vars are inherited by run-shell and #(...) status-bar calls)
+tmux setenv -g CLUX_NOTIFY_FILE "$NOTIFY_FILE"
+tmux setenv -g CLUX_NOTIFY_BG "$NOTIFY_BG"
+tmux setenv -g CLUX_NOTIFY_FG "$NOTIFY_FG"
+
 # Register keybindings
 tmux bind-key "$NOTIFY_DISMISS_KEY" run-shell "$CURRENT_DIR/scripts/dismiss-notification.sh"
 tmux bind-key "$NOTIFY_JUMP_KEY" run-shell "$CURRENT_DIR/scripts/jump-to-notification.sh"
