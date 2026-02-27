@@ -8,7 +8,7 @@ tmux status bar notifications for Claude Code — know when tasks finish or need
 - **bash** ≥ 4.0 — for proper string operations
 - **jq** (recommended) — for JSON parsing; grep fallback available
 - **flock** (recommended) — for file locking; mkdir fallback available
-- **OPENAI_API_KEY** — required only for smart window renaming feature
+- **CLUX_OPENAI_API_KEY** — required only for smart window renaming feature
 - **~/.config/tmux/** — writable directory for notification queue
 
 ## Install (Claude Code Plugin)
@@ -78,7 +78,7 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 | `@claude-notify-bg` | `yellow` | Background color |
 | `@claude-notify-fg` | `black` | Foreground color |
 | `@claude-notify-sound` | `on` | `on`, `off`, or custom command |
-| `@claude-notify-smart-title` | `on` | Auto-rename tmux window via Haiku (`on`/`off`) |
+| `@claude-notify-smart-title` | `on` | Auto-rename tmux window via OpenAI API (`on`/`off`) |
 
 Example overrides:
 
@@ -118,7 +118,7 @@ set -g @claude-notify-fg "yellow"
 
 **Solution:** Run validation:
 ```bash
-~/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/validate-setup.sh
+~/.claude/plugins/cache/404pilo/clux/*/scripts/validate-setup.sh
 ```
 
 Or inside Claude Code:
@@ -131,14 +131,14 @@ Or inside Claude Code:
 Claude Code automatically sets `${CLAUDE_PLUGIN_ROOT}` when executing hooks. If you see path-related errors:
 
 1. Verify plugin is installed: `ls ~/.claude/plugins/cache/404pilo/clux/`
-2. Check hooks.json references: `cat ~/.claude/plugins/cache/404pilo/clux/*/hooks/hooks.json`
+2. Check hooks.json: `cat ~/.claude/plugins/cache/404pilo/clux/*/hooks/hooks.json`
 3. For TPM installations, ensure hooks point to `~/.tmux/plugins/clux/`
 
 ### Smart window renaming fails
 
 If window names aren't auto-updating:
 
-1. Check API key: `echo $OPENAI_API_KEY` (should not be empty)
+1. Check API key: `echo $CLUX_OPENAI_API_KEY` (should not be empty)
 2. Enable debug mode: `CLUX_DEBUG=1` (logs to `/tmp/clux.log`)
 3. Verify jq installed: `jq --version`
 

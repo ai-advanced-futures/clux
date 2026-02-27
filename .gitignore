@@ -1,1 +1,25 @@
+# Local Claude Code session settings (machine-specific paths)
+.claude/settings.local.json
+
+# Mission Control working directories
+.mission-*/
+.mission-control/
+
+# Git worktrees
 .worktrees/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
