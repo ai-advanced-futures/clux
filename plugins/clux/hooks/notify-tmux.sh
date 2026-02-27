@@ -39,6 +39,8 @@ TYPE=$(map_event_to_type "$EVENT")
 
 # Visual notifications require tmux session context
 [ -n "$TMUX" ] || exit 0
+_CLUX_MUTED="$(tmux show-option -gqv @clux_muted)"
+[ "$_CLUX_MUTED" = "1" ] && exit 0
 
 # Single tmux IPC call for all 4 identifiers
 _TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}')"
