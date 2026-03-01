@@ -3,10 +3,10 @@
   "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
   "version": "2.0.8",
   "author": {
-    "name": "404pilo"
+    "name": "ai-advanced-futures"
   },
-  "homepage": "https://github.com/404pilo/clux",
-  "repository": "https://github.com/404pilo/clux",
+  "homepage": "https://github.com/ai-advanced-futures/clux",
+  "repository": "https://github.com/ai-advanced-futures/clux",
   "license": "MIT",
   "keywords": ["tmux", "notifications", "status-bar"],
   "commands": "./commands"
