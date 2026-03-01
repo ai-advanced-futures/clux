@@ -14,7 +14,7 @@ tmux status bar notifications for Claude Code — know when tasks finish or need
 ## Install (Claude Code Plugin)
 
 ```bash
-claude plugin install 404pilo/clux --scope user
+claude plugin install ai-advanced-futures/clux --scope user
 ```
 
 Hooks auto-register via `${CLAUDE_PLUGIN_ROOT}` (automatically set by Claude Code). No manual JSON editing needed.
@@ -48,7 +48,7 @@ Run `/clux:setup` inside Claude Code, or:
 Add to `~/.tmux.conf`:
 
 ```bash
-set -g @plugin '404pilo/clux'
+set -g @plugin 'ai-advanced-futures/clux'
 ```
 
 Then `prefix + I` to install.
@@ -118,7 +118,7 @@ set -g @claude-notify-fg "yellow"
 
 **Solution:** Run validation:
 ```bash
-~/.claude/plugins/cache/404pilo/clux/*/scripts/validate-setup.sh
+~/.claude/plugins/cache/ai-advanced-futures/clux/*/scripts/validate-setup.sh
 ```
 
 Or inside Claude Code:
@@ -130,8 +130,8 @@ Or inside Claude Code:
 
 Claude Code automatically sets `${CLAUDE_PLUGIN_ROOT}` when executing hooks. If you see path-related errors:
 
-1. Verify plugin is installed: `ls ~/.claude/plugins/cache/404pilo/clux/`
-2. Check hooks.json: `cat ~/.claude/plugins/cache/404pilo/clux/*/hooks/hooks.json`
+1. Verify plugin is installed: `ls ~/.claude/plugins/cache/ai-advanced-futures/clux/`
+2. Check hooks.json: `cat ~/.claude/plugins/cache/ai-advanced-futures/clux/*/hooks/hooks.json`
 3. For TPM installations, ensure hooks point to `~/.tmux/plugins/clux/`
 
 ### Smart window renaming fails

@@ -62,7 +62,7 @@ set -g bell-action any
 
 Key points:
 - `${CLAUDE_PLUGIN_ROOT}` must be **expanded** to absolute path at setup time
-- Example: `/Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh`
+- Example: `/Users/user/.claude/plugins/cache/ai-advanced-futures/clux/1.0.0/scripts/show-notification.sh`
 - This is not a shell variable; tmux.conf doesn't expand `${}` syntax
 - `#(command)` is tmux's command substitution syntax — runs the command and inserts its stdout
 
@@ -194,7 +194,7 @@ Example:
 ```bash
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SNIPPET_PATH="$PLUGIN_ROOT/scripts/show-notification.sh"
-# Now $SNIPPET_PATH is: /Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh
+# Now $SNIPPET_PATH is: /Users/user/.claude/plugins/cache/ai-advanced-futures/clux/1.0.0/scripts/show-notification.sh
 
 # Inject into tmux.conf as literal string:
 echo "set -g status-left \"#($SNIPPET_PATH) \"" >> ~/.tmux.conf
@@ -202,7 +202,7 @@ echo "set -g status-left \"#($SNIPPET_PATH) \"" >> ~/.tmux.conf
 
 The resulting line in tmux.conf:
 ```
-set -g status-left "#(/Users/user/.claude/plugins/cache/404pilo/clux/1.0.0/scripts/show-notification.sh) "
+set -g status-left "#(/Users/user/.claude/plugins/cache/ai-advanced-futures/clux/1.0.0/scripts/show-notification.sh) "
 ```
 
 ### Why Not Use Environment Variables?

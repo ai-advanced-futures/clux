@@ -1,11 +1,11 @@
 {
   "name": "clux",
   "owner": {
-    "name": "404pilo",
-    "email": "404pilo@users.noreply.github.com"
+    "name": "ai-advanced-futures",
+    "email": "ai-advanced-futures@users.noreply.github.com"
   },
   "metadata": {
-    "description": "Claude Code plugins by 404pilo",
+    "description": "Claude Code plugins by ai-advanced-futures",
     "version": "2.0.0"
   },
   "plugins": [

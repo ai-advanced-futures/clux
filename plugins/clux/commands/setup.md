@@ -102,7 +102,7 @@ clux setup — analysis results:
 
   Environment:
     tmux: /usr/local/bin/tmux (v3.6a)
-    Plugin scripts: /Users/.../.claude/plugins/cache/404pilo/clux/x.y.z/scripts/
+    Plugin scripts: /Users/.../.claude/plugins/cache/ai-advanced-futures/clux/x.y.z/scripts/
 
   tmux.conf:
     Config file: ~/.config/tmux/tmux.conf
