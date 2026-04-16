@@ -16,7 +16,7 @@ NOTIFY_BG=$(get_tmux_option "@claude-notify-bg" "yellow")
 NOTIFY_FG=$(get_tmux_option "@claude-notify-fg" "black")
 NOTIFY_JUMP_KEY=$(get_tmux_option "@claude-notify-jump" "m")
 NOTIFY_DISMISS_KEY=$(get_tmux_option "@claude-notify-dismiss" '`')
-NOTIFY_SMART_TITLE=$(get_tmux_option "@claude-notify-smart-title" "on")
+
 
 # Map Claude hook event names to notification types
 map_event_to_type() {

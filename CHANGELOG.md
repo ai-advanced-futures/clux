@@ -2,7 +2,24 @@
 
 All notable changes to clux are documented here.
 
-## [2.0.8] — Unreleased
+## [3.0.0] — Unreleased
+
+### Breaking Changes
+
+- **Remove OpenAI verb-classifier hook** (`rename-window.sh`). Window naming is now handled natively by tmux via `automatic-rename-format '#{pane_title}'`, which picks up Claude Code's OSC-set terminal title. No API key or external service required.
+- Remove `CLUX_OPENAI_API_KEY`, `CLUX_OPENAI_MODEL`, `CLUX_OPENAI_TIMEOUT` environment variables
+- Remove `@claude-notify-smart-title` tmux option
+- Remove `NOTIFY_SMART_TITLE` config variable from `helpers.sh`
+
+### Added
+
+- `configure-tmux.sh` now injects `automatic-rename` + `automatic-rename-format '#{pane_title}'` settings
+
+### Migration
+
+If upgrading from 2.x: remove `CLUX_OPENAI_API_KEY` from your environment and any `@claude-notify-smart-title` settings from tmux.conf. Window names will automatically track Claude Code's task descriptions.
+
+## [2.0.8]
 
 - Add comprehensive health check instructions for `/clux:setup`
 
