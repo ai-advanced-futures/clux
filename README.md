@@ -8,7 +8,6 @@ tmux status bar notifications for Claude Code — know when tasks finish or need
 - **bash** ≥ 4.0 — for proper string operations
 - **jq** (recommended) — for JSON parsing; grep fallback available
 - **flock** (recommended) — for file locking; mkdir fallback available
-- **CLUX_OPENAI_API_KEY** — required only for smart window renaming feature
 - **~/.config/tmux/** — writable directory for notification queue
 
 ## Install (Claude Code Plugin)
@@ -78,7 +77,6 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 | `@claude-notify-bg` | `yellow` | Background color |
 | `@claude-notify-fg` | `black` | Foreground color |
 | `@claude-notify-sound` | `on` | `on`, `off`, or custom command |
-| `@claude-notify-smart-title` | `on` | Auto-rename tmux window via OpenAI API (`on`/`off`) |
 
 Example overrides:
 
@@ -134,13 +132,13 @@ Claude Code automatically sets `${CLAUDE_PLUGIN_ROOT}` when executing hooks. If 
 2. Check hooks.json: `cat ~/.claude/plugins/cache/ai-advanced-futures/clux/*/hooks/hooks.json`
 3. For TPM installations, ensure hooks point to `~/.tmux/plugins/clux/`
 
-### Smart window renaming fails
+### Window names not updating
 
-If window names aren't auto-updating:
+clux uses tmux's `automatic-rename` with `#{pane_title}` — Claude Code sets the pane title via OSC escape sequences as it works. If window names stay static:
 
-1. Check API key: `echo $CLUX_OPENAI_API_KEY` (should not be empty)
-2. Enable debug mode: `CLUX_DEBUG=1` (logs to `/tmp/clux.log`)
-3. Verify jq installed: `jq --version`
+1. Ensure `automatic-rename` is on: `tmux show-option -g automatic-rename`
+2. Ensure format is set: `tmux show-option -g automatic-rename-format` (should show `#{pane_title}`)
+3. Check that no other plugin or config overrides `automatic-rename off`
 
 ### Notifications disappear immediately
 

@@ -132,6 +132,8 @@ inject_snippet() {
 # --- clux: Claude Code notifications (added by /clux:setup) ---
 set -g status-left "#S${notification} "
 set -g status-interval 1
+set-option -g automatic-rename on
+set-option -g automatic-rename-format '#{pane_title}'
 bind-key ${NOTIFY_JUMP_KEY:-m} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
 bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"
@@ -146,6 +148,8 @@ EOF
 
 # --- clux: Claude Code notifications (added by /clux:setup) ---
 set -g status-left "#S${notification} "
+set-option -g automatic-rename on
+set-option -g automatic-rename-format '#{pane_title}'
 bind-key ${NOTIFY_JUMP_KEY:-m} run-shell "$DEPLOY_DIR/jump-to-notification.sh"
 bind-key ${NOTIFY_DISMISS_KEY:-\`} run-shell "$DEPLOY_DIR/dismiss-notification.sh"
 bind-key DC run-shell "$DEPLOY_DIR/dismiss-notification.sh"

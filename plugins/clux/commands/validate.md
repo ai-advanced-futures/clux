@@ -51,7 +51,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 5. **Dependencies**:
    ```bash
-   command -v jq &>/dev/null && echo "OK  jq" || echo "WARN jq (missing — smart titles disabled)"
+   command -v jq &>/dev/null && echo "OK  jq" || echo "WARN jq (missing)"
    command -v fzf &>/dev/null && echo "OK  fzf" || echo "WARN fzf (missing — notification picker unavailable)"
    command -v flock &>/dev/null && echo "OK  flock" || echo "INFO flock (unavailable — using mkdir fallback)"
    ```
@@ -164,7 +164,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 2. **Hook scripts executable**:
    ```bash
    HOOKS_DIR=$(dirname "$HOOKS_FILE")
-   for script in notify-tmux.sh rename-window.sh; do
+   for script in notify-tmux.sh; do
        if [ -x "$HOOKS_DIR/$script" ]; then
            echo "OK  $script executable"
        elif [ -f "$HOOKS_DIR/$script" ]; then
@@ -275,7 +275,6 @@ clux validate — health check results
   Hooks:
     ✓ hooks.json: Stop, Notification, UserPromptSubmit
     ✓ notify-tmux.sh executable
-    ✓ rename-window.sh executable
     ✓ notify-sound.sh executable
     ✓ no conflicting system hooks
 

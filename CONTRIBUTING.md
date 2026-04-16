@@ -28,8 +28,7 @@ plugins/clux/
 │   └── validate.md              # /clux:validate
 ├── hooks/
 │   ├── hooks.json               # Auto-registered hooks
-│   ├── notify-tmux.sh           # Main hook — writes notification queue
-│   └── rename-window.sh         # Smart window naming via OpenAI API
+│   └── notify-tmux.sh           # Main hook — writes notification queue
 ├── scripts/
 │   ├── helpers.sh               # Shared utilities and config defaults
 │   ├── show-notification.sh     # tmux status bar display
@@ -66,10 +65,6 @@ plugins/clux/scripts/validate-setup.sh
 ```
 
 Enable debug logging by setting `CLUX_DEBUG=1` in your environment before invoking any script. Debug output goes to `/tmp/clux.log`.
-
-### Testing smart window renaming
-
-`rename-window.sh` calls the OpenAI API to generate window names. It reads the API key from the environment variable `CLUX_OPENAI_API_KEY` — set this in your shell before testing. The script reads a JSON object with a `prompt` field from stdin; pipe a test payload to trigger a rename cycle.
 
 ### Testing show-notification.sh
 

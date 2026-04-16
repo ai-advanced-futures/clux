@@ -12,7 +12,7 @@ A brief description of the change and its motivation.
 
 ## Testing
 
-- [ ] Tested hook scripts locally (`notify-tmux.sh`, `rename-window.sh`)
+- [ ] Tested hook scripts locally (`notify-tmux.sh`)
 - [ ] Ran `/clux:validate` — all checks pass
 - [ ] Tested on macOS / Linux (note which)
 

@@ -57,9 +57,9 @@ fi
 [ -x "$CURRENT_DIR/../hooks/notify-tmux.sh" ]
 check "hook script executable" $?
 
-# 7. jq available (required for smart window naming)
+# 7. jq available
 command -v jq &>/dev/null
-check "jq installed (required for smart titles)" $?
+check "jq installed" $?
 
 # 8. flock available
 if command -v flock &>/dev/null; then
