@@ -2,7 +2,13 @@
 
 All notable changes to clux are documented here.
 
-## [3.0.0] — Unreleased
+## [3.0.1] — Unreleased
+
+### Added
+
+- `truncate-title.sh` helper for word-aware truncation of window names in status-format strings. Usage: `#(~/.config/clux/scripts/truncate-title.sh 25 "#{window_name}")` — keeps whole words rather than cutting mid-word
+
+## [3.0.0]
 
 ### Breaking Changes
 

@@ -48,6 +48,7 @@ deploy_scripts() {
         dismiss-notification.sh
         notification-picker.sh
         notify-sound.sh
+        truncate-title.sh
     )
     for script in "${scripts[@]}"; do
         cp "$PLUGIN_ROOT/scripts/$script" "$DEPLOY_DIR/$script"
