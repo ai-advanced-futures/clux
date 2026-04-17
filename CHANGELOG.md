@@ -20,7 +20,6 @@ All notable changes to clux are documented here.
 ### Added
 
 - `configure-tmux.sh` now injects `automatic-rename` + `automatic-rename-format '#{pane_title}'` settings
-- `truncate-title.sh` helper for word-aware truncation of window names in status-format strings. Usage: `#(~/.config/clux/scripts/truncate-title.sh 25 "#{window_name}")` — keeps whole words rather than cutting mid-word
 
 ### Migration
 
