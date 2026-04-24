@@ -1,7 +1,7 @@
 {
   "name": "clux",
   "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "author": {
     "name": "ai-advanced-futures"
   },
