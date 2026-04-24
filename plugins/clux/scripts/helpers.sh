@@ -28,9 +28,28 @@ map_event_to_type() {
     esac
 }
 
+# Detect an available audio player for the current OS.
+# Echoes the player command name (e.g. "afplay", "paplay") or empty string.
+detect_sound_player() {
+    if [[ "$OSTYPE" == darwin* ]]; then
+        command -v afplay &>/dev/null && { echo "afplay"; return; }
+    else
+        for p in paplay pw-play aplay play ffplay; do
+            command -v "$p" &>/dev/null && { echo "$p"; return; }
+        done
+    fi
+    echo ""
+}
+
 # Per-notification config defaults
 # Falls back to old @claude-notify-sound for backward compatibility
+# Default to "off" when no usable audio player is available on this system,
+# so fresh installs (e.g. Linux without PulseAudio) don't attempt playback.
 _get_notification_default_sound() {
+    if [ -z "$(detect_sound_player)" ]; then
+        echo "off"
+        return
+    fi
     case "$1" in
         notification) echo "on" ;;
         *) echo "off" ;;
@@ -45,10 +64,19 @@ _get_notification_default_visual() {
 }
 
 _get_notification_default_sound_file() {
-    case "$1" in
-        prompt) echo "/System/Library/Sounds/Pop.aiff" ;;
-        *) echo "/System/Library/Sounds/Blow.aiff" ;;
-    esac
+    if [[ "$OSTYPE" == darwin* ]]; then
+        case "$1" in
+            prompt) echo "/System/Library/Sounds/Pop.aiff" ;;
+            *) echo "/System/Library/Sounds/Blow.aiff" ;;
+        esac
+    else
+        # Linux: use freedesktop sound theme if available
+        local base="/usr/share/sounds/freedesktop/stereo"
+        case "$1" in
+            prompt) echo "$base/message.oga" ;;
+            *) echo "$base/complete.oga" ;;
+        esac
+    fi
 }
 
 get_notification_sound_enabled() {

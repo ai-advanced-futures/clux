@@ -26,18 +26,32 @@ if [ "$ENABLED" != "on" ]; then
     exit 0
 fi
 
+# Log helper — only writes when CLUX_DEBUG=1 is set.
+# Never surfaces to the tmux status bar (that would flash over real notifications).
+_debug_log() {
+    [ "${CLUX_DEBUG:-0}" = "1" ] || return 0
+    printf '[clux notify-sound %s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >>/tmp/clux.log 2>/dev/null
+}
+
 # Get configured sound file
 SOUND_FILE=$(get_notification_sound_file "$TYPE")
 
-# Verify sound file exists
-if [ ! -f "$SOUND_FILE" ]; then
-    tmux display-message "clux: sound file not found: $SOUND_FILE" 2>/dev/null
-    exit 1
+# Silent no-op if no file is configured or the file is missing.
+if [ -z "$SOUND_FILE" ] || [ ! -f "$SOUND_FILE" ]; then
+    _debug_log "sound file not found: '$SOUND_FILE' (type=$TYPE)"
+    exit 0
 fi
 
-# Play sound (macOS)
-if [[ "$OSTYPE" == darwin* ]]; then
-    afplay "$SOUND_FILE" &>/dev/null &
+# Pick a player for this OS. Silent no-op if none is installed.
+PLAYER=$(detect_sound_player)
+if [ -z "$PLAYER" ]; then
+    _debug_log "no audio player detected on this system (type=$TYPE)"
+    exit 0
 fi
+
+case "$PLAYER" in
+    ffplay) "$PLAYER" -nodisp -autoexit "$SOUND_FILE" &>/dev/null & ;;
+    *)      "$PLAYER" "$SOUND_FILE" &>/dev/null & ;;
+esac
 
 exit 0
