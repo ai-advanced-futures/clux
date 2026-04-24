@@ -132,14 +132,49 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
        echo "INFO ${TYPE}: visual=${VIS:-default} sound=${SND:-default}"
    done
    ```
-7. **Keybindings** — check all 4 expected bindings:
+7. **Audio playback readiness** — confirm a player is installed and configured sound files exist. Prefer the plugin source for helpers (it always has the latest API) so older deployed copies don't break this step:
+   ```bash
+   HELPERS=$(find ~/.claude -path "*/clux/scripts/helpers.sh" -type f 2>/dev/null | head -1)
+   [ -f "$HELPERS" ] || HELPERS="$HOME/.config/clux/scripts/helpers.sh"
+   if [ -f "$HELPERS" ] && grep -q '^detect_sound_player' "$HELPERS"; then
+       # shellcheck disable=SC1090
+       source "$HELPERS"
+       PLAYER=$(detect_sound_player)
+       ANY_SOUND_ON=0
+       for TYPE in notification stop prompt; do
+           [ "$(get_notification_sound_enabled "$TYPE")" = "on" ] && ANY_SOUND_ON=1
+       done
+       if [ -n "$PLAYER" ]; then
+           echo "OK  audio player ($PLAYER)"
+       elif [ "$ANY_SOUND_ON" = "1" ]; then
+           echo "WARN sound enabled but no audio player found (install paplay/aplay/play/ffplay on Linux, or afplay on macOS)"
+       else
+           echo "INFO no audio player detected (sound defaults to off on this system)"
+       fi
+       for TYPE in notification stop prompt; do
+           if [ "$(get_notification_sound_enabled "$TYPE")" = "on" ]; then
+               FILE=$(get_notification_sound_file "$TYPE")
+               if [ -z "$FILE" ]; then
+                   echo "WARN ${TYPE}: sound enabled but no sound file resolved"
+               elif [ -f "$FILE" ]; then
+                   echo "OK  ${TYPE} sound file ($FILE)"
+               else
+                   echo "WARN ${TYPE} sound file missing ($FILE) — set @claude-notify-${TYPE}-sound-file or install the default"
+               fi
+           fi
+       done
+   else
+       echo "INFO helpers.sh missing or outdated — skipping audio playback check (run /clux:setup to redeploy)"
+   fi
+   ```
+8. **Keybindings** — check all 4 expected bindings:
    ```bash
    KEYS=$(tmux list-keys 2>/dev/null)
    echo "$KEYS" | grep -q "jump-to-notification" && echo "OK  prefix m (jump)" || echo "FAIL prefix m not bound to jump-to-notification"
    echo "$KEYS" | grep -q "dismiss-notification" && echo "OK  prefix \` / DC (dismiss)" || echo "FAIL dismiss-notification not bound"
    echo "$KEYS" | grep -q "notification-picker" && echo "OK  prefix M (picker)" || echo "FAIL prefix M not bound to notification-picker"
    ```
-8. Return all results with clear OK/FAIL/WARN/INFO prefixes.
+9. Return all results with clear OK/FAIL/WARN/INFO prefixes.
 
 ### Agent C: Hooks Validation
 
@@ -265,6 +300,10 @@ clux validate — health check results
     notification:  visual=on   sound=on
     stop:          visual=off  sound=off
     prompt:        visual=off  sound=off
+
+  Audio playback:
+    ✓ audio player (paplay)
+    ✓ notification sound file (/usr/share/sounds/freedesktop/stereo/complete.oga)
 
   Keybindings:
     ✓ prefix m  → jump to notification

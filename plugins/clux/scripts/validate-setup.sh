@@ -79,6 +79,35 @@ INTERVAL=$(tmux show-option -gv status-interval 2>/dev/null)
 [ "${INTERVAL:-15}" -le 5 ]
 check "status-interval ≤ 5s" $?
 
+# 11. audio player available (only warn when sound is actually enabled somewhere)
+if declare -F detect_sound_player >/dev/null; then
+    PLAYER=$(detect_sound_player)
+    ANY_SOUND_ON=0
+    for TYPE in notification stop prompt; do
+        [ "$(get_notification_sound_enabled "$TYPE")" = "on" ] && ANY_SOUND_ON=1
+    done
+    if [ -n "$PLAYER" ]; then
+        check "audio player ($PLAYER)" 0
+    elif [ "$ANY_SOUND_ON" = "1" ]; then
+        check "audio player available (sound is enabled)" 1
+    else
+        printf '  ~ no audio player detected (sound defaults to off)\n'
+        PASS=$((PASS + 1))
+    fi
+
+    # 12. configured sound files exist for sound-enabled types
+    for TYPE in notification stop prompt; do
+        if [ "$(get_notification_sound_enabled "$TYPE")" = "on" ]; then
+            FILE=$(get_notification_sound_file "$TYPE")
+            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+                check "$TYPE sound file exists" 0
+            else
+                check "$TYPE sound file (${FILE:-unset})" 1
+            fi
+        fi
+    done
+fi
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
