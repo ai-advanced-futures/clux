@@ -28,6 +28,9 @@ If upgrading from 2.x: remove `CLUX_OPENAI_API_KEY` from your environment and an
 ## [2.0.8]
 
 - Add comprehensive health check instructions for `/clux:setup`
+- Fix cross-platform sound handling: `notify-sound.sh` now detects available players (`afplay` on macOS; `paplay`/`pw-play`/`aplay`/`play`/`ffplay` on Linux) and silently no-ops when none is installed or the configured sound file is missing, instead of flashing `clux: sound file not found: …` over the tmux status bar
+- Default sound notifications to `off` on systems with no usable audio player so fresh Linux installs without PulseAudio don't attempt playback
+- Provide Linux-appropriate default sound files (freedesktop stereo theme) instead of hardcoded `/System/Library/Sounds/*.aiff` paths
 
 ## [2.0.7]
 
