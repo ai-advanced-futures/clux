@@ -2,7 +2,13 @@
 
 All notable changes to clux are documented here.
 
-## [3.0.2] — Unreleased
+## [3.0.3] — Unreleased
+
+### Added
+
+- `/clux:validate` now reports audio playback readiness: detected player (`afplay`/`paplay`/`pw-play`/`aplay`/`play`/`ffplay`) and, for each sound-enabled notification type, whether the effective sound file exists — surfacing the silent-no-op path introduced in 3.0.2 so users can tell *why* a sound isn't playing
+
+## [3.0.2]
 
 ### Fixed
 
