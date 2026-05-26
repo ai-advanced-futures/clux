@@ -5,7 +5,11 @@
 # Optimized: single tmux IPC call instead of 4 separate ones
 
 # Static config — env vars avoid tmux show-option IPC calls per cycle
-NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./path.sh
+# shellcheck disable=SC1091
+source "$CURRENT_DIR/path.sh"
+NOTIFY_FILE=$(resolve_notify_file)
 NOTIFY_BG="${CLUX_NOTIFY_BG:-#EBCB8B}"
 NOTIFY_FG="${CLUX_NOTIFY_FG:-#2E3440}"
 
