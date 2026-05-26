@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# stub: fzf
+# Reads FZF_STUB_KEY and FZF_STUB_LINE env vars to emit controlled output.
+# If FZF_STUB_EXIT is set, exits with that code instead (e.g. 130 for Esc).
+# Logs invocation args.
+echo "fzf $*" >> "${STUB_LOG:-/dev/null}"
+
+if [ -n "${FZF_STUB_EXIT:-}" ]; then
+    exit "$FZF_STUB_EXIT"
+fi
+
+# Emit key on first line, selected line on second line (matches fzf --expect output format)
+printf '%s\n%s\n' "${FZF_STUB_KEY:-}" "${FZF_STUB_LINE:-}"
+exit 0

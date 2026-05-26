@@ -51,13 +51,25 @@ if [ "$key" = "ctrl-d" ]; then
     grep -vF "$line" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp" 2>/dev/null
     mv "${NOTIFY_FILE}.tmp" "$NOTIFY_FILE"
 else
-    # Enter: jump to the window
-    # Parse SESSION:WINDOW_NAME from bare format
-    session="${line%%:*}"
-    remainder="${line#*:}"
-    window="${remainder%% *}"
-    if [ -n "$session" ] && [ -n "$window" ]; then
-        tmux select-window -t "${session}:${window}" 2>/dev/null && \
-          tmux switch-client -t "${session}" 2>/dev/null
+    # ENTER: jump to the window
+    # Check for agent-view entry first — these have |||agent: in the line.
+    # NOTE: sourcing helpers.sh here re-runs its module-level code (sets NOTIFY_FILE
+    # and LOCKDIR globals). This is SAFE because the agent: branch calls agent_jump
+    # and the handler returns immediately — no code after this block reads NOTIFY_FILE.
+    # The Ctrl-D dismiss path (above) runs before this else branch and is unaffected.
+    if [[ "$line" == *"|||agent:"* ]]; then
+        # shellcheck source=./helpers.sh
+        # shellcheck disable=SC1091
+        source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
+        agent_jump
+    else
+        # Parse SESSION:WINDOW_NAME from bare format (interactive)
+        session="${line%%:*}"
+        remainder="${line#*:}"
+        window="${remainder%% *}"
+        if [ -n "$session" ] && [ -n "$window" ]; then
+            tmux select-window -t "${session}:${window}" 2>/dev/null && \
+              tmux switch-client -t "${session}" 2>/dev/null
+        fi
     fi
 fi
