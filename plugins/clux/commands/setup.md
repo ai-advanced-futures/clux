@@ -80,13 +80,13 @@ Prompt the agent to:
 3. Read `~/.claude/settings.json` and check for existing system hooks:
    - Look for `hooks.Stop`, `hooks.Notification`, `hooks.UserPromptSubmit` entries
    - These are **conflicting** — the plugin's `hooks.json` handles all notification events via `notify-tmux.sh` → `notify-sound.sh`. System-level hooks for these events cause double-firing (e.g., double sounds)
-   - Note any `hooks.SessionEnd` entries — these are NOT managed by clux and must be preserved
+   - Note any `hooks.SessionEnd` entries — clux now adds its own `SessionEnd → notify-tmux.sh` entry; any **additional** user `SessionEnd` commands are preserved alongside it
    - Report each conflicting hook found with its current command
 4. Check existing tmux keybindings for conflicts:
    ```bash
    tmux list-keys 2>/dev/null | grep -E "bind-key\s+(m|M|\`)"
    ```
-5. Return: hooks file path, hooks status (ok/missing/incomplete), conflicting system hooks (list of event names + commands), preserved hooks (SessionEnd etc.), conflicting keybindings (if any)
+5. Return: hooks file path, hooks status (ok/missing/incomplete), conflicting system hooks (list of event names + commands), preserved hooks (additional user SessionEnd commands etc.), conflicting keybindings (if any). Note: clux manages one `SessionEnd → notify-tmux.sh` entry itself; user-supplied `SessionEnd` commands are preserved alongside it (not treated as conflicting).
 
 **Wait for all three agents to complete before proceeding.**
 
@@ -128,7 +128,8 @@ clux setup — analysis results:
     Stop: afplay /System/Library/Sounds/Glass.aiff (CONFLICTING — will be removed)
     Notification: afplay /System/Library/Sounds/Submarine.aiff (CONFLICTING — will be removed)
     UserPromptSubmit: afplay /System/Library/Sounds/Pop.aiff (CONFLICTING — will be removed)
-    SessionEnd: afplay /System/Library/Sounds/Hero.aiff (preserved — not managed by clux)
+    SessionEnd: notify-tmux.sh (clux-managed — SessionEnd clears agent notifications)
+    SessionEnd (user): afplay /System/Library/Sounds/Hero.aiff (preserved alongside clux entry)
 ```
 
 ## Phase 3: Recommend Changes
@@ -274,8 +275,9 @@ The plugin's `hooks.json` registers `notify-tmux.sh` for Stop, Notification, and
 
 Based on Agent C's findings:
 1. **Remove** any `hooks.Stop`, `hooks.Notification`, and `hooks.UserPromptSubmit` entries from settings.json
-2. **Preserve** all other hook entries (e.g., `hooks.SessionEnd`) — these are not managed by clux
-3. If the hooks object becomes empty after removal, keep it as `"hooks": {}`
+2. **Preserve** user `SessionEnd` commands — clux's own `SessionEnd → notify-tmux.sh` is managed by hooks.json and should NOT appear in settings.json; if found there, treat as duplicate and remove it, but keep any other user-supplied `SessionEnd` commands
+3. **Preserve** all other non-clux hook entries and all non-hook settings
+4. If the hooks object becomes empty after removal, keep it as `"hooks": {}`
 
 Present the changes clearly to the user:
 ```
@@ -283,7 +285,7 @@ System hooks (settings.json):
   Remove: Stop (afplay Glass.aiff) — handled by plugin notify-sound.sh
   Remove: Notification (afplay Submarine.aiff) — handled by plugin notify-sound.sh
   Remove: UserPromptSubmit (afplay Pop.aiff) — handled by plugin notify-sound.sh
-  Keep:   SessionEnd (afplay Hero.aiff) — not managed by clux
+  Keep:   SessionEnd (user) (afplay Hero.aiff) — preserved alongside clux's own SessionEnd entry
 ```
 
 ## Phase 4: Confirm
@@ -353,7 +355,7 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
 Read the current `~/.claude/settings.json` and update it:
 
 1. Remove `hooks.Stop`, `hooks.Notification`, and `hooks.UserPromptSubmit` entries if they exist
-2. Preserve all other hook entries (e.g., `hooks.SessionEnd`) and all non-hook settings
+2. Preserve user `SessionEnd` commands that are NOT clux's own `notify-tmux.sh` — if a `hooks.SessionEnd` entry points to `notify-tmux.sh`, remove it (duplicate of hooks.json); keep all other `SessionEnd` commands alongside clux's managed entry. Preserve all other non-clux hook entries and all non-hook settings.
 3. Preserve the exact JSON formatting (2-space indent)
 4. Write the updated file using the Edit tool (not Write — to avoid overwriting concurrent changes)
 
@@ -376,12 +378,21 @@ tmux show-option -g 'status-format[0]' 2>/dev/null | grep -q "show-notification.
 tmux list-keys | grep -E "jump-to-notification|dismiss-notification|notification-picker"
 
 # Check system hooks — no conflicting entries should remain
+# SessionEnd is checked too, but clux's own notify-tmux.sh entry is excluded
 python3 -c "
 import json
 with open('$HOME/.claude/settings.json') as f:
     s = json.load(f)
 hooks = s.get('hooks', {})
-conflicts = [e for e in ('Stop', 'Notification', 'UserPromptSubmit') if e in hooks]
+conflicts = []
+for e in ('Stop', 'Notification', 'UserPromptSubmit', 'SessionEnd'):
+    if e in hooks:
+        for entry in hooks[e]:
+            for h in entry.get('hooks', []):
+                cmd = h.get('command', '')
+                if 'notify-tmux' not in cmd:
+                    conflicts.append(e)
+                    break
 if conflicts:
     print(f'FAIL: conflicting system hooks still present: {conflicts}')
     exit(1)

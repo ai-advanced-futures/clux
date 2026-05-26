@@ -152,7 +152,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
        echo "FAIL plugin hooks.json not found"
    else
        echo "OK  hooks.json found ($HOOKS_FILE)"
-       for EVENT in Stop Notification UserPromptSubmit; do
+       for EVENT in Stop Notification UserPromptSubmit SessionEnd; do
            if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "notify-tmux" "$HOOKS_FILE"; then
                echo "OK  hook: $EVENT → notify-tmux.sh"
            else
@@ -188,7 +188,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    SETTINGS="$HOME/.claude/settings.json"
    if [ -f "$SETTINGS" ]; then
        CONFLICTS=""
-       for EVENT in Stop Notification UserPromptSubmit; do
+       for EVENT in Stop Notification UserPromptSubmit SessionEnd; do
            if python3 -c "
    import json, sys
    with open('$SETTINGS') as f:
@@ -273,7 +273,7 @@ clux validate — health check results
     ✓ prefix M  → notification picker
 
   Hooks:
-    ✓ hooks.json: Stop, Notification, UserPromptSubmit
+    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd
     ✓ notify-tmux.sh executable
     ✓ notify-sound.sh executable
     ✓ no conflicting system hooks
