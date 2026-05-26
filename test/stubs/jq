@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub: jq
+# Delegates to real jq via $REAL_JQ (captured in test_helper.bash before PATH munging).
+# Tests that need "jq absent" simply remove this stub from the per-test stub dir.
+exec "$REAL_JQ" "$@"

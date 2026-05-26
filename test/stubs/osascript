@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub: osascript
+# Logs invocation; exits 0.
+echo "osascript $*" >> "${STUB_LOG:-/dev/null}"
+exit 0
