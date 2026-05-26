@@ -150,6 +150,20 @@ get_agent_marker()          { get_tmux_option "@clux-agent-marker"  "⚡"; }
 
 # Navigate to the claude agents dashboard pane, or open a new one if absent.
 # Used by both jump-to-notification.sh and notification-picker.sh.
+#
+# B10 (pane-title matchability) findings, 2026-05-26:
+#   - The `claude agents` dashboard sets its pane/terminal title to e.g.
+#     "2 awaiting input · claude agents │ <version>", so #{pane_title} reliably
+#     contains the lowercase literal "claude agents" — the title match below is
+#     authoritative. (Full confirmation against a live dashboard is the one manual
+#     check left for the user; no dashboard was open during the probe.)
+#   - #{pane_current_command} for a Claude Code pane reports the VERSION string
+#     (e.g. "2.1.150"), NOT "claude" — so the originally-considered
+#     `pane_current_command == claude` fallback is INVALID and is not used.
+#   - Best-effort caveat (v1): regular claude session panes set #{pane_title} to
+#     the conversation summary, which could contain "claude agents" as a substring.
+#     The match is case-sensitive (lowercase) and uses head -1, which mitigates but
+#     does not eliminate a false match; acceptable for v1 per the spec's YAGNI scope.
 agent_jump() {
     local match
     match=$(tmux list-panes -a -F '#{session_id}\t#{window_id}\t#{pane_title}' 2>/dev/null \
