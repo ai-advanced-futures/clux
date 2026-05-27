@@ -99,9 +99,9 @@ load test_helper
 }
 
 # ---------------------------------------------------------------------------
-# Case 6: UserPromptSubmit removes entry
+# Case 6: UserPromptSubmit does NOT remove entry (clear-on-jump-only)
 # ---------------------------------------------------------------------------
-@test "agent path: UserPromptSubmit removes queue entry" {
+@test "agent path: UserPromptSubmit does NOT clear queue entry" {
     # Prime the queue
     printf '⚡ needs you|||agent:s-abc-123\n' > "$QUEUE_FILE"
 
@@ -115,14 +115,14 @@ load test_helper
         printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
     "
     [ "$status" -eq 0 ]
-    # Entry must be gone (falsifiable)
-    ! grep -qF "|||agent:s-abc-123" "$QUEUE_FILE" 2>/dev/null
+    # Entry must REMAIN (clear-on-jump-only; UserPromptSubmit is a no-op)
+    grep -qF "|||agent:s-abc-123" "$QUEUE_FILE" || false
 }
 
 # ---------------------------------------------------------------------------
-# Case 7: Stop removes entry
+# Case 7: Stop does NOT remove entry (clear-on-jump-only)
 # ---------------------------------------------------------------------------
-@test "agent path: Stop removes queue entry" {
+@test "agent path: Stop does NOT clear queue entry" {
     printf '⚡ needs you|||agent:s-stop-456\n' > "$QUEUE_FILE"
 
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
@@ -135,13 +135,14 @@ load test_helper
         printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
     "
     [ "$status" -eq 0 ]
-    ! grep -qF "|||agent:s-stop-456" "$QUEUE_FILE" 2>/dev/null
+    # Entry must REMAIN (clear-on-jump-only; Stop is a no-op)
+    grep -qF "|||agent:s-stop-456" "$QUEUE_FILE" || false
 }
 
 # ---------------------------------------------------------------------------
-# Case 8: SessionEnd removes entry
+# Case 8: SessionEnd does NOT remove entry (clear-on-jump-only)
 # ---------------------------------------------------------------------------
-@test "agent path: SessionEnd removes queue entry" {
+@test "agent path: SessionEnd does NOT clear queue entry" {
     printf '⚡ needs you|||agent:s-end-789\n' > "$QUEUE_FILE"
 
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
@@ -154,7 +155,8 @@ load test_helper
         printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
     "
     [ "$status" -eq 0 ]
-    ! grep -qF "|||agent:s-end-789" "$QUEUE_FILE" 2>/dev/null
+    # Entry must REMAIN (clear-on-jump-only; SessionEnd is a no-op)
+    grep -qF "|||agent:s-end-789" "$QUEUE_FILE" || false
 }
 
 # ---------------------------------------------------------------------------

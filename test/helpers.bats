@@ -188,17 +188,18 @@ load test_helper
 }
 
 # ---------------------------------------------------------------------------
-# Case 9: agent_jump — dashboard found
+# Case 9: agent_jump — dashboard found (window convention)
 # ---------------------------------------------------------------------------
 @test "agent_jump with dashboard found calls switch-client and select-window" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
-    # Write a custom tmux stub that emits the dashboard pane for list-panes
+    # Write a custom tmux stub that emits the dashboard window for list-windows.
+    # agent_jump uses -F '#{session_id} #{window_id}' → space-separated "<sid> <wid>".
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
-# Emit dashboard line for list-panes
-if [ "$1" = "list-panes" ]; then
-    printf '\$sess1\t@win2\tclaude agents\n'
+# Emit dashboard line for list-windows
+if [ "$1" = "list-windows" ]; then
+    printf '$sess1 @win2\n'
 fi
 exit 0
 STUBEOF
@@ -216,11 +217,74 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
+# Case 9b: agent_jump — dashboard found sends the nav-key (default "Left")
+# ---------------------------------------------------------------------------
+@test "agent_jump with dashboard found sends nav-key Left to the matched window" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-windows" ]; then
+    printf '$sess1 @win2\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    # send-keys with the default nav-key "Left" must have been issued to the window
+    grep -qF "send-keys" "$stub_log" || false
+    grep -qF "Left" "$stub_log" || false
+}
+
+# ---------------------------------------------------------------------------
+# Case 9c: agent_jump — empty @clux-agent-nav-key skips send-keys
+# ---------------------------------------------------------------------------
+@test "agent_jump does NOT send-keys when nav-key option is empty" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # show-option for @clux-agent-nav-key returns empty → nav_key empty → no send-keys.
+    # Other show-option calls (e.g. @clux-agent-window) return empty too, so
+    # get_agent_window falls back to its default "agents".
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-windows" ]; then
+    printf '$sess1 @win2\n'
+fi
+# show-option -gqv returns empty for every option (including @clux-agent-nav-key)
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        # Force nav-key empty regardless of helper defaults
+        get_agent_nav_key() { printf ''; }
+        # agent_jump's last statement is the short-circuited '[ -n nav_key ] && send-keys';
+        # with an empty nav_key that returns 1, so don't gate the test on its exit code.
+        agent_jump || true
+    "
+    [ "$status" -eq 0 ]
+    # Dashboard was found (switch-client fired) but no send-keys was issued
+    grep -qF "switch-client" "$stub_log" || false
+    run grep -qF "send-keys" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Case 10: agent_jump — no dashboard found
 # ---------------------------------------------------------------------------
 @test "agent_jump with no dashboard calls new-window with agents" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
-    # Default tmux stub returns empty for list-panes (already does nothing)
+    # Default tmux stub returns empty for list-windows (already does nothing)
     run bash -c "
         export STUB_LOG='$stub_log'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
@@ -230,4 +294,23 @@ STUBEOF
     [ "$status" -eq 0 ]
     grep -qF "new-window" "$stub_log" || false
     grep -qF "agents" "$stub_log" || false
+}
+
+# ---------------------------------------------------------------------------
+# Case 10b: agent_jump — no dashboard branch does NOT send-keys
+# ---------------------------------------------------------------------------
+@test "agent_jump no-dashboard branch does NOT call send-keys" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Default tmux stub emits nothing for list-windows → new-window fallback
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "new-window" "$stub_log" || false
+    # send-keys belongs only to the dashboard-found path — must be absent here
+    run grep -qF "send-keys" "$stub_log"
+    [ "$status" -ne 0 ]
 }

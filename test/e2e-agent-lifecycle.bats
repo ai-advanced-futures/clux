@@ -8,23 +8,25 @@ load test_helper
 
 # ---------------------------------------------------------------------------
 # Helper: write a dashboard-aware tmux stub into the per-test stubs dir.
-# $1 = pane-title line to emit for list-panes (tab-separated: sid TAB wid TAB title).
-#      Leave empty to produce a stub that emits nothing for list-panes (no dashboard).
-# The stub also returns a dummy display-message value required by show-notification.sh.
-# Uses printf '%q' to safely embed any tab-containing string into the generated script.
+# $1 = window line to emit for list-windows (space-separated: "<sid> <wid>",
+#      matching agent_jump's -F '#{session_id} #{window_id}').
+#      Leave empty to produce a stub that emits nothing for list-windows (no dashboard).
+# The stub also returns a dummy display-message value required by show-notification.sh
+# and logs send-keys (and every other) subcommand call.
+# Uses printf '%q' to safely embed the window line into the generated script.
 # ---------------------------------------------------------------------------
 _write_tmux_stub() {
-    local pane_line="${1:-}"
+    local win_line="${1:-}"
     # Produce a safely shell-quoted literal for embedding inside the generated script.
-    # When pane_line is empty the quoted form is '' which is harmless.
-    local quoted_pane
-    quoted_pane=$(printf '%q' "$pane_line")
+    # When win_line is empty the quoted form is '' which is harmless.
+    local quoted_win
+    quoted_win=$(printf '%q' "$win_line")
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<STUBEOF
 #!/usr/bin/env bash
 echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
 case "\$1" in
-    list-panes)
-        [ -n $quoted_pane ] && printf '%s\n' $quoted_pane
+    list-windows)
+        [ -n $quoted_win ] && printf '%s\n' $quoted_win
         ;;
     display-message)
         # show-notification.sh needs: session_id|||window_id|||session_name|||window_name
@@ -62,8 +64,9 @@ STUBEOF
     # Queue must contain the agent entry (falsifiable: correct session id present)
     grep -qF "|||agent:$SID" "$QUEUE_FILE" || false
 
-    # Queue line must include the marker and message
-    grep -qF "⚡ $MSG|||agent:$SID" "$QUEUE_FILE" || false
+    # Queue line carries the LABEL (no cwd/transcript in payload → "agents / agent"),
+    # NOT the human message (which now goes to the desktop banner only).
+    grep -qF "⚡ agents / agent|||agent:$SID" "$QUEUE_FILE" || false
 
     # osascript stub must have been called (desktop ping)
     grep -qF "osascript" "$stub_log" || false
@@ -106,10 +109,10 @@ STUBEOF
     local MSG="needs your permission"
     printf '⚡ %s|||agent:%s\n' "$MSG" "$SID" > "$QUEUE_FILE"
 
-    # Stub emits a dashboard pane line for list-panes
+    # Stub emits a dashboard window line for list-windows ("<sid> <wid>")
     local SESS_ID="\$sess1"
     local WIN_ID="@win2"
-    _write_tmux_stub "${SESS_ID}	${WIN_ID}	claude agents"
+    _write_tmux_stub "${SESS_ID} ${WIN_ID}"
 
     run bash -c "
         export STUB_LOG='$stub_log'
@@ -129,7 +132,7 @@ STUBEOF
     [ "$status" -ne 0 ]
 }
 
-@test "e2e lifecycle d: UserPromptSubmit clears the single queue entry" {
+@test "e2e lifecycle d: UserPromptSubmit does NOT clear the queue entry (clear-on-jump-only)" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     local SID="s-e2e-001"
     local MSG="needs your permission"
@@ -145,15 +148,14 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
 
-    # Entry must be gone (falsifiable: grep must fail)
-    ! grep -qF "|||agent:$SID" "$QUEUE_FILE" 2>/dev/null
-
-    # Queue was the only entry so the file must now be empty or absent
-    [ ! -s "$QUEUE_FILE" ]
+    # Entry must REMAIN — UserPromptSubmit is a no-op in the agent path; clearing
+    # happens only on jump (falsifiable: file still non-empty and grep succeeds)
+    [ -s "$QUEUE_FILE" ]
+    grep -qF "|||agent:$SID" "$QUEUE_FILE" || false
 }
 
 @test "e2e lifecycle e: show-notification on empty queue exits 0 and renders nothing" {
-    # Queue file does not exist (cleared by previous lifecycle step)
+    # Empty queue (the cleared/never-populated state)
     rm -f "$QUEUE_FILE"
 
     _write_tmux_stub ""
@@ -171,12 +173,12 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# Flow 2: Dedup-then-clear lifecycle
+# Flow 2: Dedup lifecycle
 #   Two Notifications with same session_id → exactly one queue line.
-#   Stop clears it → queue empty.
+#   Stop is a no-op → entry remains (clear-on-jump-only).
 # ---------------------------------------------------------------------------
 
-@test "e2e dedup-then-clear: two Notifications same session_id yield exactly one line, Stop clears" {
+@test "e2e dedup: two Notifications same session_id yield exactly one line, Stop leaves it" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     local SID="s-e2e-dup"
     local MSG="waiting for you"
@@ -196,7 +198,7 @@ STUBEOF
     count=$(grep -cF "|||agent:$SID" "$QUEUE_FILE" 2>/dev/null || echo 0)
     [ "$count" -eq 1 ]
 
-    # Now send Stop to clear it
+    # Now send Stop — it must NOT clear the entry (agent path no-op)
     local STOP_JSON="{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\"}"
     run bash -c "
         export STUB_LOG='$stub_log'
@@ -206,18 +208,19 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
 
-    # Queue must now be empty (falsifiable)
-    ! grep -qF "|||agent:$SID" "$QUEUE_FILE" 2>/dev/null
-    [ ! -s "$QUEUE_FILE" ]
+    # Entry must REMAIN — clearing happens only on jump (falsifiable)
+    [ -s "$QUEUE_FILE" ]
+    grep -qF "|||agent:$SID" "$QUEUE_FILE" || false
 }
 
 # ---------------------------------------------------------------------------
-# Flow 3: Two distinct sessions, selective clear
+# Flow 3: Two distinct sessions, selective clear-on-jump
 #   Notification(S1) + Notification(S2) → two lines.
-#   UserPromptSubmit(S1) → only S1 removed, S2 remains.
+#   jump-to-notification.sh clears the HEAD entry (S1) only; S2 remains.
+#   (Clearing happens on jump, not on UserPromptSubmit.)
 # ---------------------------------------------------------------------------
 
-@test "e2e selective-clear: UserPromptSubmit(S1) removes S1 but leaves S2 intact" {
+@test "e2e selective-clear: jump removes the head entry (S1) but leaves S2 intact" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     local S1="s-e2e-sel1"
     local S2="s-e2e-sel2"
@@ -238,35 +241,48 @@ STUBEOF
     grep -qF "|||agent:$S1" "$QUEUE_FILE" || false
     grep -qF "|||agent:$S2" "$QUEUE_FILE" || false
 
-    # Clear only S1 via UserPromptSubmit
-    local UPS_JSON="{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$S1\"}"
+    # Jump clears the HEAD entry (S1). No dashboard → new-window fallback; the
+    # remove still fires after agent_jump. jump-to-notification.sh sources
+    # helpers.sh, which resets NOTIFY_FILE from @claude-notify-file at source
+    # time — so the stub must return the queue path for that option or the
+    # removal would target the HOME default instead.
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<STUBEOF
+#!/usr/bin/env bash
+echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
+case "\$*" in
+  *@claude-notify-file*) echo "$QUEUE_FILE" ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
     run bash -c "
         export STUB_LOG='$stub_log'
         export CLUX_NOTIFY_FILE='$QUEUE_FILE'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
-        printf '%s' '$UPS_JSON' | TMUX= '$NOTIFY_HOOK'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
     "
     [ "$status" -eq 0 ]
 
-    # S1 must be gone (falsifiable: grep must fail)
-    ! grep -qF "|||agent:$S1" "$QUEUE_FILE" 2>/dev/null
-
     # S2 must still be present (falsifiable: grep must succeed)
     grep -qF "|||agent:$S2" "$QUEUE_FILE" || false
+
+    # S1 (head) must be gone — put this LAST so the negation is load-bearing
+    ! grep -qF "|||agent:$S1" "$QUEUE_FILE"
 }
 
 # ---------------------------------------------------------------------------
 # Flow 4: No-dashboard jump fallback
-#   Queue holds an agent: entry; tmux list-panes emits nothing (no dashboard).
+#   Queue holds an agent: entry; tmux list-windows emits nothing (no dashboard).
 #   jump-to-notification.sh must call new-window -n agents.
 # ---------------------------------------------------------------------------
 
-@test "e2e no-dashboard fallback: jump opens new-window when list-panes is empty" {
+@test "e2e no-dashboard fallback: jump opens new-window when list-windows is empty" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     local SID="s-e2e-nd"
     printf '⚡ waiting|||agent:%s\n' "$SID" > "$QUEUE_FILE"
 
-    # Stub emits nothing for list-panes (no dashboard pane)
+    # Stub emits nothing for list-windows (no dashboard window)
     _write_tmux_stub ""
 
     run bash -c "

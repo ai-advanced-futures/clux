@@ -8,12 +8,12 @@ load test_helper
 # ---------------------------------------------------------------------------
 @test "picker: ENTER on agent line calls agent_jump when dashboard found" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
-    # Custom tmux stub: emit dashboard pane for list-panes
+    # Custom tmux stub: emit dashboard window for list-windows
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
-if [ "$1" = "list-panes" ]; then
-    printf '$sess1\t@win2\tclaude agents\n'
+if [ "$1" = "list-windows" ]; then
+    printf '$sess1 @win2\n'
 fi
 exit 0
 STUBEOF

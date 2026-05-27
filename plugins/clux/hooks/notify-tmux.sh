@@ -6,10 +6,6 @@
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/../scripts/helpers.sh"
 
-# CLUX-DEBUG (temporary diagnostic — remove before commit) -----------------------
-{ printf '%s FIRED tmux=[%s] tty=%s pid=%s ppid=%s src=%s argv=[%s]\n' "$(date '+%H:%M:%S')" "${TMUX:-UNSET}" "$([ -t 0 ] && echo tty || echo pipe)" "$$" "$PPID" "$CURRENT_DIR" "$*"; } >>/tmp/clux-hook-debug.log 2>&1
-# CLUX-DEBUG ---------------------------------------------------------------------
-
 # Extract message from JSON stdin or argument
 if [ -t 0 ]; then
     MESSAGE="$1"
@@ -20,7 +16,6 @@ if [ -t 0 ]; then
     TRANSCRIPT_PATH=""
 else
     INPUT=$(cat)
-    { printf '%s   stdin=%s tmux=[%s]\n' "$(date '+%H:%M:%S')" "$INPUT" "${TMUX:-UNSET}"; } >>/tmp/clux-hook-debug.log 2>&1  # CLUX-DEBUG
     if command -v jq &>/dev/null; then
         # Use a single jq invocation to parse all fields; if jq fails (e.g. due to raw
         # control bytes in the input), EVENT will be empty and we fall back to grep below.
