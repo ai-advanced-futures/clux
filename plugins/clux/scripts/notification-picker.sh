@@ -61,7 +61,11 @@ else
         # shellcheck source=./helpers.sh
         # shellcheck disable=SC1091
         source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
-        agent_jump
+        # Line shape: "<marker> <label>|||agent:<session_id>"
+        _sid="${line##*|||agent:}"
+        agent_jump                   # switch to the agents-view window (by name)
+        _agent_remove_entry "$_sid"  # clear-on-jump
+        tmux refresh-client -S 2>/dev/null
     else
         # Parse SESSION:WINDOW_NAME from bare format (interactive)
         session="${line%%:*}"
