@@ -10,6 +10,21 @@ NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
 FIRST=$(head -1 "$NOTIFY_FILE")
 [ -n "$FIRST" ] || exit 0
 
+# Agent-view entry: id field begins with "agent:" — MUST run before the generic
+# ||| check below because agent: lines also contain |||, and the generic branch
+# would mis-route them as tmux select-window -t "agent:<sid>".
+if [[ "$FIRST" == *"|||agent:"* ]]; then
+    # shellcheck source=./helpers.sh
+    # shellcheck disable=SC1091
+    source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
+    # Line shape: "<marker> <label>|||agent:<session_id>"
+    _sid="${FIRST##*|||agent:}"  # "<session_id>"
+    agent_jump                   # switch to the agents-view window (by name)
+    _agent_remove_entry "$_sid"  # clear-on-jump: drop the entry we just handled
+    tmux refresh-client -S 2>/dev/null
+    exit 0
+fi
+
 # Try ||| marker first (format: ...|||session_id:window_id)
 if [[ "$FIRST" == *"|||"* ]]; then
   ID_PART="${FIRST##*|||}"

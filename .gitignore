@@ -8,6 +8,12 @@
 # Git worktrees
 .worktrees/
 
+# Superpowers ephemeral working documents (plans are not committed)
+docs/superpowers/plans/
+
+# Superpowers prototype scratch
+.superpowers/prototypes/
+
 # macOS
 .DS_Store
 .AppleDouble

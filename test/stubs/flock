@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# stub: flock
+# Logs invocation; exits 0 (simulates flock present but does nothing).
+# Tests that want the mkdir-lock path simply don't include this stub in their per-test PATH.
+echo "flock $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

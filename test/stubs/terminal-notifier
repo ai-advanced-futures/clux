@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub: terminal-notifier
+# Logs invocation; exits 0.
+echo "terminal-notifier $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

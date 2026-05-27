@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub: afplay
+# Logs invocation; exits 0.
+echo "afplay $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

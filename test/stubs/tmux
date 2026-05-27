@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub: tmux
+# Logs invocation; exits 0, emits nothing (mimics detached tmux returning empty).
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+exit 0
