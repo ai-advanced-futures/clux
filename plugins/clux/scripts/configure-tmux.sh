@@ -43,6 +43,7 @@ deploy_scripts() {
     mkdir -p "$DEPLOY_DIR"
     local scripts=(
         helpers.sh
+        path.sh
         show-notification.sh
         jump-to-notification.sh
         dismiss-notification.sh
