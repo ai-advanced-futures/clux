@@ -10,7 +10,10 @@ LOCKDIR="${NOTIFY_FILE}.lock"
 # Clean up stale lock (guard against kill -9 leaving orphaned lock)
 if [ -d "$LOCKDIR" ]; then
     _now=$(date +%s)
-    _mtime=$(stat -f %m "$LOCKDIR" 2>/dev/null || stat -c %Y "$LOCKDIR" 2>/dev/null || echo "$_now")
+    # GNU stat (-c %Y) first: on Linux `stat -f` means --file-system and "succeeds"
+    # with garbage instead of failing, so it must not be tried first. BSD/macOS stat
+    # rejects -c and falls through to -f %m.
+    _mtime=$(stat -c %Y "$LOCKDIR" 2>/dev/null || stat -f %m "$LOCKDIR" 2>/dev/null || echo "$_now")
     [ $(( _now - _mtime )) -gt 10 ] && rm -rf "$LOCKDIR"
 fi
 
