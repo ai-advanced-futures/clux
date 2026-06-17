@@ -122,10 +122,11 @@ When a background agent session needs attention (permission prompt, idle), Claud
 
 ### Navigation
 
-Press `prefix m` (the jump key) from any tmux window. clux checks whether a `claude agents` pane is already open:
+Press `prefix m` (the jump key) from any tmux window. clux routes to the correct dashboard among all open sessions using a three-level cascade:
 
-- **Found:** switches to that session and window.
-- **Not found:** opens a new window running `claude agents`.
+1. **Fast-path:** jumps directly to the pane recorded in the notification entry (stored as `TMUXSID:WID:PID`), targeting the exact session that owns the waiting agent.
+2. **cwd re-resolve:** if the recorded pane is gone, re-scans all panes whose window name matches `@clux-agent-window` and picks the one whose working directory is the longest prefix of the agent's cwd.
+3. **Fallback:** if no match is found, opens a new window running `claude agents`.
 
 ### Configuration
 
@@ -138,6 +139,8 @@ These tmux options apply to the reader/jump side (status bar and key handler). I
 | `@clux-agent-desktop` | `on` | Fire macOS desktop notification |
 | `@clux-agent-osc` | `9` | OSC code for terminal sequence (9 = iTerm2 growl) |
 | `@clux-agent-marker` | `⚡` | Status bar prefix marker for agent entries |
+| `@clux-agent-window` | `agents` | tmux window name that hosts the claude agents dashboard — used as the primary routing anchor for multi-session jump |
+| `@clux-agent-nav-key` | `Left` | key sent to the agents pane on arrival to return to the main list |
 
 ### Requirements
 
