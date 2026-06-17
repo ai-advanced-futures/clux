@@ -154,9 +154,13 @@ recompute_lock_target() {
     LOCKDIR="${NOTIFY_FILE}.lock"
 }
 
-# Remove all queue entries whose id field matches |||agent:<session_id>$ (end-anchored).
-# Skips silently when $1 is empty (prevents "|||agent:$" from matching everything)
-# or when the queue file does not exist yet.
+# Remove all queue entries whose id field matches |||agent:<session_id> followed
+# by either the new @@-segment delimiter (agent:SID@@TMUXSID:WID:PID@@CWD) or
+# end-of-line (legacy agent:SID). The ([@]{2}|$) boundary clears BOTH formats for
+# a session while never over-matching a longer id (e.g. abc-123 must not clear
+# abc-123-extra — validated by prototype P4).
+# Skips silently when $1 is empty (prevents matching everything) or when the queue
+# file does not exist yet.
 # NOTE: mv runs UNCONDITIONALLY after a successful filter (no `&& mv`). grep -v exits 1
 # when every line matches (queue becomes empty) — gating mv on grep's exit would leave
 # the stale file in place, silently failing to remove the last/only matching entries.
@@ -164,7 +168,7 @@ _agent_remove_entry() {
     [ -z "$1" ] && return 0
     [ -f "$NOTIFY_FILE" ] || return 0
     acquire_lock
-    grep -v "|||agent:${1}$" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp"
+    grep -v -E "[|][|][|]agent:${1}([@]{2}|$)" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp"
     mv "${NOTIFY_FILE}.tmp" "$NOTIFY_FILE"
     release_lock
 }
@@ -223,40 +227,174 @@ resolve_agent_name() {
     printf '%s' "$name"
 }
 
-# Navigate to the tmux WINDOW that hosts the `claude agents` view.
+# Resolve the tmux pane of the `claude agents` dashboard that OWNS a given cwd.
+# Echoes "<session_id> <window_id> <pane_id>" (space-separated, one line) on a
+# match, or nothing on no match / no tmux server. Used by BOTH the write side
+# (notify-tmux.sh, detached with TMUX unset, over the default socket) and the
+# jump side (agent_jump re-resolve).
+#
+#   $1 = cwd of the agent session (the .cwd hook field)
+#
+# Strategy (spec §2.7 / §4.1):
+#   1. Enumerate every pane via a SINGLE `tmux list-panes -a`, TAB-delimited so
+#      pane_current_path values containing spaces survive the split.
+#   2. A pane is an agents candidate when its window_name == get_agent_window
+#      (PRIMARY — the constant tag), OR its pane_current_command / window_name
+#      matches *claude agents* (SECONDARY — unreliable on Linux where the command
+#      is /bin/bash, so it is only a backstop).
+#   3. Among candidates, pick the one whose pane_current_path is the LONGEST
+#      prefix of $1 (first-wins tie-break via enumeration order).
+#   4. Within that winning WINDOW, prefer the pane whose pane_current_command is
+#      `claude` (the dashboard TUI pane, when the window is split claude+bash);
+#      otherwise fall back to the matched candidate's own pane id.
+resolve_agents_pane_by_cwd() {
+    local cwd="$1" wname rows
+    [ -z "$cwd" ] && return 0
+    wname=$(get_agent_window)
+
+    # Single IPC call. TAB-delimited; trailing newline-terminated rows.
+    rows=$(tmux list-panes -a \
+             -F '#{session_id}	#{window_id}	#{pane_id}	#{pane_current_path}	#{pane_current_command}	#{window_name}' \
+             2>/dev/null)
+    [ -z "$rows" ] && return 0
+
+    local best_sid="" best_wid="" best_pid="" best_len=-1
+    local IFS_save=$IFS
+    while IFS=$'\t' read -r sid wid pid cpath ccmd wnam; do
+        [ -z "$sid" ] && continue
+        # Candidate filter: window-name tag (primary) OR command/title (secondary).
+        if [ "$wnam" != "$wname" ] \
+           && [[ "$ccmd" != *"claude agents"* ]] \
+           && [[ "$wnam" != *"claude agents"* ]]; then
+            continue
+        fi
+        # Longest-prefix match of the candidate path against $cwd.
+        case "$cwd" in
+            "$cpath"|"$cpath"/*)
+                if [ "${#cpath}" -gt "$best_len" ]; then
+                    best_len=${#cpath}
+                    best_sid=$sid
+                    best_wid=$wid
+                    best_pid=$pid
+                fi
+                ;;
+        esac
+    done <<EOF
+$rows
+EOF
+    IFS=$IFS_save
+
+    [ -z "$best_wid" ] && return 0
+
+    # Within the winning window, prefer the claude pane (split windows host a
+    # claude pane + a bash pane); fall back to the matched candidate's pane id.
+    local claude_pid=""
+    while IFS=$'\t' read -r sid wid pid cpath ccmd wnam; do
+        [ "$wid" = "$best_wid" ] || continue
+        if [ "$ccmd" = "claude" ]; then
+            claude_pid=$pid
+            break
+        fi
+    done <<EOF
+$rows
+EOF
+    IFS=$IFS_save
+    [ -n "$claude_pid" ] && best_pid=$claude_pid
+
+    printf '%s %s %s\n' "$best_sid" "$best_wid" "$best_pid"
+}
+
+# Navigate to the tmux pane that hosts the `claude agents` dashboard.
 # Used by both jump-to-notification.sh and notification-picker.sh.
 #
-# Strategy (v2 — "window convention"):
-#   The agent view is a single TUI living in one tmux window (by convention
-#   named "agents"; configurable via @clux-agent-window). The individual agent
-#   sessions live INSIDE that TUI — there is no per-session tmux pane to land on,
-#   and no Claude Code CLI to deep-link a specific session by id. So the jump
-#   target is the window itself; the user picks the session from the dashboard.
+# Strategy (v3 — "detect the running pane"):
+#   The agent view is a single `claude agents` TUI. The individual agent
+#   sessions live INSIDE that TUI — there is no per-session tmux pane to land on
+#   and no CLI to deep-link a session by id, so the jump target is the dashboard
+#   pane itself; the user picks the session from there.
 #
-#   1. Find a window whose #{window_name} EQUALS the configured name, in ANY
-#      session (kept in session "claude" by convention, but not required).
-#   2. If found, switch the client to its session and select that window.
-#   3. If none exists, open the dashboard in a new window of that name.
+#   1. Primary — find the pane actually running `claude agents`, identified by
+#      its #{pane_start_command} OR the title the TUI sets ("… · claude agents").
+#      This is what the docs promise ("checks whether a claude agents pane is
+#      already open") and is robust to window NAMING, which varies by host:
+#      with automatic-rename off (or when launched in a project-named window)
+#      the window is never named "agents", so the old v2 name match silently
+#      missed it and every jump spawned a brand-new window — and the nav-key
+#      nudge (existing-pane only) never fired. (Linux-vs-macOS divergence: macOS
+#      happened to have a window literally named "agents"; Linux did not.)
+#   2. Fallback — legacy window-name convention (@clux-agent-window, default
+#      "agents") for setups that still rely on it.
+#   3. If neither matches, open the dashboard in a new window of that name.
+# agent_jump [target] [cwd]
+#   target = "SID WID PID" tmux coords embedded in the queue entry (may be empty)
+#   cwd    = the agent session cwd, for self-healing re-resolution (may be empty)
 #
-# (Corrects the old pane-title match: empirically the agent pane titles itself
-# with the focused sub-agent name, e.g. "⠐ relay", which changes constantly and
-# never equals the cwd-derived label — so pane-title matching always missed.)
+# Multi-session routing (spec §2.6):
+#   FAST-PATH  — if target is non-empty AND the embedded pane id STILL exists in
+#                an agents-tagged window, route straight to it.
+#   RE-RESOLVE — else if cwd is non-empty, resolve the owning dashboard pane by
+#                longest-prefix match and route there.
+#   FALLBACK   — else (no args, or both miss) drop through to the unchanged v3
+#                body: detect the first `claude agents` pane, else new-window.
 agent_jump() {
-    local wname match="" nav_key
+    local _target="$1" _cwd="$2"
+    local wname match="" nav_key sess_id win_id pane_id
     wname=$(get_agent_window)
     nav_key=$(get_agent_nav_key)
-    match=$(tmux list-windows -a -f "#{==:#{window_name},$wname}" \
-              -F '#{session_id} #{window_id}' 2>/dev/null | head -1)
+
+    # FAST-PATH: honour the embedded pane id only if it still exists AND its
+    # window is agents-tagged (a recycled pane id in a non-agents window would
+    # mis-route — so confirm both before trusting it; any doubt falls through).
+    if [ -n "$_target" ]; then
+        local _t_sid _t_wid _t_pid _probe
+        read -r _t_sid _t_wid _t_pid <<< "$_target"
+        if [ -n "$_t_pid" ]; then
+            _probe=$(tmux list-panes -a -F '#{pane_id} #{window_name}' 2>/dev/null \
+                       | grep -F "$_t_pid $wname")
+            if [ -n "$_probe" ]; then
+                tmux switch-client -t "$_t_sid" 2>/dev/null
+                tmux select-window -t "$_t_wid" 2>/dev/null
+                [ -n "$nav_key" ] && tmux send-keys -t "$_t_pid" "$nav_key" 2>/dev/null
+                return 0
+            fi
+        fi
+    fi
+
+    # RE-RESOLVE: self-heal by longest-prefix cwd match against live agents panes.
+    if [ -n "$_cwd" ]; then
+        local _coords _r_sid _r_wid _r_pid
+        _coords=$(resolve_agents_pane_by_cwd "$_cwd")
+        if [ -n "$_coords" ]; then
+            read -r _r_sid _r_wid _r_pid <<< "$_coords"
+            tmux switch-client -t "$_r_sid" 2>/dev/null
+            tmux select-window -t "$_r_wid" 2>/dev/null
+            [ -n "$nav_key" ] && tmux send-keys -t "${_r_pid:-$_r_wid}" "$nav_key" 2>/dev/null
+            return 0
+        fi
+    fi
+
+    # FALLBACK (v3, unchanged) — reached by no-arg callers and both miss paths.
+    # Primary: the pane whose start-command or title says "claude agents".
+    match=$(tmux list-panes -a \
+              -f '#{||:#{m:*claude agents*,#{pane_start_command}},#{m:*claude agents*,#{pane_title}}}' \
+              -F '#{session_id} #{window_id} #{pane_id}' 2>/dev/null | head -1)
+
+    # Fallback: legacy window-name convention.
+    if [ -z "$match" ]; then
+        match=$(tmux list-windows -a -f "#{==:#{window_name},$wname}" \
+                  -F '#{session_id} #{window_id} #{pane_id}' 2>/dev/null | head -1)
+    fi
+
     if [ -n "$match" ]; then
-        local sess_id win_id
-        read -r sess_id win_id <<< "$match"
+        read -r sess_id win_id pane_id <<< "$match"
         tmux switch-client -t "$sess_id" 2>/dev/null
         tmux select-window -t "$win_id" 2>/dev/null
         # Nudge the agents TUI back to its main list. send-keys writes straight
         # to the pane's input, independent of client focus, so this lands even
-        # if switch-client hasn't fully settled. Only on an existing window — a
+        # if switch-client hasn't fully settled. Target the specific pane so the
+        # key lands in multi-pane windows. Only on an existing dashboard — a
         # freshly launched `claude agents` (else branch) is already on main.
-        [ -n "$nav_key" ] && tmux send-keys -t "$win_id" "$nav_key" 2>/dev/null
+        [ -n "$nav_key" ] && tmux send-keys -t "${pane_id:-$win_id}" "$nav_key" 2>/dev/null
     else
         tmux new-window -n "$wname" "claude agents" 2>/dev/null
     fi

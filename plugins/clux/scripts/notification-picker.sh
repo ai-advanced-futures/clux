@@ -61,10 +61,39 @@ else
         # shellcheck source=./helpers.sh
         # shellcheck disable=SC1091
         source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
-        # Line shape: "<marker> <label>|||agent:<session_id>"
-        _sid="${line##*|||agent:}"
-        agent_jump                   # switch to the agents-view window (by name)
-        _agent_remove_entry "$_sid"  # clear-on-jump
+        # helpers.sh re-derives NOTIFY_FILE from get_tmux_option at source time,
+        # which ignores CLUX_NOTIFY_FILE — restore the queue we actually read so
+        # _agent_remove_entry clears the right file (mirrors jump-to-notification.sh).
+        NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$NOTIFY_FILE}"
+        recompute_lock_target
+        # Line shape (new):    "<marker> <label>|||agent:<SID>@@<TMUXSID>:<WID>:<PID>@@<CWD>"
+        # Line shape (legacy): "<marker> <label>|||agent:<SID>"
+        # Parse identically to jump-to-notification.sh (P6: the pane id is seg2's
+        # LAST colon token, NOT seg1 — the dedup/remove key is seg1, the display SID).
+        rest="${line##*|||agent:}"
+        seg1="${rest%%@@*}"
+        if [[ "$rest" != *@@* ]]; then
+            seg2=""
+            seg3=""
+        else
+            after1="${rest#*@@}"
+            seg2="${after1%%@@*}"
+            seg3="${after1#*@@}"
+        fi
+        remove_key="$seg1"  # dedup key is the display SID (seg1), NOT the pane coords
+
+        if [ -n "$seg2" ]; then
+            pane_id="${seg2##*:}"   # last colon token
+            sid="${seg2%%:*}"       # first colon token
+            _mid="${seg2#*:}"
+            wid="${_mid%%:*}"       # middle colon token
+            target="$sid $wid $pane_id"
+        else
+            target=""
+        fi
+
+        agent_jump "$target" "$seg3"      # fast-path / re-resolve / v3 fallback
+        _agent_remove_entry "$remove_key" # clear-on-jump (widened regex clears both formats)
         tmux refresh-client -S 2>/dev/null
     else
         # Parse SESSION:WINDOW_NAME from bare format (interactive)

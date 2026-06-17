@@ -114,12 +114,28 @@ _agent_handle_event() {
                 terminal-notifier -message "$MSG" -title "$LABEL" >/dev/null 2>&1 || true
             fi
 
+            # Resolve the owning dashboard pane by longest-prefix cwd match so the
+            # jump can fast-path straight to it. Runs detached (TMUX unset) over the
+            # default socket (prototype P1). When no dashboard / no tmux server is
+            # reachable the resolver echoes empty cleanly → seg2 stays empty (@@@@)
+            # and the jump side re-resolves by CWD at click time.
+            local _coords seg2 sid wid pid entry_id
+            _coords=$(resolve_agents_pane_by_cwd "$CWD")
+            if [ -n "$_coords" ]; then
+                read -r sid wid pid <<< "$_coords"
+                seg2="${sid}:${wid}:${pid}"
+            else
+                seg2=""
+            fi
+            # Routing data lives AFTER the ||| (three @@-segments: SID, tmux coords,
+            # CWD) so the status-bar display text (before |||) is unchanged.
+            entry_id="agent:${SESSION_ID}@@${seg2}@@${CWD}"
+
             # Dedup-on-add: remove any existing entry for this session, then append.
-            # Display portion is "<marker> <label>"; the id portion stays
-            # "agent:<sid>" (end-anchored) so _agent_remove_entry keeps matching.
+            # _agent_remove_entry matches by seg1 (SESSION_ID) via the widened regex.
             _agent_remove_entry "$SESSION_ID"
             acquire_lock
-            printf '%s %s|||agent:%s\n' "$MARKER" "$LABEL" "$SESSION_ID" >> "$NOTIFY_FILE"
+            printf '%s %s|||%s\n' "$MARKER" "$LABEL" "$entry_id" >> "$NOTIFY_FILE"
             release_lock
 
             # Emit terminalSequence JSON on stdout (ONLY stdout output for agent path)
