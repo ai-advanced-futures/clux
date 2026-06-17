@@ -280,6 +280,43 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
+# Case 9d: agent_jump — dashboard detected by pane (NOT by window name)
+# Regression: on hosts where the `claude agents` window is NOT named "agents"
+# (e.g. automatic-rename off, or launched in a project-named window), detection
+# must still find the dashboard via the pane running `claude agents`.
+# ---------------------------------------------------------------------------
+@test "agent_jump detects dashboard via list-panes when no window is named agents" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # list-windows emits NOTHING (no window named "agents").
+    # list-panes emits the dashboard pane: "<sid> <wid> <pid>".
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '$sess9 @win9 %%pane9\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    # Dashboard found via pane → switch + select + nav-key to the matched pane.
+    grep -qF "switch-client" "$stub_log" || false
+    grep -qF "select-window" "$stub_log" || false
+    grep -qF "send-keys" "$stub_log" || false
+    grep -qF "%pane9" "$stub_log" || false
+    # Must NOT fall through to opening a brand-new dashboard window.
+    run grep -qF "new-window" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Case 10: agent_jump — no dashboard found
 # ---------------------------------------------------------------------------
 @test "agent_jump with no dashboard calls new-window with agents" {
@@ -313,4 +350,409 @@ STUBEOF
     # send-keys belongs only to the dashboard-found path — must be absent here
     run grep -qF "send-keys" "$stub_log"
     [ "$status" -ne 0 ]
+}
+
+# ===========================================================================
+# REMOVE-REGEX WIDENING (R1-R3) — _agent_remove_entry must clear new @@ format.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# R1: new-format removal — drop the abc-123 @@ line, leave an unrelated @@ line.
+# FAILS on the end-anchored grep (the @@ suffix means it never matches).
+# ---------------------------------------------------------------------------
+@test "_agent_remove_entry removes new @@-format line, leaves unrelated @@ line" {
+    local qfile="$BATS_TEST_TMPDIR/queue"
+    printf '⚡ agents / x|||agent:abc-123@@$s:@w:%%p@@/c\n⚡ agents / y|||agent:xyz-999@@$s:@w:%%p@@/d\n' > "$qfile"
+
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        NOTIFY_FILE='$qfile'
+        recompute_lock_target
+        _agent_remove_entry 'abc-123'
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF "|||agent:abc-123@@" "$qfile"
+    [ "$status" -ne 0 ]
+    grep -qF "|||agent:xyz-999@@" "$qfile" || false
+}
+
+# ---------------------------------------------------------------------------
+# R2: mixed legacy + new for the same SID — removing abc-123 clears BOTH.
+# FAILS on the end-anchored grep (the new @@ line survives).
+# ---------------------------------------------------------------------------
+@test "_agent_remove_entry clears both legacy and new @@ lines for same SID" {
+    local qfile="$BATS_TEST_TMPDIR/queue"
+    printf '⚡ legacy|||agent:abc-123\n⚡ new|||agent:abc-123@@$s:@w:%%p@@/c\n' > "$qfile"
+
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        NOTIFY_FILE='$qfile'
+        recompute_lock_target
+        _agent_remove_entry 'abc-123'
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF "|||agent:abc-123" "$qfile"
+    [ "$status" -ne 0 ]
+    [ ! -s "$qfile" ]
+}
+
+# ---------------------------------------------------------------------------
+# R3: no over-match on a longer id — abc-123 must NOT clear abc-123-extra.
+# Guards the ([@]{2}|$) boundary against prefix over-match in the widened regex.
+# ---------------------------------------------------------------------------
+@test "_agent_remove_entry widened regex does not over-match longer @@ id" {
+    local qfile="$BATS_TEST_TMPDIR/queue"
+    printf '⚡ a|||agent:abc-123@@$s:@w:%%p@@/c\n⚡ b|||agent:abc-123-extra@@$s:@w:%%p@@/d\n' > "$qfile"
+
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        NOTIFY_FILE='$qfile'
+        recompute_lock_target
+        _agent_remove_entry 'abc-123'
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF "|||agent:abc-123@@" "$qfile"
+    [ "$status" -ne 0 ]
+    grep -qF "|||agent:abc-123-extra@@" "$qfile" || false
+}
+
+# ===========================================================================
+# SHARED RESOLVER (RS1-RS4) — resolve_agents_pane_by_cwd(cwd) -> "SID WID PID".
+# The tmux stub emits TAB-delimited list-panes rows in the resolver's -F order:
+#   session_id \t window_id \t pane_id \t pane_current_path \t pane_current_command \t window_name
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# RS1: longest-prefix wins. Two agents panes (/home/jazz/dev and
+# /home/jazz/dev/proj); resolving a cwd under .../proj/sub picks .../proj.
+# FAILS now — the helper does not exist (command-not-found).
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd picks the longest-prefix agents pane" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '$s1\t@w1\t%%p1\t/home/jazz/dev\tclaude\tagents\n'
+    printf '$s2\t@w2\t%%p2\t/home/jazz/dev/proj\tclaude\tagents\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj/sub
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s2 @w2 %p2' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# RS2: within the winning window, pick the claude pane (not the bash pane).
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd prefers the claude pane in the winning window" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    # Same window @w1, same path; first pane is bash, second is claude.
+    printf '$s1\t@w1\t%%pbash\t/home/jazz/dev/proj\t/bin/bash\tagents\n'
+    printf '$s1\t@w1\t%%pclaude\t/home/jazz/dev/proj\tclaude\tagents\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s1 @w1 %pclaude' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# RS3: no candidate — resolver echoes empty string.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd echoes empty when no agents pane matches" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Default tmux stub emits nothing for list-panes.
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# RS4: window-name tag is PRIMARY. The candidate's command is /bin/bash and
+# there is no "claude agents" title (Linux reality) — the window_name==agents
+# tag alone must qualify it.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd selects by window-name tag even when command is bash" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '$s1\t@w1\t%%p1\t/home/jazz/dev/proj\t/bin/bash\tagents\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s1 @w1 %p1' ]] || false
+}
+
+# ===========================================================================
+# AGENT_JUMP ROUTING (J1-J6) — fast-path / re-resolve / fallback / no-arg.
+# These tests drive agent_jump through the jump parser to exercise the full
+# parse + route path. The tmux stub distinguishes the resolver enumeration
+# (-F contains pane_current_path → TAB rows) from the fast-path existence
+# probe (-F is '#{pane_id} #{window_name}' → space rows).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# J1 (P6 GUARD, falsifiable): the pane id is seg2's LAST colon token, NOT seg1.
+# Drive jump with agent:abc-123@@$s:@w:%pane3@@/c. The value sent to
+# `send-keys -t` must be %pane3 — and abc-123 must NEVER reach send-keys -t.
+# FAILS against a naive rest%%@@* parse (which yields seg1=abc-123).
+# ---------------------------------------------------------------------------
+@test "jump: P6 guard — send-keys targets seg2 last colon token, never the SID" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Fast-path probe must confirm %pane3 exists in an agents-tagged window.
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *pane_current_path*)
+            : ;;  # resolver enumeration — emit nothing (force fast-path use)
+        *)
+            # fast-path probe: "<pane_id> <window_name>"
+            printf '%%pane3 agents\n' ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    printf '⚡ agents / x|||agent:abc-123@@$s:@w:%%pane3@@/c\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    # send-keys -t targets the embedded pane id (seg2 last colon token).
+    grep -qF "send-keys -t %pane3" "$stub_log" || false
+    # The SID must never be a send-keys target.
+    run grep -F "send-keys -t abc-123" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J2 fast-path hit: embedded pane exists and is agents-tagged → switch +
+# select + send-keys to the embedded pane; NO new-window.
+# ---------------------------------------------------------------------------
+@test "jump: fast-path hit routes to embedded pane, no new-window" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *pane_current_path*) : ;;
+        *) printf '%%pane3 agents\n' ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    printf '⚡ agents / x|||agent:abc-123@@$s9:@w9:%%pane3@@/c\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "switch-client" "$stub_log" || false
+    grep -qF "select-window" "$stub_log" || false
+    grep -qF "send-keys -t %pane3" "$stub_log" || false
+    run grep -qF "new-window" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J3 fast-path miss → re-resolve: probe returns nothing for the embedded pane,
+# but seg3 cwd is present and the resolver yields a pane → route to it.
+# NO new-window.
+# ---------------------------------------------------------------------------
+@test "jump: fast-path miss re-resolves by cwd, routes to resolved pane" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *pane_current_path*)
+            # resolver enumeration — a live agents pane at the cwd
+            printf '$s2\t@w2\t%%pfresh\t/home/jazz/dev/proj\tclaude\tagents\n' ;;
+        *)
+            : ;;  # fast-path probe: embedded pane is GONE (emit nothing)
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    printf '⚡ agents / x|||agent:abc-123@@$sOld:@wOld:%%pdead@@/home/jazz/dev/proj/sub\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "send-keys -t %pfresh" "$stub_log" || false
+    # The dead embedded pane must NOT be a send-keys target.
+    run grep -F "send-keys -t %pdead" "$stub_log"
+    [ "$status" -ne 0 ]
+    run grep -qF "new-window" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J4 empty seg2 → re-resolve: agent:abc-123@@@@/c parses seg2 empty, seg3=/c;
+# fast-path is skipped, resolver runs, routes to the resolved pane.
+# ---------------------------------------------------------------------------
+@test "jump: empty seg2 skips fast-path and re-resolves by cwd" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *pane_current_path*)
+            printf '$s2\t@w2\t%%presolved\t/home/jazz/dev/proj\tclaude\tagents\n' ;;
+        *) : ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    printf '⚡ agents / x|||agent:abc-123@@@@/home/jazz/dev/proj\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "send-keys -t %presolved" "$stub_log" || false
+    run grep -qF "new-window" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J5 legacy entry → v3 fallback: agent:abc-123 (no @@), no dashboard →
+# agent_jump "" "" → new-window; remove_key abc-123 still clears the line.
+# ---------------------------------------------------------------------------
+@test "jump: legacy entry (no @@) falls back to v3 new-window and clears" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Default tmux stub: no list-panes output anywhere → v3 fallback new-window.
+    printf '⚡ legacy|||agent:abc-123\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/jump-to-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "new-window" "$stub_log" || false
+    # The legacy line was cleared via the widened remove-regex.
+    run grep -qF "|||agent:abc-123" "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J6 backward-compat no-arg: agent_jump with NO args reproduces Case 9/10.
+# window match → switch+select+send-keys; no match → new-window.
+# ---------------------------------------------------------------------------
+@test "agent_jump no-arg reproduces v3 behavior (window match + no-match)" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Window-name match path (list-windows emits the dashboard window).
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-windows" ]; then
+    printf '$sess1 @win2 %%pane2\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "switch-client" "$stub_log" || false
+    grep -qF "select-window" "$stub_log" || false
+
+    # No-match path → new-window (fresh default stub emits nothing).
+    local stub_log2="$BATS_TEST_TMPDIR/stub2.log"
+    run bash -c "
+        export STUB_LOG='$stub_log2'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        # default committed stub emits nothing for list-windows/list-panes
+        cat > '$BATS_TEST_TMPDIR/stubs/tmux' <<'EOS'
+#!/usr/bin/env bash
+echo \"tmux \$*\" >> \"\${STUB_LOG:-/dev/null}\"
+exit 0
+EOS
+        chmod +x '$BATS_TEST_TMPDIR/stubs/tmux'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "new-window" "$stub_log2" || false
 }

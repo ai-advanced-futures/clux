@@ -85,6 +85,54 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
+# Case 3b: ENTER on NEW-format agent line → fast-path routes to embedded pane
+# AND clears the entry on jump. REGRESSION GUARD (P6 parse in the picker):
+# the old picker took the full tail after '|||agent:' as _sid, called agent_jump
+# with NO args (ignoring the embedded coords) and fed _agent_remove_entry a
+# garbage value ('abc-123@@$s9:@w9:%pane3@@/c'), whose literal '$s9' expanded as
+# an unset shell var inside the remove regex → the entry was NEVER cleared.
+# This test FAILS on that buggy picker (no send-keys -t %pane3; entry survives).
+# ---------------------------------------------------------------------------
+@test "picker: ENTER on new-format agent line fast-paths to embedded pane and clears it" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # Fast-path probe must confirm %pane3 exists in an agents-tagged window;
+    # resolver enumeration (has pane_current_path) emits nothing to force fast-path.
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *pane_current_path*) : ;;
+        *) printf '%%pane3 agents\n' ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    printf '⚡ agents / x|||agent:abc-123@@$s9:@w9:%%pane3@@/c\n' > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FZF_STUB_KEY=''
+        export FZF_STUB_LINE='⚡ agents / x|||agent:abc-123@@\$s9:@w9:%pane3@@/c'
+        bash '$SCRIPTS_DIR/notification-picker.sh'
+    "
+    [ "$status" -eq 0 ]
+    # Routed via the embedded pane id (seg2 last colon token), not the SID.
+    grep -qF "send-keys -t %pane3" "$stub_log" || false
+    run grep -F "send-keys -t abc-123" "$stub_log"
+    [ "$status" -ne 0 ]
+    # Clear-on-jump actually removed the entry (the core regression assertion).
+    run grep -qF "|||agent:abc-123@@" "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+    [ ! -s "$QUEUE_FILE" ]
+}
+
+# ---------------------------------------------------------------------------
 # Case 4: Ctrl-D on agent: line → line removed from queue
 # ---------------------------------------------------------------------------
 @test "picker: Ctrl-D on agent line dismisses (removes) it from queue" {

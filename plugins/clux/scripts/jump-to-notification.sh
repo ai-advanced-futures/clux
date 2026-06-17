@@ -14,13 +14,47 @@ FIRST=$(head -1 "$NOTIFY_FILE")
 # ||| check below because agent: lines also contain |||, and the generic branch
 # would mis-route them as tmux select-window -t "agent:<sid>".
 if [[ "$FIRST" == *"|||agent:"* ]]; then
+    _AGENT_QUEUE="$NOTIFY_FILE"  # the queue we read FIRST from (CLUX_NOTIFY_FILE-aware)
     # shellcheck source=./helpers.sh
     # shellcheck disable=SC1091
     source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
-    # Line shape: "<marker> <label>|||agent:<session_id>"
-    _sid="${FIRST##*|||agent:}"  # "<session_id>"
-    agent_jump                   # switch to the agents-view window (by name)
-    _agent_remove_entry "$_sid"  # clear-on-jump: drop the entry we just handled
+    # helpers.sh re-derives NOTIFY_FILE from get_tmux_option at source time, which
+    # ignores CLUX_NOTIFY_FILE — restore the queue we actually read so
+    # _agent_remove_entry clears the right file.
+    NOTIFY_FILE="$_AGENT_QUEUE"
+    recompute_lock_target
+    # Line shape (new):    "<marker> <label>|||agent:<SID>@@<TMUXSID>:<WID>:<PID>@@<CWD>"
+    # Line shape (legacy): "<marker> <label>|||agent:<SID>"
+    rest="${FIRST##*|||agent:}"
+
+    # Split rest on @@ into three segments. For a legacy line (no @@) seg2/seg3
+    # MUST be force-emptied — ${rest#*@@} returns rest UNCHANGED when there is no
+    # delimiter, which would otherwise make seg2 wrongly equal the SID.
+    seg1="${rest%%@@*}"
+    if [[ "$rest" != *@@* ]]; then
+        seg2=""
+        seg3=""
+    else
+        after1="${rest#*@@}"
+        seg2="${after1%%@@*}"
+        seg3="${after1#*@@}"
+    fi
+    remove_key="$seg1"  # dedup key is the display SID (seg1), NOT the pane coords
+
+    # P6 CORRECTION: the pane id is seg2's LAST colon token (TMUXSID:WID:PID),
+    # NOT seg1. A naive rest%%@@* would hand agent_jump the SID and mis-route.
+    if [ -n "$seg2" ]; then
+        pane_id="${seg2##*:}"   # last colon token
+        sid="${seg2%%:*}"       # first colon token
+        _mid="${seg2#*:}"
+        wid="${_mid%%:*}"       # middle colon token
+        target="$sid $wid $pane_id"
+    else
+        target=""
+    fi
+
+    agent_jump "$target" "$seg3"      # fast-path / re-resolve / v3 fallback
+    _agent_remove_entry "$remove_key" # clear-on-jump (widened regex clears both formats)
     tmux refresh-client -S 2>/dev/null
     exit 0
 fi
