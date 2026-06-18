@@ -433,18 +433,32 @@ STUBEOF
 # /home/jazz/dev/proj); resolving a cwd under .../proj/sub picks .../proj.
 # FAILS now — the helper does not exist (command-not-found).
 # ---------------------------------------------------------------------------
-@test "resolve_agents_pane_by_cwd picks the longest-prefix agents pane" {
+# Resolver enumeration stub format (v5, process-based):
+#   tmux list-panes -F → "pane_pid\tsession_id\twindow_id\tpane_id\tpane_current_path"
+#   ps  -eo pid=,ppid=,args= → "<pid> <ppid> <args...>"
+# A dashboard is a process whose own binary basename is `claude` carrying the
+# `agents` subcommand; it maps to its tmux pane via the ppid chain (pid->pane_pid).
+
+@test "resolve_agents_pane_by_cwd picks the longest-prefix dashboard" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
-    printf '$s1\t@w1\t%%p1\t/home/jazz/dev\tclaude\tagents\n'
-    printf '$s2\t@w2\t%%p2\t/home/jazz/dev/proj\tclaude\tagents\n'
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev\n'
+    printf '1002\t$s2\t@w2\t%%p2\t/home/jazz/dev/proj\n'
 fi
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    # Leading pad mimics real `ps` right-justified pid column (exercises ltrim).
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '  2001 1001 claude agents --cwd /home/jazz/dev\n'
+printf '  2002 1002 claude agents --cwd /home/jazz/dev/proj\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
     run bash -c "
         export STUB_LOG='$stub_log'
@@ -457,21 +471,27 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# RS2: within the winning window, pick the claude pane (not the bash pane).
+# RS2: a split window (bash pane + claude pane) — the dashboard process's
+# parent is the CLAUDE pane's shell, so we land on the claude pane.
 # ---------------------------------------------------------------------------
-@test "resolve_agents_pane_by_cwd prefers the claude pane in the winning window" {
+@test "resolve_agents_pane_by_cwd lands on the claude pane in a split window" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
-    # Same window @w1, same path; first pane is bash, second is claude.
-    printf '$s1\t@w1\t%%pbash\t/home/jazz/dev/proj\t/bin/bash\tagents\n'
-    printf '$s1\t@w1\t%%pclaude\t/home/jazz/dev/proj\tclaude\tagents\n'
+    printf '1001\t$s1\t@w1\t%%pbash\t/home/jazz/dev/proj\n'
+    printf '1002\t$s1\t@w1\t%%pclaude\t/home/jazz/dev/proj\n'
 fi
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1002 claude agents --cwd /home/jazz/dev/proj\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
     run bash -c "
         export STUB_LOG='$stub_log'
@@ -484,11 +504,27 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# RS3: no candidate — resolver echoes empty string.
+# RS3: panes + dashboard exist but the cwd is outside every dashboard root →
+# resolver echoes empty.
 # ---------------------------------------------------------------------------
-@test "resolve_agents_pane_by_cwd echoes empty when no agents pane matches" {
+@test "resolve_agents_pane_by_cwd echoes empty when no dashboard root matches" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
-    # Default tmux stub emits nothing for list-panes.
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/other\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/other\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
     run bash -c "
         export STUB_LOG='$stub_log'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
@@ -500,21 +536,127 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# RS4: window-name tag is PRIMARY. The candidate's command is /bin/bash and
-# there is no "claude agents" title (Linux reality) — the window_name==agents
-# tag alone must qualify it.
+# RS4 (REAL-BUG REGRESSION): the dashboard lives in a PROJECT-named window
+# (not "agents"); tmux reports pane_current_command "claude" (never the args).
+# Only the process table reveals it. A worktree cwd nested under the dashboard
+# root must still resolve to that pane. FAILS against window-name/command
+# filtering — the exact failure observed live.
 # ---------------------------------------------------------------------------
-@test "resolve_agents_pane_by_cwd selects by window-name tag even when command is bash" {
+@test "resolve_agents_pane_by_cwd detects a dashboard in a project-named window" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
-    printf '$s1\t@w1\t%%p1\t/home/jazz/dev/proj\t/bin/bash\tagents\n'
+    printf '1001\t$s1\t@marina\t%%p1\t/home/jazz/dev/marina\n'
 fi
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude --allow-dangerously-skip-permissions agents --cwd /home/jazz/dev/marina\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/marina/.claude/worktrees/gus-double-send
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s1 @marina %p1' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# RS5: ppid multi-hop — a wrapper process sits between the pane shell and the
+# claude dashboard; the chain walk must climb through it to the pane.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd walks a multi-hop ppid chain to the pane" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/proj\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '3001 2001 claude agents --cwd /home/jazz/dev/proj\n'
+printf '2001 1001 script -qfc claude\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj/x
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s1 @w1 %p1' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# RS6: dashboard launched WITHOUT --cwd → root falls back to the owning pane's
+# current path.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd falls back to pane path when --cwd is absent" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/proj\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj/x
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '$s1 @w1 %p1' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# RS7 (basename guard): a non-claude process carrying "agents" in its argv
+# (e.g. `script -qfc claude agents …`) must NOT be treated as a dashboard.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd ignores non-claude processes that mention agents" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/proj\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 script -qfc claude agents --cwd /home/jazz/dev/proj\n'
+printf '2002 1001 node /usr/lib/agents-server.js --cwd /home/jazz/dev/proj\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
     run bash -c "
         export STUB_LOG='$stub_log'
@@ -523,7 +665,7 @@ STUBEOF
         resolve_agents_pane_by_cwd /home/jazz/dev/proj
     "
     [ "$status" -eq 0 ]
-    [[ "$output" == '$s1 @w1 %p1' ]] || false
+    [ -z "$output" ]
 }
 
 # ===========================================================================
@@ -551,8 +693,8 @@ if [ "$1" = "list-panes" ]; then
         *pane_current_path*)
             : ;;  # resolver enumeration — emit nothing (force fast-path use)
         *)
-            # fast-path probe: "<pane_id> <window_name>"
-            printf '%%pane3 agents\n' ;;
+            # fast-path existence probe: one pane id per line
+            printf '%%pane3\n' ;;
     esac
 fi
 exit 0
@@ -588,7 +730,7 @@ echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
     case "$*" in
         *pane_current_path*) : ;;
-        *) printf '%%pane3 agents\n' ;;
+        *) printf '%%pane3\n' ;;
     esac
 fi
 exit 0
@@ -625,8 +767,8 @@ echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
     case "$*" in
         *pane_current_path*)
-            # resolver enumeration — a live agents pane at the cwd
-            printf '$s2\t@w2\t%%pfresh\t/home/jazz/dev/proj\tclaude\tagents\n' ;;
+            # resolver enumeration — a live dashboard pane at the cwd
+            printf '1001\t$s2\t@w2\t%%pfresh\t/home/jazz/dev/proj\n' ;;
         *)
             : ;;  # fast-path probe: embedded pane is GONE (emit nothing)
     esac
@@ -634,6 +776,12 @@ fi
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/proj\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
     printf '⚡ agents / x|||agent:abc-123@@$sOld:@wOld:%%pdead@@/home/jazz/dev/proj/sub\n' > "$QUEUE_FILE"
 
@@ -665,13 +813,19 @@ echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
     case "$*" in
         *pane_current_path*)
-            printf '$s2\t@w2\t%%presolved\t/home/jazz/dev/proj\tclaude\tagents\n' ;;
+            printf '1001\t$s2\t@w2\t%%presolved\t/home/jazz/dev/proj\n' ;;
         *) : ;;
     esac
 fi
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/proj\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
     printf '⚡ agents / x|||agent:abc-123@@@@/home/jazz/dev/proj\n' > "$QUEUE_FILE"
 

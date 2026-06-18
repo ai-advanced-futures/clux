@@ -95,15 +95,16 @@ STUBEOF
 # ---------------------------------------------------------------------------
 @test "picker: ENTER on new-format agent line fast-paths to embedded pane and clears it" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
-    # Fast-path probe must confirm %pane3 exists in an agents-tagged window;
-    # resolver enumeration (has pane_current_path) emits nothing to force fast-path.
+    # Fast-path existence probe must confirm %pane3 still exists (pane id per
+    # line); resolver enumeration (has pane_current_path) emits nothing to force
+    # the fast-path.
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 if [ "$1" = "list-panes" ]; then
     case "$*" in
         *pane_current_path*) : ;;
-        *) printf '%%pane3 agents\n' ;;
+        *) printf '%%pane3\n' ;;
     esac
 fi
 exit 0
