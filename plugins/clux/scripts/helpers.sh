@@ -235,72 +235,90 @@ resolve_agent_name() {
 #
 #   $1 = cwd of the agent session (the .cwd hook field)
 #
-# Strategy (spec §2.7 / §4.1):
-#   1. Enumerate every pane via a SINGLE `tmux list-panes -a`, TAB-delimited so
-#      pane_current_path values containing spaces survive the split.
-#   2. A pane is an agents candidate when its window_name == get_agent_window
-#      (PRIMARY — the constant tag), OR its pane_current_command / window_name
-#      matches *claude agents* (SECONDARY — unreliable on Linux where the command
-#      is /bin/bash, so it is only a backstop).
-#   3. Among candidates, pick the one whose pane_current_path is the LONGEST
-#      prefix of $1 (first-wins tie-break via enumeration order).
-#   4. Within that winning WINDOW, prefer the pane whose pane_current_command is
-#      `claude` (the dashboard TUI pane, when the window is split claude+bash);
-#      otherwise fall back to the matched candidate's own pane id.
+# Strategy (v5 — "detect the dashboard by its PROCESS"):
+#   tmux's #{pane_current_command} reports only the bare command name (always
+#   "claude" — never the args), #{pane_start_command} is the launching shell
+#   (/bin/bash), and the window is named per-project, not "agents". So a running
+#   `claude agents` dashboard is INVISIBLE to tmux format matching — the earlier
+#   window-name / "claude agents" string filters matched nothing on real setups
+#   and every jump fell through to a useless new-window. The process table is the
+#   only reliable signal.
+#
+#   1. Snapshot panes (pane_pid -> session/window/pane/path) and processes
+#      (pid ppid args) — one `tmux list-panes` + one `ps`, both portable.
+#   2. A dashboard is any process whose OWN binary basename is `claude` carrying
+#      the `agents` subcommand. Its managed root is its `--cwd <path>` value (or,
+#      absent that, the owning pane's current path). The basename guard excludes
+#      `script -qfc claude…`, `bash -c …` wrappers, and background pty hosts.
+#   3. Map each dashboard process to its tmux pane by walking the ppid chain
+#      (within the same ps snapshot) until a pid equals a pane_pid — robust to a
+#      wrapper sitting between the pane shell and the claude process.
+#   4. Pick the dashboard whose root is the LONGEST prefix of $1. The pane we land
+#      on is the claude pane itself (it is the process we matched), so split
+#      claude+bash windows need no extra disambiguation.
 resolve_agents_pane_by_cwd() {
-    local cwd="$1" wname rows
+    local cwd="$1"
     [ -z "$cwd" ] && return 0
-    wname=$(get_agent_window)
 
-    # Single IPC call. TAB-delimited; trailing newline-terminated rows.
-    rows=$(tmux list-panes -a \
-             -F '#{session_id}	#{window_id}	#{pane_id}	#{pane_current_path}	#{pane_current_command}	#{window_name}' \
+    local panes procs
+    panes=$(tmux list-panes -a \
+             -F '#{pane_pid}	#{session_id}	#{window_id}	#{pane_id}	#{pane_current_path}' \
              2>/dev/null)
-    [ -z "$rows" ] && return 0
+    [ -z "$panes" ] && return 0
+    # One process snapshot: "<pid> <ppid> <args...>". `ps -eo pid=,ppid=,args=`
+    # is accepted by both GNU (Linux) and BSD (macOS) ps; no /proc dependency.
+    procs=$(ps -eo pid=,ppid=,args= 2>/dev/null)
+    [ -z "$procs" ] && return 0
 
-    local best_sid="" best_wid="" best_pid="" best_len=-1
-    local IFS_save=$IFS
-    while IFS=$'\t' read -r sid wid pid cpath ccmd wnam; do
-        [ -z "$sid" ] && continue
-        # Candidate filter: window-name tag (primary) OR command/title (secondary).
-        if [ "$wnam" != "$wname" ] \
-           && [[ "$ccmd" != *"claude agents"* ]] \
-           && [[ "$wnam" != *"claude agents"* ]]; then
-            continue
-        fi
-        # Longest-prefix match of the candidate path against $cwd.
+    local best_len=-1 best_sid="" best_wid="" best_pid="" IFS_save=$IFS
+
+    while IFS= read -r prow; do
+        local apid aargs first base aroot
+        prow="${prow#"${prow%%[![:space:]]*}"}"   # ltrim leading ps padding
+        apid=${prow%% *}; prow=${prow#* }
+        prow="${prow#"${prow%%[![:space:]]*}"}"
+        # second field is ppid (skipped here; the chain walk re-reads it), rest is args
+        prow=${prow#* }
+        aargs=$prow
+        [ -z "$apid" ] && continue
+        first=${aargs%% *}; base=${first##*/}
+        [ "$base" = "claude" ] || continue
+        case " $aargs " in *" agents "*) ;; *) continue ;; esac
+
+        # Managed root = the dashboard's --cwd value (pane path filled in later).
+        aroot=$(printf '%s' "$aargs" | sed -n 's/.*--cwd \([^ ][^ ]*\).*/\1/p')
+
+        # Walk the ppid chain (same ps snapshot) until a pid hits a tmux pane_pid.
+        local cur=$apid depth=0 pane_row=""
+        while [ -n "$cur" ] && [ "$cur" != "0" ] && [ "$cur" != "1" ] && [ "$depth" -lt 12 ]; do
+            pane_row=$(printf '%s\n' "$panes" | awk -F'\t' -v p="$cur" '$1==p{print; exit}')
+            [ -n "$pane_row" ] && break
+            cur=$(printf '%s\n' "$procs" | awk -v p="$cur" '{if ($1==p){print $2; exit}}')
+            depth=$((depth + 1))
+        done
+        [ -z "$pane_row" ] && continue
+
+        local p_pid p_sid p_wid p_paneid p_path
+        IFS=$'\t' read -r p_pid p_sid p_wid p_paneid p_path <<<"$pane_row"
+        IFS=$IFS_save
+        [ -z "$aroot" ] && aroot="$p_path"
+
         case "$cwd" in
-            "$cpath"|"$cpath"/*)
-                if [ "${#cpath}" -gt "$best_len" ]; then
-                    best_len=${#cpath}
-                    best_sid=$sid
-                    best_wid=$wid
-                    best_pid=$pid
+            "$aroot"|"$aroot"/*)
+                if [ "${#aroot}" -gt "$best_len" ]; then
+                    best_len=${#aroot}
+                    best_sid=$p_sid
+                    best_wid=$p_wid
+                    best_pid=$p_paneid
                 fi
                 ;;
         esac
     done <<EOF
-$rows
+$procs
 EOF
     IFS=$IFS_save
 
     [ -z "$best_wid" ] && return 0
-
-    # Within the winning window, prefer the claude pane (split windows host a
-    # claude pane + a bash pane); fall back to the matched candidate's pane id.
-    local claude_pid=""
-    while IFS=$'\t' read -r sid wid pid cpath ccmd wnam; do
-        [ "$wid" = "$best_wid" ] || continue
-        if [ "$ccmd" = "claude" ]; then
-            claude_pid=$pid
-            break
-        fi
-    done <<EOF
-$rows
-EOF
-    IFS=$IFS_save
-    [ -n "$claude_pid" ] && best_pid=$claude_pid
-
     printf '%s %s %s\n' "$best_sid" "$best_wid" "$best_pid"
 }
 
@@ -330,27 +348,29 @@ EOF
 #   cwd    = the agent session cwd, for self-healing re-resolution (may be empty)
 #
 # Multi-session routing (spec §2.6):
-#   FAST-PATH  — if target is non-empty AND the embedded pane id STILL exists in
-#                an agents-tagged window, route straight to it.
+#   FAST-PATH  — if target is non-empty AND the embedded pane id STILL exists,
+#                route straight to it.
 #   RE-RESOLVE — else if cwd is non-empty, resolve the owning dashboard pane by
-#                longest-prefix match and route there.
-#   FALLBACK   — else (no args, or both miss) drop through to the unchanged v3
-#                body: detect the first `claude agents` pane, else new-window.
+#                process-based longest-prefix match and route there.
+#   FALLBACK   — else (no args, or both miss) drop through to the v3 body:
+#                detect a `claude agents` pane, else open one in a new window.
 agent_jump() {
     local _target="$1" _cwd="$2"
     local wname match="" nav_key sess_id win_id pane_id
     wname=$(get_agent_window)
     nav_key=$(get_agent_nav_key)
 
-    # FAST-PATH: honour the embedded pane id only if it still exists AND its
-    # window is agents-tagged (a recycled pane id in a non-agents window would
-    # mis-route — so confirm both before trusting it; any doubt falls through).
+    # FAST-PATH: honour the embedded pane id if it STILL exists. Dashboards are
+    # no longer identified by window name (they live in per-project windows), so
+    # the gate is bare existence. tmux pane ids (%N) increase monotonically and
+    # are not reused within a server's lifetime, so a surviving id is the same
+    # pane it was at ping time; any miss falls through to the cwd re-resolve.
     if [ -n "$_target" ]; then
         local _t_sid _t_wid _t_pid _probe
         read -r _t_sid _t_wid _t_pid <<< "$_target"
         if [ -n "$_t_pid" ]; then
-            _probe=$(tmux list-panes -a -F '#{pane_id} #{window_name}' 2>/dev/null \
-                       | grep -F "$_t_pid $wname")
+            _probe=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null \
+                       | grep -Fx "$_t_pid")
             if [ -n "$_probe" ]; then
                 tmux switch-client -t "$_t_sid" 2>/dev/null
                 tmux select-window -t "$_t_wid" 2>/dev/null

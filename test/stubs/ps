@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# stub: ps
+# Logs invocation; exits 0, emits nothing (no processes by default). Tests that
+# exercise process-based dashboard detection override this with canned rows.
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+exit 0
