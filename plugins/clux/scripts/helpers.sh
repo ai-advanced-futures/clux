@@ -267,15 +267,13 @@ _clux_canon_path() {
     if [ -d "$p" ]; then
         ( cd -- "$p" 2>/dev/null && pwd -P ) && return 0
     fi
-    while :; do
-        case "$p" in
-            */.) p=${p%/.} ;;
-            */)  p=${p%/}  ;;
-            *)   break     ;;
-        esac
-        if [ -z "$p" ]; then p=/; break; fi
-    done
-    printf '%s\n' "$p"
+    # Lexical fallback. One suffix of each kind is enough: the inputs are a tmux
+    # pane_current_path (never trailing-slashed) or a single --cwd scrape, so
+    # stacked artifacts like "/p/./." do not occur. "" means the path was all
+    # separators, i.e. the root.
+    p=${p%/.}
+    p=${p%/}
+    printf '%s\n' "${p:-/}"
 }
 
 resolve_agents_pane_by_cwd() {

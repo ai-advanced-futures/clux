@@ -929,39 +929,24 @@ exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
 
-    # Trailing "/." spelling.
-    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+    # Every spelling of the same directory must resolve to the same pane.
+    for suffix in '/.' '/' ''; do
+        cat > "$BATS_TEST_TMPDIR/stubs/ps" <<STUBEOF
 #!/usr/bin/env bash
-echo "ps $*" >> "${STUB_LOG:-/dev/null}"
-printf '2001 1001 claude agents --cwd /home/jazz/dev/proj/.\n'
+echo "ps \$*" >> "\${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/proj${suffix}\n'
 STUBEOF
-    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+        chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 
-    run bash -c "
-        export STUB_LOG='$stub_log'
-        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
-        source '$SCRIPTS_DIR/helpers.sh'
-        resolve_agents_pane_by_cwd /home/jazz/dev/proj/sub
-    "
-    [ "$status" -eq 0 ]
-    [[ "$output" == '$s1 @w1 %p1' ]] || false
-
-    # Trailing "/" spelling.
-    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
-#!/usr/bin/env bash
-echo "ps $*" >> "${STUB_LOG:-/dev/null}"
-printf '2001 1001 claude agents --cwd /home/jazz/dev/proj/\n'
-STUBEOF
-    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
-
-    run bash -c "
-        export STUB_LOG='$stub_log'
-        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
-        source '$SCRIPTS_DIR/helpers.sh'
-        resolve_agents_pane_by_cwd /home/jazz/dev/proj/sub
-    "
-    [ "$status" -eq 0 ]
-    [[ "$output" == '$s1 @w1 %p1' ]] || false
+        run bash -c "
+            export STUB_LOG='$stub_log'
+            export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+            source '$SCRIPTS_DIR/helpers.sh'
+            resolve_agents_pane_by_cwd /home/jazz/dev/proj/sub
+        "
+        [ "$status" -eq 0 ] || { echo "nonzero status for --cwd suffix [$suffix]"; false; }
+        [[ "$output" == '$s1 @w1 %p1' ]] || { echo "wrong pane for --cwd suffix [$suffix]: $output"; false; }
+    done
 }
 
 # ---------------------------------------------------------------------------
