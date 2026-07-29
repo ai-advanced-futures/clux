@@ -910,3 +910,144 @@ EOS
     [ "$status" -eq 0 ]
     grep -qF "new-window" "$stub_log2" || false
 }
+
+# ---------------------------------------------------------------------------
+# RS5: path canonicalization. A dashboard whose --cwd carries a trailing "/." or
+# "/" names the same directory as the bare path, so the prefix match must still
+# fire. Before canonicalization these compared as plain strings and missed,
+# dropping the caller into the server-wide fallback guess.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd matches despite trailing slash or /. in --cwd" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/proj\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    # Every spelling of the same directory must resolve to the same pane.
+    for suffix in '/.' '/' ''; do
+        cat > "$BATS_TEST_TMPDIR/stubs/ps" <<STUBEOF
+#!/usr/bin/env bash
+echo "ps \$*" >> "\${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/proj${suffix}\n'
+STUBEOF
+        chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
+        run bash -c "
+            export STUB_LOG='$stub_log'
+            export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+            source '$SCRIPTS_DIR/helpers.sh'
+            resolve_agents_pane_by_cwd /home/jazz/dev/proj/sub
+        "
+        [ "$status" -eq 0 ] || { echo "nonzero status for --cwd suffix [$suffix]"; false; }
+        [[ "$output" == '$s1 @w1 %p1' ]] || { echo "wrong pane for --cwd suffix [$suffix]: $output"; false; }
+    done
+}
+
+# ---------------------------------------------------------------------------
+# RS6: the ps snapshot must select ALL processes and must not be width-clipped.
+# -e means "show the environment" on BSD/macOS (only -A selects every process),
+# and BSD ps clips args to 80 columns when stdout is not a tty — which lands
+# mid-path on a real `claude agents --cwd …` line.
+# ---------------------------------------------------------------------------
+@test "resolve_agents_pane_by_cwd invokes ps with -A and -ww" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/proj\n'
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        resolve_agents_pane_by_cwd /home/jazz/dev/proj
+    "
+    [ "$status" -eq 0 ]
+    grep '^ps ' "$stub_log" | grep -qE ' -A( |$)' || false
+    grep '^ps ' "$stub_log" | grep -qE ' -ww( |$)' || false
+    # -e would mean "display the environment" on macOS; it must be gone.
+    run bash -c "grep '^ps ' '$stub_log' | grep -qE ' -e( |\$)'"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J7: a cwd was supplied but no dashboard owns it. clux must NOT fall through to
+# the server-wide `head -1` guess — with several dashboards open that lands on an
+# arbitrary project and is indistinguishable from a correct jump. Expect a
+# reported no-op instead: display-message, and no switch-client/new-window.
+# ---------------------------------------------------------------------------
+@test "agent_jump with a known cwd and no owning dashboard reports instead of guessing" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    # list-panes WITHOUT -f  -> resolver enumeration (dashboard rooted elsewhere)
+    # list-panes WITH    -f  -> fallback guess; emits a decoy we must NOT jump to
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *-f*) printf '$sDECOY @wDECOY %%pDECOY\n' ;;
+        *)    printf '1001\t$s1\t@w1\t%%p1\t/home/jazz/dev/other\n' ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+printf '2001 1001 claude agents --cwd /home/jazz/dev/other\n'
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump '' /home/jazz/dev/proj
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "display-message" "$stub_log" || false
+    run grep -qF "switch-client" "$stub_log"
+    [ "$status" -ne 0 ]
+    run grep -qF "new-window" "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# J8: the no-arg path is unchanged by J7's gate — with no cwd to go on, guessing
+# is the only option and must still happen.
+# ---------------------------------------------------------------------------
+@test "agent_jump with no cwd still uses the fallback guess" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+if [ "$1" = "list-panes" ]; then
+    case "$*" in
+        *-f*) printf '$sX @wX %%pX\n' ;;
+    esac
+fi
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        agent_jump
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "switch-client" "$stub_log" || false
+}

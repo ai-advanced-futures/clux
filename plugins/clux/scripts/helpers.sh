@@ -256,18 +256,49 @@ resolve_agent_name() {
 #   4. Pick the dashboard whose root is the LONGEST prefix of $1. The pane we land
 #      on is the claude pane itself (it is the process we matched), so split
 #      claude+bash windows need no extra disambiguation.
+# Canonicalize a directory path for prefix comparison. Two spellings of the same
+# directory ("/p", "/p/", "/p/.", or a symlinked route to it) must compare equal,
+# otherwise the longest-prefix match below silently misses and the caller falls
+# through to a server-wide guess. Resolves symlinks when the path exists; falls
+# back to lexical cleanup when it does not (a dashboard whose cwd was removed).
+_clux_canon_path() {
+    local p="$1"
+    [ -z "$p" ] && return 0
+    if [ -d "$p" ]; then
+        ( cd -- "$p" 2>/dev/null && pwd -P ) && return 0
+    fi
+    # Lexical fallback. One suffix of each kind is enough: the inputs are a tmux
+    # pane_current_path (never trailing-slashed) or a single --cwd scrape, so
+    # stacked artifacts like "/p/./." do not occur. "" means the path was all
+    # separators, i.e. the root.
+    p=${p%/.}
+    p=${p%/}
+    printf '%s\n' "${p:-/}"
+}
+
 resolve_agents_pane_by_cwd() {
     local cwd="$1"
     [ -z "$cwd" ] && return 0
+    cwd=$(_clux_canon_path "$cwd")
 
     local panes procs
     panes=$(tmux list-panes -a \
              -F '#{pane_pid}	#{session_id}	#{window_id}	#{pane_id}	#{pane_current_path}' \
              2>/dev/null)
     [ -z "$panes" ] && return 0
-    # One process snapshot: "<pid> <ppid> <args...>". `ps -eo pid=,ppid=,args=`
-    # is accepted by both GNU (Linux) and BSD (macOS) ps; no /proc dependency.
-    procs=$(ps -eo pid=,ppid=,args= 2>/dev/null)
+    # One process snapshot: "<pid> <ppid> <args...>". No /proc dependency.
+    #
+    # -A, not -e: on Linux they are synonyms ("-A  Select all processes.
+    # Identical to -e"), but on BSD/macOS -e means "display the environment as
+    # well" and -A is the flag that selects every process. The previous -e
+    # therefore scanned only the caller's own terminal-attached processes on
+    # macOS — and appended env vars to args, which the --cwd sed below can
+    # mis-scrape. -A is unambiguous on both.
+    #
+    # -ww disables column truncation: BSD ps clips args to the terminal width
+    # (80 when not a tty, i.e. inside a hook), which lands mid-path on a real
+    # `claude agents --cwd …` line and leaves $aroot a partial directory.
+    procs=$(ps -A -ww -o pid=,ppid=,args= 2>/dev/null)
     [ -z "$procs" ] && return 0
 
     local best_len=-1 best_sid="" best_wid="" best_pid="" IFS_save=$IFS
@@ -302,6 +333,7 @@ resolve_agents_pane_by_cwd() {
         IFS=$'\t' read -r p_pid p_sid p_wid p_paneid p_path <<<"$pane_row"
         IFS=$IFS_save
         [ -z "$aroot" ] && aroot="$p_path"
+        aroot=$(_clux_canon_path "$aroot")
 
         case "$cwd" in
             "$aroot"|"$aroot"/*)
@@ -391,6 +423,14 @@ agent_jump() {
             [ -n "$nav_key" ] && tmux send-keys -t "${_r_pid:-$_r_wid}" "$nav_key" 2>/dev/null
             return 0
         fi
+        # MISS with a known cwd. Deliberately do NOT fall through to the
+        # server-wide `head -1` guess below: with more than one dashboard open
+        # it lands on an arbitrary project, which is indistinguishable from a
+        # correct jump until you have already typed into it. A reported no-op is
+        # recoverable; a silent teleport is not. No-arg callers (empty $_cwd)
+        # still reach the fallback, where guessing is the only option.
+        tmux display-message "clux: no agents view for ${_cwd##*/}" 2>/dev/null
+        return 0
     fi
 
     # FALLBACK (v3, unchanged) — reached by no-arg callers and both miss paths.
