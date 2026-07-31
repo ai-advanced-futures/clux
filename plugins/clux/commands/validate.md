@@ -19,10 +19,10 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 
 1. **tmux running**: `tmux info &>/dev/null && echo "OK" || echo "FAIL"`
 2. **tmux version**: `tmux -V`
-3. **Deployed scripts** — check all 5 exist and are executable at `~/.config/clux/scripts/`:
+3. **Deployed scripts** — check all 6 exist and are executable at `~/.config/clux/scripts/`:
    ```bash
    DEPLOY_DIR="$HOME/.config/clux/scripts"
-   for script in helpers.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
        if [ -x "$DEPLOY_DIR/$script" ]; then
            echo "OK  $script"
        elif [ -f "$DEPLOY_DIR/$script" ]; then
@@ -37,7 +37,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/helpers.sh" -type f 2>/dev/null | head -1)
    PLUGIN_DIR=$(dirname "$PLUGIN_SRC")
    DEPLOY_DIR="$HOME/.config/clux/scripts"
-   for script in helpers.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh notify-sound.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh notify-sound.sh; do
        if [ -f "$PLUGIN_DIR/$script" ] && [ -f "$DEPLOY_DIR/$script" ]; then
            SRC_HASH=$(shasum "$PLUGIN_DIR/$script" | cut -d' ' -f1)
            DST_HASH=$(shasum "$DEPLOY_DIR/$script" | cut -d' ' -f1)
@@ -278,6 +278,7 @@ clux validate — health check results
 
   Deployed scripts (~/.config/clux/scripts/):
     ✓ helpers.sh
+    ✓ path.sh
     ✓ show-notification.sh
     ✓ jump-to-notification.sh
     ✓ dismiss-notification.sh
