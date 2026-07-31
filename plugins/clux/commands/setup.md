@@ -35,7 +35,7 @@ Prompt the agent to:
    ```
 4. Derive `PLUGIN_SCRIPTS_DIR` from the result (parent directory of that file)
 5. Verify all required scripts exist in `PLUGIN_SCRIPTS_DIR`:
-   - `show-notification.sh`, `jump-to-notification.sh`, `dismiss-notification.sh`, `notification-picker.sh`, `helpers.sh`
+   - `show-notification.sh`, `jump-to-notification.sh`, `dismiss-notification.sh`, `notification-picker.sh`, `helpers.sh`, `path.sh`
 6. Return: tmux path, tmux version, `PLUGIN_SCRIPTS_DIR` path, list of missing scripts (if any)
 
 ### Agent B: tmux.conf Analysis
@@ -312,7 +312,7 @@ Prompt the agent to:
    ```bash
    DEPLOY_DIR="$HOME/.config/clux/scripts"
    mkdir -p "$DEPLOY_DIR"
-   for script in helpers.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
        cp "$PLUGIN_SCRIPTS_DIR/$script" "$DEPLOY_DIR/$script"
        chmod +x "$DEPLOY_DIR/$script"
    done
