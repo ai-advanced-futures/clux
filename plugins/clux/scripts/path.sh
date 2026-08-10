@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# Pure path resolution — no top-level statements, no tmux IPC.
-# Source this file to obtain resolve_notify_file().
+# SOURCING this file is free: no top-level statements, no tmux IPC, no side
+# effects. That guarantee is what lets a hook source it before it knows whether
+# it has a tmux pane at all.
+#
+# The path resolvers — resolve_notify_file(), resolve_agent_state_dir() — are
+# pure: they read env vars and a sidecar file and print a path.
+#
+# ONE function here is deliberately NOT pure: reap_agent_state_dir() calls tmux
+# and deletes files. It lives in this file so the two writers share a single
+# reaper instead of each rolling its own, and it does that work only when
+# CALLED — sourcing still costs nothing. Do not add a second impure function
+# here without saying so in this header.
 
 _CLUX_SIDECAR="${HOME}/.config/clux/notify-file-path"
 _CLUX_AGENT_SIDECAR="${HOME}/.config/clux/agent-state-dir"
