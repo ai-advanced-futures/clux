@@ -79,22 +79,9 @@ else
     rm -f "$STATE_DIR/$TMUX_PANE" 2>/dev/null
 fi
 
-# Reap — the writer's job, done opportunistically. The `[ -n "$LIVE" ]` guard
-# is load-bearing: without it, a missing tmux server or a failed call would
-# wipe the whole store instead of just skipping the reap.
-LIVE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)
-if [ -n "$LIVE" ]; then
-    for f in "$STATE_DIR"/*; do
-        [ -f "$f" ] || continue
-        base="${f##*/}"
-        case "$base" in
-            .tmp.*) continue ;;
-            %*) ;;
-            *) continue ;;
-        esac
-        printf '%s\n' "$LIVE" | grep -qxF "$base" || rm -f "$f" 2>/dev/null
-    done
-fi
+# Reap — the writer's job, done opportunistically. Shared with agent-clear.sh
+# --reap; the empty-listing guard inside is load-bearing (see path.sh).
+reap_agent_state_dir "$STATE_DIR"
 
 # Refresh, decoupled from the user's bar. A failure never changes the exit
 # status.

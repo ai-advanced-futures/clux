@@ -36,13 +36,39 @@ resolve_agent_state_dir() {
         echo "$CLUX_AGENT_STATE_DIR"
         return
     fi
-    # Tier 2: sidecar written at plugin load time by claude-notify.tmux
+    # Tier 2: sidecar written at plugin load time by claude-notify.tmux.
+    # Command substitution already strips the single trailing newline the
+    # writer adds; do NOT `tr -d '[:space:]'` — that would also delete real
+    # spaces inside a state-dir path (e.g. an XDG_STATE_HOME with a space).
     local sidecar_val
-    sidecar_val=$(cat "$_CLUX_AGENT_SIDECAR" 2>/dev/null | tr -d '[:space:]')
+    sidecar_val=$(cat "$_CLUX_AGENT_SIDECAR" 2>/dev/null)
     if [ -n "$sidecar_val" ]; then
         echo "$sidecar_val"
         return
     fi
     # Tier 3: XDG default
     echo "${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
+}
+
+# Reap state files whose pane id is no longer live on the tmux server — closes
+# the pane-id-reuse hole after a server restart. Shared by the two writers:
+# hooks/agent-state.sh (opportunistic, after every write) and agent-clear.sh
+# --reap (once at config load). The empty-LIVE guard is load-bearing: a missing
+# server or a failed list-panes yields an empty listing and the reap is skipped
+# whole, so it can never wipe the store. $1 = state dir.
+reap_agent_state_dir() {
+    local state_dir="$1" live f base
+    [ -n "$state_dir" ] || return 0
+    live=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)
+    [ -n "$live" ] || return 0
+    for f in "$state_dir"/*; do
+        [ -f "$f" ] || continue
+        base="${f##*/}"
+        case "$base" in
+            .tmp.*) continue ;;
+            %*) ;;
+            *) continue ;;
+        esac
+        printf '%s\n' "$live" | grep -qxF "$base" || rm -f "$f" 2>/dev/null
+    done
 }

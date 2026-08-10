@@ -26,18 +26,9 @@ source "$CURRENT_DIR/path.sh"
 if [ "${1:-}" = "--reap" ]; then
     STATE_DIR="$(resolve_agent_state_dir)"
     [ -d "$STATE_DIR" ] || exit 0
-    LIVE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)
-    [ -n "$LIVE" ] || exit 0
-    for f in "$STATE_DIR"/*; do
-        [ -f "$f" ] || continue
-        base="${f##*/}"
-        case "$base" in
-            .tmp.*) continue ;;
-            %*) ;;
-            *) continue ;;
-        esac
-        printf '%s\n' "$LIVE" | grep -qxF "$base" || rm -f "$f" 2>/dev/null
-    done
+    # Shared reaper (path.sh) — deletes state files whose pane id is not live
+    # anywhere on the server; skips whole on an empty listing.
+    reap_agent_state_dir "$STATE_DIR"
     exit 0
 fi
 
