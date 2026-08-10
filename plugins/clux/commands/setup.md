@@ -35,7 +35,7 @@ Prompt the agent to:
    ```
 4. Derive `PLUGIN_SCRIPTS_DIR` from the result (parent directory of that file)
 5. Verify all required scripts exist in `PLUGIN_SCRIPTS_DIR`:
-   - `show-notification.sh`, `jump-to-notification.sh`, `dismiss-notification.sh`, `notification-picker.sh`, `helpers.sh`, `path.sh`
+   - `show-notification.sh`, `jump-to-notification.sh`, `dismiss-notification.sh`, `notification-picker.sh`, `helpers.sh`, `path.sh`, `agent-query.sh`, `agent-bar.sh`, `agent-clear.sh`
 6. Return: tmux path, tmux version, `PLUGIN_SCRIPTS_DIR` path, list of missing scripts (if any)
 
 ### Agent B: tmux.conf Analysis
@@ -76,7 +76,7 @@ Prompt the agent to:
    ```bash
    find ~/.claude -path "*/clux/hooks/hooks.json" -type f 2>/dev/null | head -1
    ```
-2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop`, `Notification`, and `UserPromptSubmit` events
+2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop`, `Notification`, and `UserPromptSubmit` events. Note: clux's hooks.json now registers a SECOND command on those same events (plus `SessionEnd`) — `agent-state.sh <state>`, which writes the per-pane agent-state file the tmux status bar reads. Both commands run in parallel from the same event; this is not a new event and needs no settings.json handling
 3. Read `~/.claude/settings.json` and check for existing system hooks:
    - Look for `hooks.Stop`, `hooks.Notification`, `hooks.UserPromptSubmit` entries
    - These are **conflicting** — the plugin's `hooks.json` handles all notification events via `notify-tmux.sh` → `notify-sound.sh`. System-level hooks for these events cause double-firing (e.g., double sounds)
@@ -250,6 +250,34 @@ set -g @claude-notify-prompt-sound "off"
 
 **Only include variables that differ from the built-in defaults** (to keep tmux.conf clean). The defaults are defined in `helpers.sh` — if the user's choice matches the default, omit that variable.
 
+### B4. Agent state bar (optional)
+
+clux can show a per-agent state glyph (busy / needs-you / finished) on the tmux status bar. State lives in files under `@clux-agent-state-dir`, written by the `hooks/agent-state.sh` hook, and read by the new `agent-query.sh` / `agent-bar.sh` scripts — the bar never writes.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | where per-pane state files live (honoured only when `claude-notify.tmux` is loaded via tpm) |
+| `@clux-agent-glyph-busy` | `*` | glyph shown while Claude is working |
+| `@clux-agent-glyph-needs` | `!` | glyph shown when Claude needs your input |
+| `@clux-agent-glyph-done` | `v` | glyph shown when Claude finished |
+| `@clux-agent-busy-color` | `cyan` | foreground color for the busy glyph |
+| `@clux-agent-needs-color` | `yellow` | foreground color for the needs-you glyph |
+| `@clux-agent-done-color` | `green` | foreground color for the finished glyph |
+| `@clux-agent-refresh-command` | `refresh-client -S` | tmux command run after each state write, to redraw the bar |
+
+Glyph defaults are plain ASCII on purpose: the bar reserves exactly ONE column per session, and a two-column glyph (an emoji, a nerd-font icon) would reflow it. A user who sets a wide glyph owns the reflow. There is no `@clux-agent-glyph-idle` option — idle is always a literal space.
+
+Two usage shapes, depending on the user's status line:
+```tmux
+# Plain status line: compact roll-up of every non-idle session
+set -g status-right "#(DEPLOY_DIR/agent-bar.sh) #{status-right}"
+
+# Session-list bar: one reserved column per session
+#(DEPLOY_DIR/agent-bar.sh #{session_name})
+```
+
+This section is optional — offer it, but don't block the rest of setup if the user declines.
+
 ### C. Keybindings
 
 Offer these defaults, and use AskUserQuestion to let the user customize the keys:
@@ -266,6 +294,23 @@ Use AskUserQuestion with options like:
 - "Customize keybindings"
 
 If user chooses to customize, ask for each key individually.
+
+### C2. tmux hooks for finished marks (non-tpm installs)
+
+The agent-state bar (section B4) clears a session's `finished` glyph back to idle when the user looks at that window. This is done by two tmux hooks, `after-select-window` and `client-session-changed`, at index `[90]`.
+
+Users who load `claude-notify.tmux` through tpm (`.tmux/plugins/tpm`) get these registered automatically — nothing to do here.
+
+Everyone else must add the two lines by hand to their tmux.conf:
+
+```tmux
+set-hook -g 'after-select-window[90]' "run-shell \"DEPLOY_DIR/agent-clear.sh '#{window_id}'\""
+set-hook -g 'client-session-changed[90]' "run-shell \"DEPLOY_DIR/agent-clear.sh '#{window_id}'\""
+```
+
+Substitute the real `DEPLOY_DIR` (e.g. `~/.config/clux/scripts`). The indexed `[90]` slot makes re-sourcing the config idempotent (no duplicate hook on every reload) and leaves any hand-written user hooks at low indices untouched.
+
+**Consequence of skipping this:** everything else still works — the bar still shows busy and needs-you correctly — but `finished` marks never clear on their own once written; they only go away when the pane's `SessionEnd` fires.
 
 ### D. System hooks cleanup (`~/.claude/settings.json`)
 
@@ -312,7 +357,7 @@ Prompt the agent to:
    ```bash
    DEPLOY_DIR="$HOME/.config/clux/scripts"
    mkdir -p "$DEPLOY_DIR"
-   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh agent-query.sh agent-bar.sh agent-clear.sh; do
        cp "$PLUGIN_SCRIPTS_DIR/$script" "$DEPLOY_DIR/$script"
        chmod +x "$DEPLOY_DIR/$script"
    done
@@ -407,6 +452,8 @@ Report success or failure for each check.
 Show the user:
 - What was changed (tmux.conf + settings.json)
 - System hooks removed and why (plugin handles them via notify-tmux.sh → notify-sound.sh)
+- Scripts deployed, including the three agent-state scripts (`agent-query.sh`, `agent-bar.sh`, `agent-clear.sh`)
+- Whether the agent-state bar was configured (section B4) and, if so, whether the non-tpm tmux hooks (section C2) were added
 - Backup location and rollback command: `cp <backup_path> <tmux_conf> && tmux source-file <tmux_conf>`
 - Keybinding quick reference (m = jump, ` = dismiss, M = picker)
 - Suggest running `/clux:validate` for full validation
