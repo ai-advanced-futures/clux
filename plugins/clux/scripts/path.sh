@@ -57,10 +57,16 @@ resolve_agent_state_dir() {
 # server or a failed list-panes yields an empty listing and the reap is skipped
 # whole, so it can never wipe the store. $1 = state dir.
 reap_agent_state_dir() {
-    local state_dir="$1" live f base
+    local state_dir="$1" live haystack f base
     [ -n "$state_dir" ] || return 0
     live=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)
     [ -n "$live" ] || return 0
+    # Wrap the listing in newlines ONCE so a whole-line match becomes a plain
+    # substring test done by bash itself. The delimiters are what keep `%1`
+    # from matching `%10`, exactly as `grep -qxF` did. This runs after every
+    # hook fire, so the previous `printf | grep` per state file cost two
+    # processes per file per fire; this costs none.
+    haystack=$'\n'"$live"$'\n'
     for f in "$state_dir"/*; do
         [ -f "$f" ] || continue
         base="${f##*/}"
@@ -69,6 +75,9 @@ reap_agent_state_dir() {
             %*) ;;
             *) continue ;;
         esac
-        printf '%s\n' "$live" | grep -qxF "$base" || rm -f "$f" 2>/dev/null
+        case "$haystack" in
+            *$'\n'"$base"$'\n'*) ;;
+            *) rm -f "$f" 2>/dev/null ;;
+        esac
     done
 }

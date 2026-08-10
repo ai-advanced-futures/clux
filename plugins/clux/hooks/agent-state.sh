@@ -53,16 +53,23 @@ case "$STATE" in
         # inspected in this script. Matches notify-tmux.sh's eligibility rule
         # (permission_prompt, idle_prompt, or no notification_type field at all)
         # so the two hooks stay consistent for the same event.
-        if printf '%s' "$INPUT" | grep -qE 'permission_prompt|idle_prompt'; then
-            WORD="needs-you"
-        elif printf '%s' "$INPUT" | grep -q '"notification_type"'; then
-            # A type is present but is not one of the two eligible kinds
-            # (auth_success and friends) — true no-op, leave any existing
-            # state file exactly as it was.
-            exit 0
-        else
-            WORD="needs-you"
-        fi
+        # Matched with bash's own pattern matching rather than `printf | grep`:
+        # identical semantics, and it spawns nothing on a path that fires on
+        # every notification.
+        case "$INPUT" in
+            *permission_prompt*|*idle_prompt*)
+                WORD="needs-you"
+                ;;
+            *'"notification_type"'*)
+                # A type is present but is not one of the two eligible kinds
+                # (auth_success and friends) — true no-op, leave any existing
+                # state file exactly as it was.
+                exit 0
+                ;;
+            *)
+                WORD="needs-you"
+                ;;
+        esac
         ;;
     *)
         # Unknown argument — silent no-op.
