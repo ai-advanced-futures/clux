@@ -52,6 +52,7 @@ Prompt the agent to:
    - Current `status-interval` value
    - Current `status-left-length` value
    - Any existing clux section markers
+   - Whether an agent-state glyph already appears to be wired: search the config and any scripts it shells out to (e.g. a custom session-list renderer) for `agent-bar.sh`, `agent-query.sh`, or `@clux-agent-state-dir` — report a match even if it's a user-authored script rather than the literal `agent-bar.sh` snippet, since that still means the feature is covered
 3. **Extract the color palette** from the config. Look for:
    - `status-style` bg/fg values (e.g., `bg='#2E3440',fg='#88C0D0'`)
    - `message-style` bg/fg values (e.g., `bg=#EBCB8B,fg=#2E3440`)
@@ -110,6 +111,7 @@ clux setup — analysis results:
     status-interval: 15 (recommend: 1)
     status-left-length: 10 (recommend: 150)
     Already configured: no
+    Agent-state bar: not configured (will offer in Phase 3)
 
   Color palette detected:
     bg_dark:         #2E3440   (status bar background)
@@ -276,7 +278,22 @@ set -g status-right "#(DEPLOY_DIR/agent-bar.sh) #{status-right}"
 #(DEPLOY_DIR/agent-bar.sh #{session_name})
 ```
 
-This section is optional — offer it, but don't block the rest of setup if the user declines.
+**Ask explicitly — this is opt-in, default off.** Use AskUserQuestion:
+```
+question: "Show a per-agent state glyph (busy/needs-you/finished) on the tmux status bar?"
+header: "Agent bar"
+options:
+  - label: "Skip (default)"
+    description: "Don't add an agent-state indicator."
+  - label: "Per-session glyph"
+    description: "One reserved column per session, next to each session name. Fits a session-list-style bar."
+  - label: "Compact roll-up"
+    description: "A single indicator in status-right summarizing all non-idle sessions."
+```
+
+Before asking, check whether an agent-state glyph is already wired — either the literal `agent-bar.sh` snippets above, or a user-authored script (referenced from `status-format[0]`, `status-right`, or elsewhere in tmux.conf) that itself calls `agent-query.sh` or reads `@clux-agent-state-dir`. If found, treat this as already configured: report it, and skip re-adding a second glyph rather than asking again.
+
+If the user picks "Per-session glyph" or "Compact roll-up", record the choice for Phase 5 (Agent E wires the corresponding snippet into tmux.conf, and adds the section C2 hooks unless the user's tmux.conf already loads `claude-notify.tmux` via tpm). If "Skip", note it and move on — don't block the rest of setup either way.
 
 ### C. Keybindings
 
@@ -389,6 +406,15 @@ Prompt the agent to read the current tmux.conf content (pass it in the prompt) a
   ```
   Only include the `@claude-notify-bg`/`@claude-notify-fg` lines if a color palette was detected.
   Only include per-notification `@claude-notify-{type}-{sound|visual}` lines for values that differ from the built-in defaults in `helpers.sh`. The defaults are: notification sound=on, notification visual=on, stop sound=off, stop visual=off, prompt sound=off, prompt visual=off.
+- **Agent state bar (section B4)** — only if the user opted in and nothing already provides an equivalent glyph (per the detection check in B4):
+  - "Per-session glyph": insert `#(DEPLOY_DIR/agent-bar.sh #{session_name})` next to the session name in the existing per-session rendering (inside `status-format[0]` if it already loops over sessions, otherwise append to `status-left`/`status-right` alongside `#{session_name}`).
+  - "Compact roll-up": add `set -g status-right "#(DEPLOY_DIR/agent-bar.sh) #{status-right}"` within the clux markers (append to an existing `status-right` value rather than overwriting it, following the same never-overwrite rule as section A).
+  - Either way, unless the user's tmux.conf already loads `claude-notify.tmux` via tpm, also add the two indexed hooks from section C2:
+    ```tmux
+    set-hook -g 'after-select-window[90]' "run-shell \"DEPLOY_DIR/agent-clear.sh '#{window_id}'\""
+    set-hook -g 'client-session-changed[90]' "run-shell \"DEPLOY_DIR/agent-clear.sh '#{window_id}'\""
+    ```
+  - If "Skip" was chosen, add nothing for this section.
 - Preserve ALL existing content outside the clux markers
 - If clux markers already exist, replace the content between them
 - Return: the complete new file content
