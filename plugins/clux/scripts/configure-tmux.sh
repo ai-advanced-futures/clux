@@ -50,6 +50,9 @@ deploy_scripts() {
         notification-picker.sh
         notify-sound.sh
         truncate-title.sh
+        agent-query.sh
+        agent-bar.sh
+        agent-clear.sh
     )
     for script in "${scripts[@]}"; do
         cp "$PLUGIN_ROOT/scripts/$script" "$DEPLOY_DIR/$script"

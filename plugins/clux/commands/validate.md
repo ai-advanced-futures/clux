@@ -19,10 +19,10 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 
 1. **tmux running**: `tmux info &>/dev/null && echo "OK" || echo "FAIL"`
 2. **tmux version**: `tmux -V`
-3. **Deployed scripts** — check all 6 exist and are executable at `~/.config/clux/scripts/`:
+3. **Deployed scripts** — check all 9 exist and are executable at `~/.config/clux/scripts/`:
    ```bash
    DEPLOY_DIR="$HOME/.config/clux/scripts"
-   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh agent-query.sh agent-bar.sh agent-clear.sh; do
        if [ -x "$DEPLOY_DIR/$script" ]; then
            echo "OK  $script"
        elif [ -f "$DEPLOY_DIR/$script" ]; then
@@ -37,7 +37,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/helpers.sh" -type f 2>/dev/null | head -1)
    PLUGIN_DIR=$(dirname "$PLUGIN_SRC")
    DEPLOY_DIR="$HOME/.config/clux/scripts"
-   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh notify-sound.sh; do
+   for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh notify-sound.sh agent-query.sh agent-bar.sh agent-clear.sh; do
        if [ -f "$PLUGIN_DIR/$script" ] && [ -f "$DEPLOY_DIR/$script" ]; then
            SRC_HASH=$(shasum "$PLUGIN_DIR/$script" | cut -d' ' -f1)
            DST_HASH=$(shasum "$DEPLOY_DIR/$script" | cut -d' ' -f1)
@@ -124,6 +124,35 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    [ -n "$BG" ] && echo "OK  @claude-notify-bg ($BG)" || echo "INFO @claude-notify-bg (using default: yellow)"
    [ -n "$FG" ] && echo "OK  @claude-notify-fg ($FG)" || echo "INFO @claude-notify-fg (using default: black)"
    ```
+5b. **Agent state bar** — show effective glyph/color/dir/refresh options (INFO only, this feature is optional):
+   ```bash
+   for OPT in @clux-agent-glyph-busy:'*' @clux-agent-glyph-needs:'!' @clux-agent-glyph-done:v \
+              @clux-agent-busy-color:cyan @clux-agent-needs-color:yellow @clux-agent-done-color:green \
+              @clux-agent-state-dir:"\${XDG_STATE_HOME:-\$HOME/.local/state}/clux/agents" \
+              @clux-agent-refresh-command:"refresh-client -S"; do
+       NAME="${OPT%%:*}"
+       DEFAULT="${OPT#*:}"
+       VAL=$(tmux show-option -gqv "$NAME")
+       [ -n "$VAL" ] && echo "OK  $NAME ($VAL)" || echo "INFO $NAME (using default: $DEFAULT)"
+   done
+   STATE_DIR=$(tmux show-option -gqv @clux-agent-state-dir)
+   [ -n "$STATE_DIR" ] || STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
+   [ -d "$STATE_DIR" ] && echo "OK  agent state dir exists ($STATE_DIR)" || echo "INFO agent state dir not yet created ($STATE_DIR — created on first hook fire)"
+   ```
+5c. **Agent-state tmux hooks** (read-only, non-blocking — the feature still works without them, `finished` marks just won't self-clear):
+   ```bash
+   HOOKS_OUT=$(tmux show-hooks -g 2>/dev/null)
+   if echo "$HOOKS_OUT" | grep -q "after-select-window" && echo "$HOOKS_OUT" | grep -q "agent-clear.sh"; then
+       echo "OK  after-select-window hook → agent-clear.sh"
+   else
+       echo "WARN finished marks will not clear on their own — load claude-notify.tmux via tpm or add the two set-hook lines (see /clux:setup)"
+   fi
+   if echo "$HOOKS_OUT" | grep -q "client-session-changed" && echo "$HOOKS_OUT" | grep -q "agent-clear.sh"; then
+       echo "OK  client-session-changed hook → agent-clear.sh"
+   else
+       echo "WARN finished marks will not clear on their own — load claude-notify.tmux via tpm or add the two set-hook lines (see /clux:setup)"
+   fi
+   ```
 6. **Per-notification preferences** — show current effective values:
    ```bash
    for TYPE in notification stop prompt; do
@@ -194,12 +223,24 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
                echo "FAIL hook: $EVENT not configured in hooks.json"
            fi
        done
+       # Agent-state second command, registered beside notify-tmux.sh on the SAME
+       # four events — no new event name (see CHANGELOG 3.1.0). Each pair below
+       # must appear verbatim in hooks.json.
+       for PAIR in "UserPromptSubmit:busy" "Notification:needs-you" "Stop:finished" "SessionEnd:remove"; do
+           EVENT="${PAIR%%:*}"
+           ARG="${PAIR#*:}"
+           if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "agent-state.sh $ARG" "$HOOKS_FILE"; then
+               echo "OK  hook: $EVENT → agent-state.sh $ARG"
+           else
+               echo "FAIL hook: $EVENT not wired to agent-state.sh $ARG in hooks.json"
+           fi
+       done
    fi
    ```
 2. **Hook scripts executable**:
    ```bash
    HOOKS_DIR=$(dirname "$HOOKS_FILE")
-   for script in notify-tmux.sh; do
+   for script in notify-tmux.sh agent-state.sh; do
        if [ -x "$HOOKS_DIR/$script" ]; then
            echo "OK  $script executable"
        elif [ -f "$HOOKS_DIR/$script" ]; then
@@ -283,6 +324,9 @@ clux validate — health check results
     ✓ jump-to-notification.sh
     ✓ dismiss-notification.sh
     ✓ notification-picker.sh
+    ✓ agent-query.sh
+    ✓ agent-bar.sh
+    ✓ agent-clear.sh
     ✓ all scripts in sync with plugin source
 
   tmux configuration:
@@ -296,6 +340,18 @@ clux validate — health check results
 
   Notification style:
     ✓ bg: #EBCB8B  fg: #2E3440
+
+  Agent state:
+    ~ @clux-agent-glyph-busy (using default: *)
+    ~ @clux-agent-glyph-needs (using default: !)
+    ~ @clux-agent-glyph-done (using default: v)
+    ~ @clux-agent-busy-color (using default: cyan)
+    ~ @clux-agent-needs-color (using default: yellow)
+    ~ @clux-agent-done-color (using default: green)
+    ~ @clux-agent-state-dir (using default: ~/.local/state/clux/agents)
+    ✓ agent state dir exists (~/.local/state/clux/agents)
+    ✓ after-select-window hook → agent-clear.sh
+    ✓ client-session-changed hook → agent-clear.sh
 
   Per-notification preferences:
     notification:  visual=on   sound=on
@@ -313,8 +369,10 @@ clux validate — health check results
     ✓ prefix M  → notification picker
 
   Hooks:
-    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd
+    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd → notify-tmux.sh
+    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd → agent-state.sh
     ✓ notify-tmux.sh executable
+    ✓ agent-state.sh executable
     ✓ notify-sound.sh executable
     ✓ no conflicting system hooks
 

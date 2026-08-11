@@ -185,6 +185,29 @@ get_agent_window()          { get_tmux_option "@clux-agent-window"  "agents"; }
 # string disables the keystroke. Default "Left" — the TUI's back navigation.
 get_agent_nav_key()         { get_tmux_option "@clux-agent-nav-key" "Left"; }
 
+# Agent-state bar glyphs — plain ASCII, one column each, so the width is
+# guaranteed in every terminal and every font: the bar reserves one column and
+# a two-column glyph would reflow it. There is deliberately NO
+# @clux-agent-glyph-idle option: get_tmux_option() is `echo "${value:-$default}"`
+# inside a command substitution, so a value of a single space is stripped to
+# empty and silently falls back to the default — a space-valued option can
+# never be honoured. The idle column is a literal space emitted by the renderer.
+get_agent_glyph_busy()      { get_tmux_option "@clux-agent-glyph-busy"  "*"; }
+get_agent_glyph_needs()     { get_tmux_option "@clux-agent-glyph-needs" "!"; }
+get_agent_glyph_done()      { get_tmux_option "@clux-agent-glyph-done"  "v"; }
+
+# Agent-state bar colours — foreground only, tmux named colours as defaults so
+# an 8-colour terminal and the user's palette both work. Deliberately NOT wired
+# to CLUX_NOTIFY_BG/CLUX_NOTIFY_FG or @claude-notify-bg/@claude-notify-fg: those
+# env vars are set only by claude-notify.tmux, so on a non-tpm install they are
+# absent and show-notification.sh falls back to hardcoded hexes — inheriting
+# that would make these colours silently depend on the install method. No
+# background is set — a background would paint a one-column block and fight
+# every theme.
+get_agent_busy_color()      { get_tmux_option "@clux-agent-busy-color"  "cyan"; }
+get_agent_needs_color()     { get_tmux_option "@clux-agent-needs-color" "yellow"; }
+get_agent_done_color()      { get_tmux_option "@clux-agent-done-color"  "green"; }
+
 # Resolve the agent session's display name — the name shown in the `claude agents`
 # view. Source of truth: the latest "custom-title" entry in the session
 # transcript, which is keyed by the hook's session_id for BOTH interactive
