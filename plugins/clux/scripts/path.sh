@@ -268,6 +268,14 @@ _clux_install_lock() {
     key=$(printf '%s' "${TMUX%%,*}" | tr -c 'A-Za-z0-9._-' '_')
     dir=$(resolve_agent_state_dir)
     mkdir -p "$dir" 2>/dev/null
+    # No usable state dir (read-only home, bad CLUX_AGENT_STATE_DIR): run
+    # unlocked rather than spending the full 2s break-in budget failing to
+    # mkdir on every attempt. The caller's re-read still narrows the race, and
+    # a machine that cannot create this directory has no agent state at all.
+    if [ ! -d "$dir" ]; then
+        _CLUX_INSTALL_LOCKDIR=""
+        return 0
+    fi
     _CLUX_INSTALL_LOCKDIR="$dir/.install-${key}.lock"
     attempts=0
     while ! mkdir "$_CLUX_INSTALL_LOCKDIR" 2>/dev/null; do
