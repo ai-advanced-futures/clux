@@ -267,9 +267,18 @@ _clux_install_bar_segment() {
     esac
 
     # b. Tier B detection: status-format[0] is non-empty and does not
-    # reference status-right at all (the tmux default does, via
+    # actually REFERENCE the status-right option (the tmux default does, via
     # `#{T;=/#{status-right-length}:status-right}`) — the segment can never
-    # reach the bar through the status-right append below. Empty/unreadable
+    # reach the bar through the status-right append below. The check matches
+    # the substring `status-right}` (the option name immediately followed by
+    # the closing format brace), NOT the bare substring `status-right`:
+    # `status-right-style` and `status-right-length` both contain the bare
+    # substring but are a different option each, and a status-format[0] that
+    # references only those (a custom bar built from the *-style/-length
+    # siblings but never `#{status-right}` itself) must still classify as
+    # Tier B. `status-right}` cannot appear inside `status-right-style}` or
+    # `status-right-length}` — in both, the character right after "right" is
+    # "-", not "}" — so this is exact, not a heuristic. Empty/unreadable
     # fmt0 is treated as Tier A on purpose: a harmless append beats a false
     # "your bar is unreachable" warning. Only status-format[0] is inspected;
     # a user with `status` 2..5 and clux parked on a different bar line is
@@ -278,7 +287,7 @@ _clux_install_bar_segment() {
     fmt0=$(tmux show-option -gqv 'status-format[0]' 2>/dev/null)
     if [ -n "$fmt0" ]; then
         case "$fmt0" in
-            *status-right*) ;;
+            *'status-right}'*) ;;
             *)
                 # Version-scoped, not a bare 1: a version bump makes need_bar
                 # re-evaluate the obstruction instead of latching shut for the

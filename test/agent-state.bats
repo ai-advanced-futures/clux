@@ -648,7 +648,7 @@ STUBEOF
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
         export FAKE_GLOBAL_OPTS='status-right \"L R\"'
-        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "
@@ -668,7 +668,7 @@ STUBEOF
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
         export FAKE_GLOBAL_OPTS='status-right \"L R\"'
-        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
         export FAKE_STATUS_RIGHT='L R #{@clux-agent-bar}'
         export FAKE_OPTS='status-right-length=40'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
@@ -688,7 +688,7 @@ STUBEOF
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
         export FAKE_GLOBAL_OPTS='status-right \"L R\"'
-        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
         export FAKE_STATUS_RIGHT='L R #{@clux-agent-bar}'
         export FAKE_OPTS='status-right-length=200'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
@@ -740,6 +740,28 @@ STUBEOF
     # token must be escaped as ##{...} or tmux deletes it and the warning's
     # only actionable word vanishes for the user.
     grep -qF "Add ##{@clux-agent-bar} to your bar manually" "$log" || false
+}
+
+@test "self-install: Tier B is not fooled by status-right-style/status-right-length siblings" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-left \"hi\"'
+        export FAKE_STATUS_FORMAT0='#[range=right #{status-right-style}]#{status-right-length}stuff'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    # A format that references only the *-style/*-length siblings, never
+    # `#{status-right}` itself, must still classify as Tier B — the bare
+    # substring "status-right" is present twice here but neither is a real
+    # reference to the status-right option.
+    grep -qF "set-option -g @clux-agent-bar-unreachable 3.2.0" "$log" || false
+    run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
 }
 
 @test "self-install: the Tier B warning is not repeated once the flag is recorded" {
@@ -794,7 +816,7 @@ STUBEOF
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
         export FAKE_GLOBAL_OPTS='@clux-installed 3.2.0'
-        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "

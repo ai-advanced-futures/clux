@@ -141,7 +141,12 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 5b-i. **Self-install version marker** (`@clux-installed`) — compares the live server marker against the plugin's own `CLUX_VERSION` constant:
    ```bash
-   PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/path.sh" -type f 2>/dev/null | head -1)
+   # The marketplace cache layout nests a version directory between the
+   # plugin name and scripts/ (e.g. ~/.claude/plugins/cache/clux/clux/3.2.0/
+   # scripts/path.sh), so the path pattern must allow a segment there. Sort
+   # by version and take the highest, in case an old cached version lingers
+   # alongside the current one.
+   PLUGIN_SRC=$(find ~/.claude -path "*/clux/*/scripts/path.sh" -type f 2>/dev/null | sort -V | tail -1)
    PLUGIN_VERSION=$(grep '^CLUX_VERSION=' "$PLUGIN_SRC" 2>/dev/null | cut -d'"' -f2)
    LIVE_MARKER=$(tmux show-option -gqv @clux-installed 2>/dev/null)
    if [ -z "$LIVE_MARKER" ]; then
@@ -166,7 +171,12 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 5b-iii. **Unreachable-bar flag** — a per-VERSION latch: its value is the plugin version that recorded the obstruction, not a bare `1`, so a version bump re-checks the bar instead of staying silenced forever once the obstruction is gone:
    ```bash
-   PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/path.sh" -type f 2>/dev/null | head -1)
+   # The marketplace cache layout nests a version directory between the
+   # plugin name and scripts/ (e.g. ~/.claude/plugins/cache/clux/clux/3.2.0/
+   # scripts/path.sh), so the path pattern must allow a segment there. Sort
+   # by version and take the highest, in case an old cached version lingers
+   # alongside the current one.
+   PLUGIN_SRC=$(find ~/.claude -path "*/clux/*/scripts/path.sh" -type f 2>/dev/null | sort -V | tail -1)
    PLUGIN_VERSION=$(grep '^CLUX_VERSION=' "$PLUGIN_SRC" 2>/dev/null | cut -d'"' -f2)
    UNREACHABLE=$(tmux show-option -gqv @clux-agent-bar-unreachable 2>/dev/null)
    if [ -n "$UNREACHABLE" ] && [ "$UNREACHABLE" = "$PLUGIN_VERSION" ]; then
