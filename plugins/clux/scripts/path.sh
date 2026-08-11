@@ -7,7 +7,7 @@
 # The path resolvers — resolve_notify_file(), resolve_agent_state_dir() — are
 # pure: they read env vars and a sidecar file and print a path.
 #
-# FOUR functions here are deliberately NOT pure:
+# SIX functions here are deliberately NOT pure:
 #   reap_agent_state_dir()    calls tmux and deletes files.
 #   refresh_agent_bar()       calls tmux, and (when the bar segment is active)
 #                             WRITES the @clux-agent-bar option before redrawing.
@@ -15,9 +15,11 @@
 #                             the status-right segment against the live server.
 #   _clux_install_bar_segment() calls tmux to append the bar segment or record
 #                             that it could not be reached.
-# All four live in this file so the writers share one copy instead of each
-# rolling its own, and all four do that work only when CALLED — sourcing still
-# costs nothing. Do not add a fifth impure function here without saying so in
+#   _clux_install_lock()      creates a lock directory.
+#   _clux_install_unlock()    removes it.
+# All six live in this file so the writers share one copy instead of each
+# rolling its own, and all six do that work only when CALLED — sourcing still
+# costs nothing. Do not add a seventh impure function here without saying so in
 # this header.
 
 # Runtime source of truth for the reinstall marker (@clux-installed). Must
@@ -250,6 +252,42 @@ clux_ensure_installed() {
     refresh_agent_bar
 }
 
+# _clux_install_lock / _clux_install_unlock — serialise the status-right append
+# below. mkdir is the atomic primitive, the same idiom as helpers.sh
+# acquire_lock(), but keyed on the tmux SOCKET instead of the notification
+# file: what is being protected is one server's global options, so two tmux
+# servers must never block each other.
+#
+# Bounded and self-healing. After ~2s the lock is broken and the caller
+# proceeds, because a hook that stalls is worse than the duplicate segment this
+# prevents — and a process killed mid-install would otherwise wedge every later
+# fire. Not on the hot path: the caller only runs when the segment is missing,
+# which is once per plugin version per server.
+_clux_install_lock() {
+    local key dir attempts
+    key=$(printf '%s' "${TMUX%%,*}" | tr -c 'A-Za-z0-9._-' '_')
+    dir=$(resolve_agent_state_dir)
+    mkdir -p "$dir" 2>/dev/null
+    _CLUX_INSTALL_LOCKDIR="$dir/.install-${key}.lock"
+    attempts=0
+    while ! mkdir "$_CLUX_INSTALL_LOCKDIR" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 20 ]; then
+            rm -rf "$_CLUX_INSTALL_LOCKDIR" 2>/dev/null
+            mkdir "$_CLUX_INSTALL_LOCKDIR" 2>/dev/null
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 0
+}
+
+_clux_install_unlock() {
+    [ -n "${_CLUX_INSTALL_LOCKDIR:-}" ] && rm -rf "$_CLUX_INSTALL_LOCKDIR" 2>/dev/null
+    _CLUX_INSTALL_LOCKDIR=""
+    return 0
+}
+
 # _clux_install_bar_segment — appends `#{@clux-agent-bar}` to status-right, or
 # records that the bar is unreachable and warns once. Called only from
 # clux_ensure_installed() when need_bar=1 (segment not already in the option
@@ -301,7 +339,21 @@ _clux_install_bar_segment() {
     # expands an option reference exactly one level and draws the rest
     # literally, so that shape renders the literal text `#{status-right}` on
     # the bar.
-    tmux set-option -ag status-right " #{@clux-agent-bar}" 2>/dev/null
+    #
+    # The check that got us here read a `show-options -g` dump back in
+    # clux_ensure_installed(), and this append is a separate IPC. Two sessions
+    # installing at the same moment — the normal case on a fresh server, where
+    # every pane's first hook fires at once — can therefore BOTH pass that
+    # check and each append a copy, and the duplicate is permanent, because
+    # every later fire sees the token and skips. So: take the lock AND re-read
+    # inside it. The lock on its own cannot help, since the first read happened
+    # before it was held; the re-read on its own only narrows the window.
+    _clux_install_lock
+    case "$(tmux show-option -gv status-right 2>/dev/null)" in
+        *'#{@clux-agent-bar}'*) : ;;   # a concurrent install won — do not double up
+        *) tmux set-option -ag status-right " #{@clux-agent-bar}" 2>/dev/null ;;
+    esac
+    _clux_install_unlock
     _CLUX_BAR_OPTION_ACTIVE=1
     # Clear a stale unreachable flag now that the segment is installed.
     tmux set-option -gu @clux-agent-bar-unreachable 2>/dev/null

@@ -660,6 +660,49 @@ STUBEOF
     [ "$output" = "0" ]
 }
 
+@test "self-install: Tier A re-reads under the lock and skips the append when a concurrent install already added the segment" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    # The `show-options -g` dump has NO clux token, so need_bar=1 and we reach
+    # the append — but status-right itself already carries it, which is exactly
+    # the state another session leaves behind when it wins the race between
+    # that dump and this append. Without the re-read, a second copy is appended
+    # and never removed.
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
+        export FAKE_STATUS_RIGHT='L R #{@clux-agent-bar}'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: the install lock is released, leaving no lock directory behind" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export FAKE_STATUS_FORMAT0='xxx #{status-right} yyy'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    # The append ran (no token anywhere), so the lock was really taken.
+    grep -qF "set-option -ag status-right  #{@clux-agent-bar}" "$log" || false
+    # A leaked lock would wedge every later install behind the 2s break-in.
+    run bash -c "find '$dir' -maxdepth 1 -name '.install-*.lock' | wc -l | tr -d ' '"
+    [ "$output" = "0" ]
+}
+
 @test "self-install: Tier A raises status-right-length when it would truncate the segment" {
     local dir="$BATS_TEST_TMPDIR/agents"
     local log="$BATS_TEST_TMPDIR/stub.log"
