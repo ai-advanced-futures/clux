@@ -229,16 +229,15 @@ clux_ensure_installed() {
         # self_dir for sh (escaping any embedded single quote the sh way:
         # close the quote, emit an escaped quote, reopen it) so the sh
         # command line is safe regardless of what the path contains.
-        local self_dir_sq
+        local self_dir_sq hook_cmd
         self_dir_sq=$(printf '%s' "$self_dir" | sed "s/'/'\\\\''/g")
-        tmux set-hook -g 'after-select-window[90]' \
-            "run-shell \"'$self_dir_sq'/agent-clear.sh '#{window_id}'\"" 2>/dev/null
-        tmux set-hook -g 'client-session-changed[90]' \
-            "run-shell \"'$self_dir_sq'/agent-clear.sh '#{window_id}'\"" 2>/dev/null
+        hook_cmd="run-shell \"'$self_dir_sq'/agent-clear.sh '#{window_id}'\""
+        tmux set-hook -g 'after-select-window[90]'    "$hook_cmd" 2>/dev/null
+        tmux set-hook -g 'client-session-changed[90]' "$hook_cmd" 2>/dev/null
     fi
 
     if [ "$need_bar" = "1" ]; then
-        _clux_install_bar_segment "$opts"
+        _clux_install_bar_segment
     fi
 
     if [ "$need_hooks" = "1" ]; then
@@ -252,21 +251,11 @@ clux_ensure_installed() {
 }
 
 # _clux_install_bar_segment — appends `#{@clux-agent-bar}` to status-right, or
-# records that the bar is unreachable and warns once. $1 = the option dump
-# already read by clux_ensure_installed() — never a second `show-options -g`.
+# records that the bar is unreachable and warns once. Called only from
+# clux_ensure_installed() when need_bar=1 (segment not already in the option
+# dump); reads status-format[0] itself for the Tier B check, no argument needed.
 _clux_install_bar_segment() {
-    local opts="$1"
-
-    # a. Belt and braces for a direct caller: a segment already present
-    # anywhere means there is nothing to install.
-    case "$opts" in
-        *'#{@clux-agent-bar}'*)
-            _CLUX_BAR_OPTION_ACTIVE=1
-            return 0
-            ;;
-    esac
-
-    # b. Tier B detection: status-format[0] is non-empty and does not
+    # a. Tier B detection: status-format[0] is non-empty and does not
     # actually REFERENCE the status-right option (the tmux default does, via
     # `#{T;=/#{status-right-length}:status-right}`) — the segment can never
     # reach the bar through the status-right append below. The check matches
@@ -306,7 +295,7 @@ _clux_install_bar_segment() {
         esac
     fi
 
-    # d. Tier A: tmux's own `-a` append is one IPC, cannot clobber (unlike a
+    # b. Tier A: tmux's own `-a` append is one IPC, cannot clobber (unlike a
     # read-then-append with a failed read), and needs no rc guard. A
     # `#{status-right}` self-reference (an earlier draft) is rejected: tmux
     # expands an option reference exactly one level and draws the rest
@@ -317,7 +306,7 @@ _clux_install_bar_segment() {
     # Clear a stale unreachable flag now that the segment is installed.
     tmux set-option -gu @clux-agent-bar-unreachable 2>/dev/null
 
-    # e. status-right-length caps the DRAWN width of status-right at 40 by
+    # c. status-right-length caps the DRAWN width of status-right at 40 by
     # default — the same width the default status-right already fills — so
     # the segment just appended above can be cut off with @clux-installed set
     # and @clux-agent-bar-unreachable NOT set: install reports success while
@@ -330,8 +319,13 @@ _clux_install_bar_segment() {
     new_right=$(tmux show-option -gv status-right 2>/dev/null)
     want=$(( ${#new_right} + 40 ))
     srl=$(tmux show-option -gqv status-right-length 2>/dev/null)
-    [ -n "$srl" ] || srl=40   # tmux's own default when the option is unset
-    if [ "$srl" -lt "$want" ] 2>/dev/null; then
+    # Also covers a garbled option value — the numeric compare below would
+    # error and the `2>/dev/null` mask would silently drop the raise, leaving
+    # a truncation the block exists to prevent. tmux's own default is 40.
+    case "$srl" in
+        ''|*[!0-9]*) srl=40 ;;
+    esac
+    if [ "$srl" -lt "$want" ]; then
         tmux set-option -g status-right-length "$want" 2>/dev/null
     fi
 }

@@ -171,13 +171,9 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 5b-iii. **Unreachable-bar flag** — a per-VERSION latch: its value is the plugin version that recorded the obstruction, not a bare `1`, so a version bump re-checks the bar instead of staying silenced forever once the obstruction is gone:
    ```bash
-   # The marketplace cache layout nests a version directory between the
-   # plugin name and scripts/ (e.g. ~/.claude/plugins/cache/clux/clux/3.2.0/
-   # scripts/path.sh), so the path pattern must allow a segment there. Sort
-   # by version and take the highest, in case an old cached version lingers
-   # alongside the current one.
-   PLUGIN_SRC=$(find ~/.claude -path "*/clux/*/scripts/path.sh" -type f 2>/dev/null | sort -V | tail -1)
-   PLUGIN_VERSION=$(grep '^CLUX_VERSION=' "$PLUGIN_SRC" 2>/dev/null | cut -d'"' -f2)
+   # Reuses $PLUGIN_VERSION resolved in 5b-i above (run these blocks in one
+   # shell). If running this block standalone, re-run the two `find`/`grep`
+   # lines from 5b-i first.
    UNREACHABLE=$(tmux show-option -gqv @clux-agent-bar-unreachable 2>/dev/null)
    if [ -n "$UNREACHABLE" ] && [ "$UNREACHABLE" = "$PLUGIN_VERSION" ]; then
        echo "WARN clux could not reach the status bar automatically (status-format[0] never references status-right) — fold #{@clux-agent-bar} into your bar by hand (see agent-bar.sh / agent-query.sh)"
