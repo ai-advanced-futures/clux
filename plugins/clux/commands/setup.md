@@ -281,7 +281,7 @@ set -ag status-right " #{@clux-agent-bar}"
 #(DEPLOY_DIR/agent-bar.sh #{session_name})
 ```
 
-The default `status-right-length` is 40 and can silently truncate the segment — raise it (e.g. `set -g status-right-length 150`) if the glyphs do not appear.
+The default `status-right-length` is 40 and can silently truncate the segment. The self-install (3.2.0+) raises it automatically to fit the post-append text, and never shrinks a value already larger than it needs. Only a **manual** install (the `set -ag` snippet above, run by hand) needs the reminder: raise it yourself (e.g. `set -g status-right-length 150`) if the glyphs do not appear.
 
 **Warning on the session-list shape:** `#{session_name}` is expanded directly into a shell command line before `agent-bar.sh` ever runs, so a session name containing shell metacharacters is a command-injection surface. Do not present that shape as safe for untrusted session names.
 

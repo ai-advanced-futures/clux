@@ -614,7 +614,9 @@ STUBEOF
     [ "$status" -eq 0 ]
     grep -qF "set-hook -g after-select-window[90]" "$log" || false
     grep -qF "set-hook -g client-session-changed[90]" "$log" || false
-    grep -qF "$SCRIPTS_DIR/agent-clear.sh" "$log" || false
+    # SELF_DIR resolves to the running copy (proves it, not a deployed path)
+    # and is single-quoted for sh — see the space-in-path test below for why.
+    grep -qF "'$SCRIPTS_DIR'/agent-clear.sh" "$log" || false
     grep -qF "set-option -g @clux-installed 3.2.0" "$log" || false
 }
 
@@ -658,6 +660,45 @@ STUBEOF
     [ "$output" = "0" ]
 }
 
+@test "self-install: Tier A raises status-right-length when it would truncate the segment" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_RIGHT='L R #{@clux-agent-bar}'
+        export FAKE_OPTS='status-right-length=40'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    # want = len('L R #{@clux-agent-bar}') [22] + 40 margin = 62, comfortably
+    # above the default 40 that would otherwise silently cut the segment.
+    grep -qF "set-option -g status-right-length 62" "$log" || false
+}
+
+@test "self-install: Tier A never shrinks a status-right-length the user set larger already" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export FAKE_STATUS_RIGHT='L R #{@clux-agent-bar}'
+        export FAKE_OPTS='status-right-length=200'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "tmux set-option -g status-right-length" "$log"
+    [ "$output" = "0" ]
+}
+
 @test "self-install: a clux segment anywhere in the dump suppresses the append" {
     local dir="$BATS_TEST_TMPDIR/agents"
     local log="$BATS_TEST_TMPDIR/stub.log"
@@ -690,11 +731,15 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     [ -z "$output" ]
-    grep -qF "set-option -g @clux-agent-bar-unreachable 1" "$log" || false
+    grep -qF "set-option -g @clux-agent-bar-unreachable 3.2.0" "$log" || false
     run grep -c "display-message" "$log"
     [ "$output" = "1" ]
     run grep -c "set-option -ag status-right" "$log"
     [ "$output" = "0" ]
+    # display-message expands #{...} in its OWN argument, so the literal
+    # token must be escaped as ##{...} or tmux deletes it and the warning's
+    # only actionable word vanishes for the user.
+    grep -qF "Add ##{@clux-agent-bar} to your bar manually" "$log" || false
 }
 
 @test "self-install: the Tier B warning is not repeated once the flag is recorded" {
@@ -704,7 +749,7 @@ STUBEOF
     run bash -c "
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 1'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 3.2.0'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "
@@ -714,6 +759,30 @@ STUBEOF
     run grep -c "set-hook" "$log"
     [ "$output" = "0" ]
     run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: an unreachable flag from an older version is re-evaluated, not trusted" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 3.1.0'
+        export FAKE_STATUS_FORMAT0='a big custom format with no bar reference'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    # Stale (older-version) flag does not suppress re-evaluation: Tier B runs
+    # again, records the CURRENT version, and warns again. A flag that
+    # latched forever would show none of this.
+    grep -qF "set-option -g @clux-agent-bar-unreachable 3.2.0" "$log" || false
+    run grep -c "display-message" "$log"
+    [ "$output" = "1" ]
+    # need_hooks was already 0 (marker matched) — only need_bar fired.
+    run grep -c "set-hook" "$log"
     [ "$output" = "0" ]
 }
 
@@ -800,6 +869,33 @@ STUBEOF
     [ "$output" = "0" ]
 }
 
+@test "self-install: a plugin path containing a space is shell-quoted in the hook command" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    local spaced="$BATS_TEST_TMPDIR/clux app/current"
+    mkdir -p "$spaced/scripts" "$spaced/hooks" "$spaced/.claude-plugin"
+    cp "$SCRIPTS_DIR"/*.sh "$spaced/scripts/"
+    cp "$HOOKS_DIR/agent-state.sh" "$spaced/hooks/agent-state.sh"
+    printf '{}' > "$spaced/.claude-plugin/plugin.json"
+    chmod +x "$spaced/hooks/agent-state.sh" "$spaced/scripts/"*.sh
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$spaced/hooks/agent-state.sh' busy
+    "
+    [ "$status" -eq 0 ]
+    # The path segment is wrapped in its own single quotes for sh, so sh does
+    # not word-split on the space in 'clux app'. An UNQUOTED occurrence of
+    # the raw path (no leading quote before it) would be the bug: sh would
+    # treat "clux" as the command name and exit 127 on every window switch.
+    grep -qF "run-shell \"'$spaced/scripts'/agent-clear.sh '#{window_id}'\"" "$log" || false
+    run grep -c "run-shell \"$spaced/scripts/agent-clear.sh" "$log"
+    [ "$output" = "0" ]
+}
+
 # ===========================================================================
 # PUBLISH — refresh_agent_bar() writing @clux-agent-bar (path.sh)
 # ===========================================================================
@@ -834,7 +930,7 @@ STUBEOF
     run bash -c "
         export STUB_LOG='$log'
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 1'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 3.2.0'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "

@@ -152,7 +152,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
        echo "WARN @clux-installed is stale ($LIVE_MARKER, plugin is $PLUGIN_VERSION) — will reinstall on the next hook fire"
    fi
    ```
-5b-ii. **Bar segment presence**:
+5b-ii. **Bar segment presence**. The self-install (3.2.0+) raises `status-right-length` on install to fit the segment and never shrinks a larger value, so this WARN should be rare — it catches a value the user shrank back down by hand afterward:
    ```bash
    if tmux show-options -g 2>/dev/null | grep -qF '#{@clux-agent-bar}'; then
        echo "OK  bar segment present"
@@ -164,10 +164,15 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
        echo "WARN no clux segment on the bar"
    fi
    ```
-5b-iii. **Unreachable-bar flag** — set once per version when clux could not append the segment automatically:
+5b-iii. **Unreachable-bar flag** — a per-VERSION latch: its value is the plugin version that recorded the obstruction, not a bare `1`, so a version bump re-checks the bar instead of staying silenced forever once the obstruction is gone:
    ```bash
-   if [ "$(tmux show-option -gqv @clux-agent-bar-unreachable 2>/dev/null)" = "1" ]; then
+   PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/path.sh" -type f 2>/dev/null | head -1)
+   PLUGIN_VERSION=$(grep '^CLUX_VERSION=' "$PLUGIN_SRC" 2>/dev/null | cut -d'"' -f2)
+   UNREACHABLE=$(tmux show-option -gqv @clux-agent-bar-unreachable 2>/dev/null)
+   if [ -n "$UNREACHABLE" ] && [ "$UNREACHABLE" = "$PLUGIN_VERSION" ]; then
        echo "WARN clux could not reach the status bar automatically (status-format[0] never references status-right) — fold #{@clux-agent-bar} into your bar by hand (see agent-bar.sh / agent-query.sh)"
+   elif [ -n "$UNREACHABLE" ]; then
+       echo "INFO @clux-agent-bar-unreachable is stale ($UNREACHABLE) — clux will re-check the bar on the next hook fire"
    fi
    ```
 5c. **Agent-state tmux hooks** (read-only, non-blocking — the feature still works without them, `finished` marks just won't self-clear). As of 3.2.0 these self-install on the next hook fire inside tmux, so a missing hook here is not necessarily a problem — re-check after one prompt. An unset hook still appears in `show-hooks -g` as a bare name with no value, so match on `agent-clear.sh`, not on the hook name alone:
@@ -434,7 +439,11 @@ There is no `/clux:uninstall` command — as of 3.2.0 the whole self-install foo
 ```bash
 tmux set-hook -gu 'after-select-window[90]'
 tmux set-hook -gu 'client-session-changed[90]'
-tmux set-option -g @clux-agent-bar-unreachable 1   # stops the segment re-installing on the next hook fire
+# @clux-agent-bar-unreachable is version-scoped: its value must equal the
+# installed plugin's CLUX_VERSION or it is ignored as stale and the segment
+# re-installs on the very next hook fire. Find the version first:
+#   grep '^CLUX_VERSION=' <plugin>/scripts/path.sh
+tmux set-option -g @clux-agent-bar-unreachable '<that version>'
 tmux source-file <your tmux.conf>                  # restores status-right from your own file
 ```
 

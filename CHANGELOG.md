@@ -18,11 +18,14 @@ All notable changes to clux are documented here.
 
 - **A `#` in a session name no longer injects styling into the bar.** `agent-bar.sh`'s roll-up mode now escapes it as `##`, the single correct escape for both the `#(...)` job path (re-expanded once) and the precomputed-option draw path
 - **The documented `set -g status-right "#(agent-bar.sh) #{status-right}"` snippet was broken.** tmux expands an option reference exactly one level, so `#{status-right}` was drawn as literal text on the bar. Replaced with `set -ag status-right " #{@clux-agent-bar}"`, labelled for manual/non-plugin installs only
+- **The Tier B warning's own `#{@clux-agent-bar}` token was being eaten.** `tmux display-message` expands `#{...}` in its own argument, so the one actionable word in the only warning the user gets was silently deleted. Now escaped as `##{@clux-agent-bar}`
+- **The bar segment could be truncated away while install reported success.** The self-install now raises `status-right-length` to fit the segment (never shrinking a value already set larger) instead of leaving the tmux default of 40 in place
+- **The `run-shell` hook commands were not shell-quoted.** A plugin path containing a space (a real shape for `${CLAUDE_PLUGIN_ROOT}`) made both indexed hooks exit 127 on every window switch. The installed path is now single-quoted for `sh`
+- **`@clux-agent-bar-unreachable` no longer latches for the life of the server.** It is now recorded as the plugin version that hit the obstruction, not a bare `1`, so a version bump re-checks the bar instead of leaving the segment permanently disabled once the obstruction is gone
 
 ### Known limits
 
-- The segment cannot reach a bar whose `status-format[0]` never references `status-right` — clux says so once (via `tmux display-message` and `@clux-agent-bar-unreachable`) instead of silently reporting success
-- The default `status-right-length` of 40 can truncate the segment away with no warning
+- The segment cannot reach a bar whose `status-format[0]` never references `status-right` — clux says so once per version (via `tmux display-message` and a version-scoped `@clux-agent-bar-unreachable`) instead of silently reporting success
 
 ## [3.1.0]
 

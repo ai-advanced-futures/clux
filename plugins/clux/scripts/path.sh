@@ -201,9 +201,14 @@ clux_ensure_installed() {
     if [ "$_CLUX_BAR_OPTION_ACTIVE" = "1" ]; then
         need_bar=0
     else
+        # The unreachable flag is version-scoped: its value is CLUX_VERSION,
+        # not a bare 1. A flag recorded by an OLDER version does not match
+        # here, so need_bar stays 1 and Tier B/A detection runs again on the
+        # next fire — the obstruction is re-checked instead of latching shut
+        # forever. See _clux_install_bar_segment() for the write side.
         case "$haystack" in
-            *$'\n'"@clux-agent-bar-unreachable 1"$'\n'*) need_bar=0 ;;
-            *)                                           need_bar=1 ;;
+            *$'\n'"@clux-agent-bar-unreachable $CLUX_VERSION"$'\n'*) need_bar=0 ;;
+            *)                                                       need_bar=1 ;;
         esac
     fi
 
@@ -215,10 +220,21 @@ clux_ensure_installed() {
     [ "$need_hooks" = "1" ] || [ "$need_bar" = "1" ] || return 0
 
     if [ "$need_hooks" = "1" ]; then
+        # self_dir derives from ${CLAUDE_PLUGIN_ROOT}, which clux does not
+        # control and which can contain a space (e.g. a marketplace cache
+        # path). tmux's own double-quoted argument only strips ITS quoting
+        # before handing the remainder to `sh -c` as one command line — an
+        # unquoted path there gets word-split by sh on the space, and the
+        # hook fails with exit 127 on every window switch. Single-quote
+        # self_dir for sh (escaping any embedded single quote the sh way:
+        # close the quote, emit an escaped quote, reopen it) so the sh
+        # command line is safe regardless of what the path contains.
+        local self_dir_sq
+        self_dir_sq=$(printf '%s' "$self_dir" | sed "s/'/'\\\\''/g")
         tmux set-hook -g 'after-select-window[90]' \
-            "run-shell \"$self_dir/agent-clear.sh '#{window_id}'\"" 2>/dev/null
+            "run-shell \"'$self_dir_sq'/agent-clear.sh '#{window_id}'\"" 2>/dev/null
         tmux set-hook -g 'client-session-changed[90]' \
-            "run-shell \"$self_dir/agent-clear.sh '#{window_id}'\"" 2>/dev/null
+            "run-shell \"'$self_dir_sq'/agent-clear.sh '#{window_id}'\"" 2>/dev/null
     fi
 
     if [ "$need_bar" = "1" ]; then
@@ -264,8 +280,17 @@ _clux_install_bar_segment() {
         case "$fmt0" in
             *status-right*) ;;
             *)
-                tmux set-option -g @clux-agent-bar-unreachable 1 2>/dev/null
-                tmux display-message "clux: cannot reach the status bar automatically — status-format[0] does not reference status-right. Add #{@clux-agent-bar} to your bar manually (see agent-bar.sh / agent-query.sh) or run /clux:validate." 2>/dev/null
+                # Version-scoped, not a bare 1: a version bump makes need_bar
+                # re-evaluate the obstruction instead of latching shut for the
+                # life of the server (see the need_bar case in
+                # clux_ensure_installed()).
+                tmux set-option -g @clux-agent-bar-unreachable "$CLUX_VERSION" 2>/dev/null
+                # display-message expands #{...} in its OWN argument, so a
+                # literal `#{@clux-agent-bar}` token must be escaped as
+                # `##{...}` or tmux silently substitutes the option's value —
+                # which is empty on a Tier B machine, deleting the one
+                # actionable word in the whole warning.
+                tmux display-message "clux: cannot reach the status bar automatically — status-format[0] does not reference status-right. Add ##{@clux-agent-bar} to your bar manually (see agent-bar.sh / agent-query.sh) or run /clux:validate." 2>/dev/null
                 _CLUX_BAR_OPTION_ACTIVE=0
                 return 0
                 ;;
@@ -282,4 +307,22 @@ _clux_install_bar_segment() {
     _CLUX_BAR_OPTION_ACTIVE=1
     # Clear a stale unreachable flag now that the segment is installed.
     tmux set-option -gu @clux-agent-bar-unreachable 2>/dev/null
+
+    # e. status-right-length caps the DRAWN width of status-right at 40 by
+    # default — the same width the default status-right already fills — so
+    # the segment just appended above can be cut off with @clux-installed set
+    # and @clux-agent-bar-unreachable NOT set: install reports success while
+    # the glyph never appears. Raise the cap to comfortably fit the
+    # post-append text (plus margin, since the rendered glyphs can run wider
+    # than the raw `#{@clux-agent-bar}` reference) whenever the current cap
+    # is not already generous enough. Never shrinks a value the user set
+    # themselves to something larger than it needs to be.
+    local new_right srl want
+    new_right=$(tmux show-option -gv status-right 2>/dev/null)
+    want=$(( ${#new_right} + 40 ))
+    srl=$(tmux show-option -gqv status-right-length 2>/dev/null)
+    [ -n "$srl" ] || srl=40   # tmux's own default when the option is unset
+    if [ "$srl" -lt "$want" ] 2>/dev/null; then
+        tmux set-option -g status-right-length "$want" 2>/dev/null
+    fi
 }
