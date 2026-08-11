@@ -474,6 +474,45 @@ STUBEOF
     [ -f "$dir/%3" ]
 }
 
+@test "clear: refreshes the bar after it removes a mark, honouring the refresh option" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    mkdir -p "$dir"
+    printf 'finished\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export STUB_LOG='$log'
+        export FAKE_WINDOW_PANES='%1'
+        export FAKE_OPTS='@clux-agent-refresh-command=run-shell -b /rebuild-bar'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_CLEAR' '@1'
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/%1" ]
+    grep -qF "tmux run-shell -b /rebuild-bar" "$log" || false
+}
+
+@test "clear: does NOT refresh when it removed nothing" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    mkdir -p "$dir"
+    printf 'busy\n' > "$dir/%1"   # not 'finished' -> nothing to clear
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export STUB_LOG='$log'
+        export FAKE_WINDOW_PANES='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_CLEAR' '@1'
+    "
+    [ "$status" -eq 0 ]
+    [ -f "$dir/%1" ]
+    # A window switch that changes nothing must cost no rebuild of the bar.
+    run grep -cF "refresh-client" "$log"
+    [ "$output" = "0" ]
+}
+
 @test "clear: empty argument falls back to display-message and still clears" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"

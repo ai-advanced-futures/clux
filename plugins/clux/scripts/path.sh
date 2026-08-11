@@ -6,11 +6,11 @@
 # The path resolvers — resolve_notify_file(), resolve_agent_state_dir() — are
 # pure: they read env vars and a sidecar file and print a path.
 #
-# ONE function here is deliberately NOT pure: reap_agent_state_dir() calls tmux
-# and deletes files. It lives in this file so the two writers share a single
-# reaper instead of each rolling its own, and it does that work only when
-# CALLED — sourcing still costs nothing. Do not add a second impure function
-# here without saying so in this header.
+# TWO functions here are deliberately NOT pure. reap_agent_state_dir() calls
+# tmux and deletes files; refresh_agent_bar() calls tmux. Both live in this file
+# so the two writers share one copy instead of each rolling its own, and both do
+# that work only when CALLED — sourcing still costs nothing. Do not add a third
+# impure function here without saying so in this header.
 
 _CLUX_SIDECAR="${HOME}/.config/clux/notify-file-path"
 _CLUX_AGENT_SIDECAR="${HOME}/.config/clux/agent-state-dir"
@@ -90,4 +90,25 @@ reap_agent_state_dir() {
             *) rm -f "$f" 2>/dev/null ;;
         esac
     done
+}
+
+# Ask tmux to redraw whatever shows agent state. Shared by the two writers so
+# they can never disagree about how a change reaches the screen.
+#
+# The default, `refresh-client -S`, is enough when the bar reads agent state
+# through a `#(...)` shell job: tmux re-runs the job and redraws. It is NOT
+# enough when the bar is a precomputed tmux option — a `#{@some_bar}` built by
+# a separate script — because a redraw re-reads that option without rebuilding
+# it, so the stale value comes back. Such a configuration sets
+# @clux-agent-refresh-command to its own rebuild command instead.
+#
+# The option is expanded unquoted on purpose: it holds a tmux command line, and
+# word splitting is what turns it into arguments. An argument containing a
+# space therefore cannot be expressed through this option.
+refresh_agent_bar() {
+    local cmd
+    cmd=$(tmux show-option -gqv "@clux-agent-refresh-command" 2>/dev/null)
+    [ -n "$cmd" ] || cmd="refresh-client -S"
+    # shellcheck disable=SC2086
+    tmux $cmd 2>/dev/null || true
 }

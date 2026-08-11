@@ -91,10 +91,7 @@ fi
 reap_agent_state_dir "$STATE_DIR"
 
 # Refresh, decoupled from the user's bar. A failure never changes the exit
-# status.
-REFRESH_CMD=$(tmux show-option -gqv "@clux-agent-refresh-command" 2>/dev/null)
-[ -n "$REFRESH_CMD" ] || REFRESH_CMD="refresh-client -S"
-# shellcheck disable=SC2086
-tmux $REFRESH_CMD 2>/dev/null || true
+# status. Shared with agent-clear.sh (see path.sh).
+refresh_agent_bar
 
 exit 0

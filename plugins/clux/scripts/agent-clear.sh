@@ -14,9 +14,11 @@
 #                                   the server — closes the pane-id-reuse hole
 #                                   after a tmux server restart.
 #
-# No refresh is triggered here: selecting a window or a session already
-# triggers a status redraw, and the #(...) job's cached output refreshes
-# within status-interval on its own (bounded lag).
+# A refresh is triggered only when a mark was actually removed. A redraw alone
+# is not always enough: a bar built from a precomputed tmux option keeps showing
+# the old value until something rebuilds that option, and the hook that rebuilds
+# it may well have already run before this script did. refresh_agent_bar()
+# (path.sh) is the one place that knows how to reach the user's bar.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
@@ -46,6 +48,7 @@ STATE_DIR="$(resolve_agent_state_dir)"
 PANES=$(tmux list-panes -t "$WIN" -F '#{pane_id}' 2>/dev/null)
 [ -n "$PANES" ] || exit 0
 
+CLEARED=0
 while IFS= read -r pane; do
     [ -n "$pane" ] || continue
     f="$STATE_DIR/$pane"
@@ -53,9 +56,14 @@ while IFS= read -r pane; do
     st=""
     IFS= read -r st < "$f" 2>/dev/null || true
     st="${st//[[:space:]]/}"
-    [ "$st" = "finished" ] && rm -f "$f" 2>/dev/null
+    [ "$st" = "finished" ] || continue
+    rm -f "$f" 2>/dev/null && CLEARED=1
 done <<EOF
 $PANES
 EOF
+
+# Nothing changed on the far side of a window switch is the common case, so the
+# refresh is paid for only when the bar would actually differ.
+[ "$CLEARED" -eq 1 ] && refresh_agent_bar
 
 exit 0
