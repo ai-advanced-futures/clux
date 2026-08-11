@@ -2,6 +2,28 @@
 
 All notable changes to clux are documented here.
 
+## [3.2.0]
+
+### Added
+
+- **Self-installing tmux wiring.** The two indexed hooks (`after-select-window[90]`, `client-session-changed[90]`) and the `#{@clux-agent-bar}` status-right segment are now registered against the live tmux server on the first Claude Code hook fire of each version — `/clux:setup` and hand-edited `tmux.conf` lines are no longer required for agent state. Zero bytes are written to any file the user owns; everything is live-server runtime state, gone on a server restart and reinstalled on the next prompt
+- New options: `@clux-installed` (version marker that forces a reinstall after an update) and `@clux-agent-bar-unreachable` (set once per version when the segment cannot be reached — see Known limits)
+- `@clux-agent-bar` now holds the rendered bar string, so the bar costs one option read per redraw instead of a `#(...)` shell job
+
+### Changed
+
+- `claude-notify.tmux` no longer registers the two hooks itself — one installer (`clux_ensure_installed` in `scripts/path.sh`) owns hook index `[90]`, so a tpm checkout and a plugin install can never point the same index at two different directories
+
+### Fixed
+
+- **A `#` in a session name no longer injects styling into the bar.** `agent-bar.sh`'s roll-up mode now escapes it as `##`, the single correct escape for both the `#(...)` job path (re-expanded once) and the precomputed-option draw path
+- **The documented `set -g status-right "#(agent-bar.sh) #{status-right}"` snippet was broken.** tmux expands an option reference exactly one level, so `#{status-right}` was drawn as literal text on the bar. Replaced with `set -ag status-right " #{@clux-agent-bar}"`, labelled for manual/non-plugin installs only
+
+### Known limits
+
+- The segment cannot reach a bar whose `status-format[0]` never references `status-right` — clux says so once (via `tmux display-message` and `@clux-agent-bar-unreachable`) instead of silently reporting success
+- The default `status-right-length` of 40 can truncate the segment away with no warning
+
 ## [3.1.0]
 
 ### Added

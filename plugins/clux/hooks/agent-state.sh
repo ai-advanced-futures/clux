@@ -33,6 +33,13 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/../scripts/path.sh"
 
+# Self-install, here and not lower. This script has FOUR exits before the
+# write — no STATE_DIR, mkdir failure, an ineligible Notification type, an
+# unknown argument — so "before the write" would leave a machine whose state
+# dir is unresolvable with no tmux hooks, ever. TMUX is already non-empty from
+# the guard above, which is clux_ensure_installed()'s only precondition.
+clux_ensure_installed
+
 STATE_DIR="$(resolve_agent_state_dir)"
 [ -n "$STATE_DIR" ] || exit 0
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0

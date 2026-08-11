@@ -25,6 +25,14 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/path.sh"
 
+# Self-install, cheap and idempotent, ahead of both modes below. On the
+# default window-id path this can only ever SELF-HEAL after a partial wipe —
+# this script runs only because the hooks clux_ensure_installed registers
+# already exist. The `--reap` path is the one that can truly BOOTSTRAP: it
+# runs as a plain child of claude-notify.tmux at config load, before those
+# hooks are guaranteed to exist yet.
+clux_ensure_installed
+
 if [ "${1:-}" = "--reap" ]; then
     STATE_DIR="$(resolve_agent_state_dir)"
     [ -d "$STATE_DIR" ] || exit 0

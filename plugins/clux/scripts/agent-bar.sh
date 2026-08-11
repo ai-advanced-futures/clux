@@ -60,7 +60,13 @@ else
         fi
         first=0
         _render "$st"
-        printf '%s' "$s"
+        # `#` starts a tmux format directive at draw time, so a session name
+        # containing `#` would inject styling into the bar. `##` is the single
+        # correct escape for BOTH the `#(...)` job path (which re-expands its
+        # output once: `##` -> `#`) and the precomputed-option draw path
+        # (which collapses `##` -> `#` again). Do NOT escape _render()'s own
+        # `#[fg=...]` output above — that is a real style directive.
+        printf '%s' "${s//#/##}"
     done <<EOF
 $ROWS
 EOF

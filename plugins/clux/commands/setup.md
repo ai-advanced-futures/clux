@@ -250,9 +250,11 @@ set -g @claude-notify-prompt-sound "off"
 
 **Only include variables that differ from the built-in defaults** (to keep tmux.conf clean). The defaults are defined in `helpers.sh` — if the user's choice matches the default, omit that variable.
 
-### B4. Agent state bar (optional)
+### B4. Agent state bar (optional — clux 3.2.0+ installs this itself)
 
 clux can show a per-agent state glyph (busy / needs-you / finished) on the tmux status bar. State lives in files under `@clux-agent-state-dir`, written by the `hooks/agent-state.sh` hook, and read by the new `agent-query.sh` / `agent-bar.sh` scripts — the bar never writes.
+
+As of 3.2.0, clux installs the bar itself: on the first Claude Code hook fire inside tmux, it registers the two `[90]` hooks and appends `#{@clux-agent-bar}` to `status-right` on the LIVE tmux server. Nothing is added to `tmux.conf` — the change is lost on a server restart and reinstalled automatically on the next prompt. Most users need do nothing in this section; it only matters for a manual install or a non-plugin (tpm-only) setup.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -267,14 +269,21 @@ clux can show a per-agent state glyph (busy / needs-you / finished) on the tmux 
 
 Glyph defaults are plain ASCII on purpose: the bar reserves exactly ONE column per session, and a two-column glyph (an emoji, a nerd-font icon) would reflow it. A user who sets a wide glyph owns the reflow. There is no `@clux-agent-glyph-idle` option — idle is always a literal space.
 
-Two usage shapes, depending on the user's status line:
+Two usage shapes, depending on the user's status line — **only for a manual install, or a non-plugin (tpm-only) setup**; plugin users get this wired automatically and need neither line:
 ```tmux
-# Plain status line: compact roll-up of every non-idle session
-set -g status-right "#(DEPLOY_DIR/agent-bar.sh) #{status-right}"
+# Plain status line: compact roll-up of every non-idle session, appended with
+# tmux's own -a (append). Do NOT use `"#{status-right} ..."` — tmux expands an
+# option reference only ONE level, so that shape draws the literal text
+# `#{status-right}` on the bar instead of its actual value.
+set -ag status-right " #{@clux-agent-bar}"
 
 # Session-list bar: one reserved column per session
 #(DEPLOY_DIR/agent-bar.sh #{session_name})
 ```
+
+The default `status-right-length` is 40 and can silently truncate the segment — raise it (e.g. `set -g status-right-length 150`) if the glyphs do not appear.
+
+**Warning on the session-list shape:** `#{session_name}` is expanded directly into a shell command line before `agent-bar.sh` ever runs, so a session name containing shell metacharacters is a command-injection surface. Do not present that shape as safe for untrusted session names.
 
 This section is optional — offer it, but don't block the rest of setup if the user declines.
 
@@ -295,13 +304,13 @@ Use AskUserQuestion with options like:
 
 If user chooses to customize, ask for each key individually.
 
-### C2. tmux hooks for finished marks (non-tpm installs)
+### C2. tmux hooks for finished marks (non-plugin installs)
 
 The agent-state bar (section B4) clears a session's `finished` glyph back to idle when the user looks at that window. This is done by two tmux hooks, `after-select-window` and `client-session-changed`, at index `[90]`.
 
-Users who load `claude-notify.tmux` through tpm (`.tmux/plugins/tpm`) get these registered automatically — nothing to do here.
+**As of 3.2.0, these hooks self-install.** Plugin users need nothing here — the first Claude Code hook fire inside tmux registers both. Users who load `claude-notify.tmux` through tpm also get them automatically.
 
-Everyone else must add the two lines by hand to their tmux.conf:
+Only a non-plugin, non-tpm setup (scripts deployed by hand, `claude-notify.tmux` never sourced) needs the manual lines below:
 
 ```tmux
 set-hook -g 'after-select-window[90]' "run-shell \"DEPLOY_DIR/agent-clear.sh '#{window_id}'\""

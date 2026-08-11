@@ -41,12 +41,17 @@ printf '%s\n' "$AGENT_STATE_DIR" > "$_CLUX_SIDECAR_DIR/agent-state-dir"
 tmux setenv -g CLUX_AGENT_STATE_DIR "$AGENT_STATE_DIR"
 
 # Register the two hooks that clear a window's `finished` marks when the user
-# looks at it. Indexed [90] so re-sourcing tmux.conf (tpm reload) never
-# duplicates the hook, and any hand-written hooks at low indices are left
-# alone. Non-tpm installs must add the equivalent lines by hand — see
-# /clux:setup section C2.
-tmux set-hook -g 'after-select-window[90]' "run-shell \"$CURRENT_DIR/scripts/agent-clear.sh '#{window_id}'\""
-tmux set-hook -g 'client-session-changed[90]' "run-shell \"$CURRENT_DIR/scripts/agent-clear.sh '#{window_id}'\""
+# looks at it, and the `#{@clux-agent-bar}` status-right segment, through the
+# ONE installer in scripts/path.sh (clux_ensure_installed). Indexed [90] so
+# re-sourcing tmux.conf (tpm reload) never duplicates the hook, and any
+# hand-written hooks at low indices are left alone. This used to set the two
+# hooks directly, pointed at $CURRENT_DIR — a tpm checkout — while a
+# self-install from ${CLAUDE_PLUGIN_ROOT} would point the same index [90] at a
+# different directory. Last writer wins on an indexed hook, so there must be
+# exactly one installer; deleting the duplicate here removes that hazard at
+# the source. This call is a no-op for a copy that is not in the plugin tree
+# (clux_ensure_installed checks for a `.claude-plugin` sibling).
+clux_ensure_installed
 
 # Reap state files whose pane id is no longer live anywhere on the server —
 # closes the pane-id-reuse hole after a tmux server restart. Writer's job,

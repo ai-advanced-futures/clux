@@ -69,3 +69,35 @@ load test_helper
     [ "$status" -eq 0 ]
     [[ "$output" == "$fake_home/.config/tmux/claude_notification" ]] || false
 }
+
+# ---------------------------------------------------------------------------
+# Test 5: CLUX_VERSION (path.sh) stays in lockstep with plugin.json's
+# "version" field — this is what forces the reinstall after an update.
+# ---------------------------------------------------------------------------
+@test "path: CLUX_VERSION equals the plugin.json version" {
+    local path_version plugin_version
+    path_version=$(grep '^CLUX_VERSION=' "$SCRIPTS_DIR/path.sh" | head -1 | cut -d'"' -f2)
+    plugin_version=$("$REAL_JQ" -r .version "$SCRIPTS_DIR/../.claude-plugin/plugin.json")
+    [ -n "$path_version" ]
+    [ -n "$plugin_version" ]
+    [ "$path_version" = "$plugin_version" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: sourcing path.sh is still free — no process spawned, no tmux IPC,
+# nothing on stdout/stderr. Enforces the header contract now that a constant
+# and two impure functions were added.
+# ---------------------------------------------------------------------------
+@test "path: sourcing path.sh still costs nothing" {
+    local log="$BATS_TEST_TMPDIR/source-stub.log"
+    run bash -c "
+        export STUB_LOG='$log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source \"$SCRIPTS_DIR/path.sh\"
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    if [ -f "$log" ]; then
+        [ ! -s "$log" ]
+    fi
+}

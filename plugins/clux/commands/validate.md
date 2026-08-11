@@ -139,18 +139,49 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    [ -n "$STATE_DIR" ] || STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
    [ -d "$STATE_DIR" ] && echo "OK  agent state dir exists ($STATE_DIR)" || echo "INFO agent state dir not yet created ($STATE_DIR — created on first hook fire)"
    ```
-5c. **Agent-state tmux hooks** (read-only, non-blocking — the feature still works without them, `finished` marks just won't self-clear):
+5b-i. **Self-install version marker** (`@clux-installed`) — compares the live server marker against the plugin's own `CLUX_VERSION` constant:
+   ```bash
+   PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/path.sh" -type f 2>/dev/null | head -1)
+   PLUGIN_VERSION=$(grep '^CLUX_VERSION=' "$PLUGIN_SRC" 2>/dev/null | cut -d'"' -f2)
+   LIVE_MARKER=$(tmux show-option -gqv @clux-installed 2>/dev/null)
+   if [ -z "$LIVE_MARKER" ]; then
+       echo "INFO @clux-installed not set yet (installs on the next prompt inside tmux)"
+   elif [ "$LIVE_MARKER" = "$PLUGIN_VERSION" ]; then
+       echo "OK  @clux-installed ($LIVE_MARKER)"
+   else
+       echo "WARN @clux-installed is stale ($LIVE_MARKER, plugin is $PLUGIN_VERSION) — will reinstall on the next hook fire"
+   fi
+   ```
+5b-ii. **Bar segment presence**:
+   ```bash
+   if tmux show-options -g 2>/dev/null | grep -qF '#{@clux-agent-bar}'; then
+       echo "OK  bar segment present"
+       LEN=$(tmux show-option -gv status-right-length 2>/dev/null)
+       if [ -n "$LEN" ] && [ "$LEN" -le 60 ] 2>/dev/null; then
+           echo "WARN status-right-length ($LEN) may silently truncate the segment — consider raising it"
+       fi
+   else
+       echo "WARN no clux segment on the bar"
+   fi
+   ```
+5b-iii. **Unreachable-bar flag** — set once per version when clux could not append the segment automatically:
+   ```bash
+   if [ "$(tmux show-option -gqv @clux-agent-bar-unreachable 2>/dev/null)" = "1" ]; then
+       echo "WARN clux could not reach the status bar automatically (status-format[0] never references status-right) — fold #{@clux-agent-bar} into your bar by hand (see agent-bar.sh / agent-query.sh)"
+   fi
+   ```
+5c. **Agent-state tmux hooks** (read-only, non-blocking — the feature still works without them, `finished` marks just won't self-clear). As of 3.2.0 these self-install on the next hook fire inside tmux, so a missing hook here is not necessarily a problem — re-check after one prompt. An unset hook still appears in `show-hooks -g` as a bare name with no value, so match on `agent-clear.sh`, not on the hook name alone:
    ```bash
    HOOKS_OUT=$(tmux show-hooks -g 2>/dev/null)
-   if echo "$HOOKS_OUT" | grep -q "after-select-window" && echo "$HOOKS_OUT" | grep -q "agent-clear.sh"; then
+   if echo "$HOOKS_OUT" | grep "after-select-window" | grep -q "agent-clear.sh"; then
        echo "OK  after-select-window hook → agent-clear.sh"
    else
-       echo "WARN finished marks will not clear on their own — load claude-notify.tmux via tpm or add the two set-hook lines (see /clux:setup)"
+       echo "WARN after-select-window not wired yet — run one prompt inside tmux, then re-check (see @clux-installed line above)"
    fi
-   if echo "$HOOKS_OUT" | grep -q "client-session-changed" && echo "$HOOKS_OUT" | grep -q "agent-clear.sh"; then
+   if echo "$HOOKS_OUT" | grep "client-session-changed" | grep -q "agent-clear.sh"; then
        echo "OK  client-session-changed hook → agent-clear.sh"
    else
-       echo "WARN finished marks will not clear on their own — load claude-notify.tmux via tpm or add the two set-hook lines (see /clux:setup)"
+       echo "WARN client-session-changed not wired yet — run one prompt inside tmux, then re-check (see @clux-installed line above)"
    fi
    ```
 6. **Per-notification preferences** — show current effective values:
@@ -395,3 +426,16 @@ If any checks failed or warned:
 3. **If everything passes**: Report "All checks passed. clux is fully operational."
 
 **Do NOT offer to make changes.** This command is read-only. Direct the user to run `/clux:setup` for fixes.
+
+### Removing the runtime install
+
+There is no `/clux:uninstall` command — as of 3.2.0 the whole self-install footprint is live tmux-server state, zero bytes written to any file the user owns, so it is erased by a server restart on its own. To remove it without restarting the server, run:
+
+```bash
+tmux set-hook -gu 'after-select-window[90]'
+tmux set-hook -gu 'client-session-changed[90]'
+tmux set-option -g @clux-agent-bar-unreachable 1   # stops the segment re-installing on the next hook fire
+tmux source-file <your tmux.conf>                  # restores status-right from your own file
+```
+
+`tmux kill-server` also clears everything in one step. Either way, the hooks and the bar segment come back automatically the next time `CLUX_VERSION` is bumped past what `@clux-installed` records.

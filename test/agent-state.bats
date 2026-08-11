@@ -46,6 +46,19 @@ case "$*" in
     "display-message "*)
         [ -n "${FAKE_WINDOW_ID:-}" ] && printf '%s\n' "$FAKE_WINDOW_ID"
         ;;
+    "show-options -g")
+        [ -n "${FAKE_GLOBAL_OPTS:-}" ] && printf '%s\n' "$FAKE_GLOBAL_OPTS"
+        ;;
+    "show-option -gqv status-format"*)
+        # Trailing '*' on purpose, never the literal 'status-format[0]' — '[0]'
+        # in a case pattern is a glob character class matching the single
+        # character '0', so a literal-looking pattern would silently never
+        # match. Same trap the generic branch below already has with its sed.
+        [ -n "${FAKE_STATUS_FORMAT0:-}" ] && printf '%s\n' "$FAKE_STATUS_FORMAT0"
+        ;;
+    "show-option -gv status-right")
+        [ -n "${FAKE_STATUS_RIGHT:-}" ] && printf '%s\n' "$FAKE_STATUS_RIGHT"
+        ;;
     "show-option "*)
         _all="$*"
         _opt="${_all##* }"
@@ -578,4 +591,318 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     [ -f "$dir/%99" ]
+}
+
+# ===========================================================================
+# SELF-INSTALL — clux_ensure_installed() / _clux_install_bar_segment()
+# (scripts/path.sh), wired in from hooks/agent-state.sh and
+# scripts/agent-clear.sh. CLUX_VERSION is hard-coded as 3.2.0 below —
+# test/path.bats separately enforces it equals plugin.json.
+# ===========================================================================
+
+@test "self-install: registers both indexed hooks and records @clux-installed when the marker is absent" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "set-hook -g after-select-window[90]" "$log" || false
+    grep -qF "set-hook -g client-session-changed[90]" "$log" || false
+    grep -qF "$SCRIPTS_DIR/agent-clear.sh" "$log" || false
+    grep -qF "set-option -g @clux-installed 3.2.0" "$log" || false
+}
+
+@test "self-install: skips every install call when the marker matches and the segment is present" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\nstatus-right \"L #{@clux-agent-bar} R\"'
+        export FAKE_PANES_FULL='%1|alpha|claude'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' needs-you
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "set-hook" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-option -g @clux-installed" "$log"
+    [ "$output" = "0" ]
+    grep -qF "set-option -g @clux-agent-bar " "$log" || false
+}
+
+@test "self-install: Tier A appends with tmux's own -a and never rewrites status-right" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "set-option -ag status-right  #{@clux-agent-bar}" "$log" || false
+    run grep -c "tmux set-option -g status-right" "$log"
+    [ "$output" = "0" ]
+    run grep -c "#{status-right}" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: a clux segment anywhere in the dump suppresses the append" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'status-format[0] \"... #{@clux-agent-bar} ...\"\nstatus-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "set-hook -g after-select-window[90]" "$log" || false
+    grep -qF "set-hook -g client-session-changed[90]" "$log" || false
+    run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: Tier B sets the unreachable flag, warns once, and leaves status-right alone" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-left \"hi\"'
+        export FAKE_STATUS_FORMAT0='a big custom format with no bar reference'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    grep -qF "set-option -g @clux-agent-bar-unreachable 1" "$log" || false
+    run grep -c "display-message" "$log"
+    [ "$output" = "1" ]
+    run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: the Tier B warning is not repeated once the flag is recorded" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "display-message" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-hook" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-option -ag status-right" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: a dropped bar segment is re-installed even though @clux-installed still matches" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='@clux-installed 3.2.0'
+        export FAKE_STATUS_FORMAT0='xxx status-right yyy'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "set-option -ag status-right  #{@clux-agent-bar}" "$log" || false
+    run grep -c "set-hook" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-option -g @clux-installed" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: an empty option dump installs nothing" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    # FAKE_GLOBAL_OPTS deliberately unset — the stub answers empty.
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "set-hook" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-option -g @clux-installed" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-option -g @clux-agent-bar" "$log"
+    [ "$output" = "0" ]
+}
+
+@test "self-install: nothing runs when TMUX is unset" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX= TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/%1" ]
+    # Not one tmux process spawned: the log is never even created.
+    [ ! -f "$log" ]
+}
+
+@test "self-install: a copy outside the plugin tree never installs" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    local deployed="$BATS_TEST_TMPDIR/deployed"
+    mkdir -p "$deployed/scripts" "$deployed/hooks"
+    cp "$SCRIPTS_DIR"/*.sh "$deployed/scripts/"
+    cp "$HOOKS_DIR/agent-state.sh" "$deployed/hooks/agent-state.sh"
+    chmod +x "$deployed/hooks/agent-state.sh" "$deployed/scripts/"*.sh
+    # No <deployed>/.claude-plugin — this is the deployed-copy shape.
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$deployed/hooks/agent-state.sh' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "show-options" "$log"
+    [ "$output" = "0" ]
+    run grep -c "set-hook" "$log"
+    [ "$output" = "0" ]
+    run grep -c "tmux set-option" "$log"
+    [ "$output" = "0" ]
+}
+
+# ===========================================================================
+# PUBLISH — refresh_agent_bar() writing @clux-agent-bar (path.sh)
+# ===========================================================================
+
+@test "publish: the rendered bar is written into @clux-agent-bar before the redraw" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    mkdir -p "$dir"
+    printf 'needs-you\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\nstatus-right \"L #{@clux-agent-bar} R\"'
+        export FAKE_PANES_FULL='%1|alpha|claude'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' needs-you
+    "
+    [ "$status" -eq 0 ]
+    local set_line refresh_line
+    set_line=$(grep -nF 'set-option -g @clux-agent-bar #[fg=yellow]!#[default]alpha' "$log" | head -1 | cut -d: -f1)
+    refresh_line=$(grep -n 'refresh-client -S' "$log" | head -1 | cut -d: -f1)
+    [ -n "$set_line" ]
+    [ -n "$refresh_line" ]
+    [ "$set_line" -lt "$refresh_line" ]
+}
+
+@test "publish: the renderer is not run when no clux segment is on the bar" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_GLOBAL_OPTS=\$'@clux-installed 3.2.0\n@clux-agent-bar-unreachable 1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    run grep -c "set-option -g @clux-agent-bar " "$log"
+    [ "$output" = "0" ]
+    run grep -c "list-panes -a -F #{pane_id}|#{session_name}|#{pane_current_command}" "$log"
+    [ "$output" = "0" ]
+    grep -qF "refresh-client -S" "$log" || false
+}
+
+# ===========================================================================
+# RENDERER escaping — agent-bar.sh
+# ===========================================================================
+
+@test "renderer: a '#' in a session name is emitted as '##'" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir"
+    printf 'needs-you\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%1|we#ird|claude'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_BAR'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = '#[fg=yellow]!#[default]we##ird' ]
+}
+
+@test "renderer: one-column mode is unchanged by the escaping fix" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir"
+    printf 'needs-you\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%1|we#ird|claude'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_BAR' 'we#ird'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = '#[fg=yellow]!#[default]' ]
+}
+
+# ===========================================================================
+# CLEAR --reap self-install bootstrap
+# ===========================================================================
+
+@test "clear --reap: bootstraps the tmux wiring at config load" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    mkdir -p "$dir"
+    printf 'busy\n' > "$dir/%1"
+    printf 'finished\n' > "$dir/%99"
+    _write_agent_tmux_stub
+    run bash -c "
+        export STUB_LOG='$log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%1'
+        export FAKE_GLOBAL_OPTS='status-right \"L R\"'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        TMUX=dummy '$AGENT_CLEAR' --reap
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "set-hook -g after-select-window[90]" "$log" || false
+    grep -qF "set-hook -g client-session-changed[90]" "$log" || false
+    grep -qF "set-option -g @clux-installed 3.2.0" "$log" || false
+    [ -f "$dir/%1" ]
+    [ ! -f "$dir/%99" ]
 }
