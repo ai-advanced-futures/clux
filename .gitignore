@@ -29,3 +29,4 @@ docs/superpowers/plans/
 # OS generated files
 Thumbs.db
 ehthumbs.db
+.claude/worktrees/
