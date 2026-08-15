@@ -23,7 +23,7 @@ Hooks auto-register via `${CLAUDE_PLUGIN_ROOT}` (automatically set by Claude Cod
 Add the notification display to `status-left` or `status-right` in `tmux.conf`:
 
 ```bash
-set -g status-left "#(~/.claude/plugins/clux/scripts/show-notification.sh) "
+set -g status-left "#(~/.config/clux/scripts/show-notification.sh) "
 ```
 
 ### Recommended tmux settings
@@ -39,7 +39,7 @@ set -g bell-action any
 Run `/clux:setup` inside Claude Code, or:
 
 ```bash
-~/.claude/plugins/clux/scripts/validate-setup.sh
+~/.claude/plugins/cache/ai-advanced-futures/clux/*/scripts/validate-setup.sh
 ```
 
 ## Alternative: TPM Install
@@ -98,7 +98,7 @@ set -g @claude-notify-fg "#1e1e2e"
 ### Powerline
 
 ```bash
-set -g status-left "#(~/.claude/plugins/clux/scripts/show-notification.sh)#[fg=colour235,bg=colour252,bold] #S "
+set -g status-left "#(~/.config/clux/scripts/show-notification.sh)#[fg=colour235,bg=colour252,bold] #S "
 ```
 
 ### Minimal

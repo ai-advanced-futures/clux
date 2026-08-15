@@ -34,8 +34,25 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 4. **Scripts in sync** — find the plugin source scripts and compare checksums with deployed:
    ```bash
-   PLUGIN_SRC=$(find ~/.claude -path "*/clux/scripts/helpers.sh" -type f 2>/dev/null | head -1)
-   PLUGIN_DIR=$(dirname "$PLUGIN_SRC")
+   # Tier 1: the harness exported CLAUDE_PLUGIN_ROOT (hook processes always;
+   # command/subagent Bash calls sometimes). Tier 2: the installed cache
+   # ~/.claude/plugins/cache/<marketplace>/clux/<version>/ or a flat
+   # ~/.claude/plugins/clux/. Tier 3: a plain checkout at or below the cwd.
+   PLUGIN_ROOT=""
+   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+       PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   else
+       HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+           \( -path "*/clux/*/scripts/show-notification.sh" \
+           -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] || HIT=$(find "$PWD" -maxdepth 4 -type f \
+           -path "*/plugins/clux/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] && PLUGIN_ROOT="${HIT%/scripts/show-notification.sh}"
+   fi
+   PLUGIN_DIR="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts}"
+   [ -n "$PLUGIN_DIR" ] || echo "WARN plugin source not found — skipping sync check"
    DEPLOY_DIR="$HOME/.config/clux/scripts"
    for script in helpers.sh path.sh show-notification.sh jump-to-notification.sh dismiss-notification.sh notification-picker.sh notify-sound.sh agent-query.sh agent-bar.sh agent-clear.sh; do
        if [ -f "$PLUGIN_DIR/$script" ] && [ -f "$DEPLOY_DIR/$script" ]; then
@@ -163,7 +180,24 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 7. **Audio playback readiness** — confirm a player is installed and configured sound files exist. Prefer the plugin source for helpers (it always has the latest API) so older deployed copies don't break this step:
    ```bash
-   HELPERS=$(find ~/.claude -path "*/clux/scripts/helpers.sh" -type f 2>/dev/null | head -1)
+   # Tier 1: the harness exported CLAUDE_PLUGIN_ROOT (hook processes always;
+   # command/subagent Bash calls sometimes). Tier 2: the installed cache
+   # ~/.claude/plugins/cache/<marketplace>/clux/<version>/ or a flat
+   # ~/.claude/plugins/clux/. Tier 3: a plain checkout at or below the cwd.
+   PLUGIN_ROOT=""
+   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+       PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   else
+       HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+           \( -path "*/clux/*/scripts/show-notification.sh" \
+           -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] || HIT=$(find "$PWD" -maxdepth 4 -type f \
+           -path "*/plugins/clux/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] && PLUGIN_ROOT="${HIT%/scripts/show-notification.sh}"
+   fi
+   HELPERS="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts/helpers.sh}"
    [ -f "$HELPERS" ] || HELPERS="$HOME/.config/clux/scripts/helpers.sh"
    if [ -f "$HELPERS" ] && grep -q '^detect_sound_player' "$HELPERS"; then
        # shellcheck disable=SC1090
@@ -211,7 +245,24 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 
 1. **Plugin hooks.json** — find and validate:
    ```bash
-   HOOKS_FILE=$(find ~/.claude -path "*/clux/hooks/hooks.json" -type f 2>/dev/null | head -1)
+   # Tier 1: the harness exported CLAUDE_PLUGIN_ROOT (hook processes always;
+   # command/subagent Bash calls sometimes). Tier 2: the installed cache
+   # ~/.claude/plugins/cache/<marketplace>/clux/<version>/ or a flat
+   # ~/.claude/plugins/clux/. Tier 3: a plain checkout at or below the cwd.
+   PLUGIN_ROOT=""
+   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+       PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   else
+       HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+           \( -path "*/clux/*/scripts/show-notification.sh" \
+           -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] || HIT=$(find "$PWD" -maxdepth 4 -type f \
+           -path "*/plugins/clux/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] && PLUGIN_ROOT="${HIT%/scripts/show-notification.sh}"
+   fi
+   HOOKS_FILE="${PLUGIN_ROOT:+$PLUGIN_ROOT/hooks/hooks.json}"
    if [ -z "$HOOKS_FILE" ]; then
        echo "FAIL plugin hooks.json not found"
    else

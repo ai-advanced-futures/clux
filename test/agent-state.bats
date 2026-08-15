@@ -335,20 +335,39 @@ STUBEOF
     [ -f "$dir/%5" ]
 }
 
-@test "reader: drops a pane whose pane_current_command is not claude" {
+@test "reader: reports a pane whose pane_current_command is not the literal 'claude'" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"
     printf 'finished\n' > "$dir/%7"
     _write_agent_tmux_stub
+    # The state file, not the command name, decides inclusion:
+    # `pane_current_command` reports the Claude binary's own name, which is a
+    # version string (e.g. `2.1.233`) on many installs, never `claude`.
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%7|gamma|vim'
+        export FAKE_PANES_FULL='%7|gamma|2.1.233'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
+    [ "$output" = "$(printf 'gamma\tfinished')" ]
     [ -f "$dir/%7" ]
+}
+
+@test "reader: a non-claude pane with no state file is still not reported" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir"
+    printf 'busy\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    # Absence of a state file, not the command name, excludes a pane.
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%9|beta|vim'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'alpha\tbusy')" ]
 }
 
 @test "reader: missing state directory prints nothing, exits 0, and creates no directory" {
@@ -369,7 +388,7 @@ STUBEOF
     mkdir -p "$dir"
     printf 'busy\n' > "$dir/%1"          # live, claude — will be printed
     printf 'finished\n' > "$dir/%99"     # stale (pane gone) — must survive, untouched
-    printf 'needs-you\n' > "$dir/%8"     # live pane but not claude — must survive
+    printf 'needs-you\n' > "$dir/%8"     # live pane, non-claude command name — now reported, and still never touched
     _write_agent_tmux_stub
 
     local before after
@@ -382,6 +401,8 @@ STUBEOF
         '$AGENT_QUERY'
     "
     [ "$status" -eq 0 ]
+    # %1=busy and %8=needs-you both roll up under session "alpha"; needs-you wins.
+    [ "$output" = "$(printf 'alpha\tneeds-you')" ]
 
     after="$(find "$dir" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir"/*)"
     [ "$before" = "$after" ]

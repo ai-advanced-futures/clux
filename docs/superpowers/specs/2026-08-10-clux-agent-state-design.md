@@ -194,8 +194,11 @@ tmux list-panes -a -F '#{pane_id}|#{session_name}|#{pane_current_command}'
 
 Join that against the state directory, then **drop** any entry where:
 
-- the pane no longer exists, or
-- the pane is no longer running `claude`.
+- the pane no longer exists.
+
+The command name is not used, because `#{pane_current_command}` reports the
+Claude binary's own name and is a version string on many installs; the state
+file is the authoritative signal.
 
 Then roll up per session, with this precedence:
 
@@ -222,9 +225,10 @@ mark stays on busy.
 |---|---|
 | Escape while a tool runs | `PostToolUseFailure` carries `is_interrupt` |
 | API error mid-turn | `StopFailure` fires instead of `Stop` |
-| Claude exits, pane lives | reader drops it, `pane_current_command` is not `claude` |
+| Claude exits, pane lives | `SessionEnd` fires `agent-state.sh remove`, which deletes the file |
 | Pane killed | reader drops it, the pane is gone |
 | Escape during output, then the user walks away | **not covered** |
+| Claude killed hard enough that `SessionEnd` never fires, pane lives | **not covered** — the mark survives until the pane closes and the next reap runs |
 
 The last row is the honest residual. It self-heals on the next prompt, and it is
 the one case where the user is at the machine and caused it themselves.

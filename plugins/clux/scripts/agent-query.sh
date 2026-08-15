@@ -11,6 +11,14 @@
 # where state is needs-you|busy|finished. Nothing at all when every session is
 # idle. Lines are sorted by precedence rank DESC, then session name ASC, in
 # byte order (LC_ALL=C). Idle sessions are never printed.
+#
+# A pane is included whenever a state file exists for its pane id and the
+# pane is still in the listing. `#{pane_current_command}` is NOT used to
+# decide that: it reports the Claude binary's own name, which on many
+# installs is a version string (e.g. `2.1.233`), never the literal
+# `claude`. The state file is the authoritative signal — only
+# hooks/agent-state.sh writes it, and agent-clear.sh --reap /
+# reap_agent_state_dir() delete it once the pane is gone.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
@@ -26,20 +34,16 @@ PANES=$(tmux list-panes -a -F '#{pane_id}|#{session_name}|#{pane_current_command
 ROWS=""
 while IFS= read -r line; do
     [ -n "$line" ] || continue
-    # Split by hand, not IFS='|' read: a session name may itself contain '|'.
-    # A pane id and pane_current_command never do.
+    # Split by hand, not IFS='|' read: a session name may contain '|'.
+    # pane_id and pane_current_command never do, so first and last fields
+    # are unambiguous and everything between them is the session name.
     pane="${line%%|*}"
     rest="${line#*|}"
-    cmd="${rest##*|}"
     sess="${rest%|*}"
 
     [ -n "$pane" ] || continue
-    [ "$cmd" = "claude" ] || continue
     f="$STATE_DIR/$pane"
-    [ -f "$f" ] || continue
-
-    st=""
-    IFS= read -r st < "$f" 2>/dev/null || true
+    IFS= read -r st 2>/dev/null < "$f" || continue
     st="${st//[[:space:]]/}"
 
     case "$st" in
