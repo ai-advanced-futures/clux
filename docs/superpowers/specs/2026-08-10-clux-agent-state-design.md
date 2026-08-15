@@ -189,16 +189,16 @@ event run in parallel, so the two never interfere.
 One tmux query and one directory scan.
 
 ```sh
-tmux list-panes -a -F '#{pane_id}|#{session_name}|#{pane_current_command}'
+tmux list-panes -a -F '#{pane_id}|#{session_name}'
 ```
 
 Join that against the state directory, then **drop** any entry where:
 
 - the pane no longer exists.
 
-The command name is not used, because `#{pane_current_command}` reports the
-Claude binary's own name and is a version string on many installs; the state
-file is the authoritative signal.
+`#{pane_current_command}` is intentionally not queried — the Claude binary's
+own name is a version string on many installs. The state file is the
+authoritative signal.
 
 Then roll up per session, with this precedence:
 

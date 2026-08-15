@@ -6,7 +6,7 @@ All notable changes to clux are documented here.
 
 ### Fixed
 
-- **The agent-state bar was always empty.** `scripts/agent-query.sh` required `#{pane_current_command}` to equal the literal string `claude`, but the Claude binary reports its own version string (e.g. `2.1.233`) on many installs, never `claude` — so the guard discarded every pane clux's own hook had just written state for. The reader now trusts the state file: it exists only because `hooks/agent-state.sh` wrote it from a real Claude pane, and dead panes are reaped by `reap_agent_state_dir()`
+- **The agent-state bar was always empty.** `scripts/agent-query.sh` required `#{pane_current_command}` to equal the literal string `claude`, but the Claude binary reports its own version string (e.g. `2.1.233`) on many installs, never `claude` — so the guard discarded every pane clux's own hook had just written state for. The reader no longer consults `pane_current_command` at all: the state file is the authoritative signal — it exists only because `hooks/agent-state.sh` wrote it from a real Claude pane, and dead panes are reaped by `reap_agent_state_dir()`
 - **`/clux:setup` and `/clux:validate` could not find their own plugin source.** The `find ~/.claude -path "*/clux/scripts/..."` glob never matches the real cache layout `~/.claude/plugins/cache/<marketplace>/clux/<version>/scripts/`. Both commands now prefer `$CLAUDE_PLUGIN_ROOT` and otherwise pick the highest installed version deterministically
 
 ## [3.1.0]

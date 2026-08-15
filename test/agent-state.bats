@@ -34,7 +34,7 @@ _write_agent_tmux_stub() {
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 case "$*" in
-    "list-panes -a -F #{pane_id}|#{session_name}|#{pane_current_command}")
+    "list-panes -a -F #{pane_id}|#{session_name}")
         [ -n "${FAKE_PANES_FULL:-}" ] && printf '%s\n' "$FAKE_PANES_FULL"
         ;;
     "list-panes -a -F #{pane_id}")
@@ -310,7 +310,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%2|beta|claude\n%3|gamma|claude'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%2|beta\n%3|gamma'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -325,7 +325,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%6|other|claude'
+        export FAKE_PANES_FULL='%6|other'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -335,34 +335,14 @@ STUBEOF
     [ -f "$dir/%5" ]
 }
 
-@test "reader: reports a pane whose pane_current_command is not the literal 'claude'" {
-    local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%7"
-    _write_agent_tmux_stub
-    # The state file, not the command name, decides inclusion:
-    # `pane_current_command` reports the Claude binary's own name, which is a
-    # version string (e.g. `2.1.233`) on many installs, never `claude`.
-    run bash -c "
-        export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%7|gamma|2.1.233'
-        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
-        '$AGENT_QUERY'
-    "
-    [ "$status" -eq 0 ]
-    [ "$output" = "$(printf 'gamma\tfinished')" ]
-    [ -f "$dir/%7" ]
-}
-
-@test "reader: a non-claude pane with no state file is still not reported" {
+@test "reader: pane in listing with no state file is not reported" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"
     printf 'busy\n' > "$dir/%1"
     _write_agent_tmux_stub
-    # Absence of a state file, not the command name, excludes a pane.
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%9|beta|vim'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%9|beta'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -386,9 +366,9 @@ STUBEOF
 @test "reader: never creates or deletes anything (falsifiable byte-identical snapshot)" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"          # live, claude — will be printed
+    printf 'busy\n' > "$dir/%1"          # live pane — will be printed
     printf 'finished\n' > "$dir/%99"     # stale (pane gone) — must survive, untouched
-    printf 'needs-you\n' > "$dir/%8"     # live pane, non-claude command name — now reported, and still never touched
+    printf 'needs-you\n' > "$dir/%8"     # live pane — reported, and still never touched
     _write_agent_tmux_stub
 
     local before after
@@ -396,7 +376,7 @@ STUBEOF
 
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%8|alpha|vim'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%8|alpha'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -421,7 +401,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%1|alpha|claude'
+        export FAKE_PANES_FULL='%1|alpha'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_BAR' alpha
     "
@@ -450,7 +430,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%1|alpha|claude'
+        export FAKE_PANES_FULL='%1|alpha'
         export FAKE_OPTS=\$'@clux-agent-glyph-needs=N\n@clux-agent-needs-color=red'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_BAR' alpha
