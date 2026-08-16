@@ -189,13 +189,16 @@ event run in parallel, so the two never interfere.
 One tmux query and one directory scan.
 
 ```sh
-tmux list-panes -a -F '#{pane_id}|#{session_name}|#{pane_current_command}'
+tmux list-panes -a -F '#{pane_id}|#{session_name}'
 ```
 
 Join that against the state directory, then **drop** any entry where:
 
-- the pane no longer exists, or
-- the pane is no longer running `claude`.
+- the pane no longer exists.
+
+`#{pane_current_command}` is intentionally not queried — the Claude binary's
+own name is a version string on many installs. The state file is the
+authoritative signal.
 
 Then roll up per session, with this precedence:
 
@@ -208,8 +211,13 @@ Needs-you wins because it is the only state that asks something of the user.
 ### Stale files, and why the reader never cleans them
 
 Files outlive their panes. A killed pane, a crash or a tmux server restart can
-leave a file behind. The reader **ignores** such a file. It never trusts it, and
-it never deletes it, because the reader does not write.
+leave a file behind. The reader never **deletes** such a file, because the reader
+does not write.
+
+Whether the reader **reads** it turns on one question: is that pane id still in
+the tmux listing? A file whose pane is gone is skipped. A file whose id the
+server has since handed to a different pane is indistinguishable from a live
+mark, so the reader reports it — the last row of the table below.
 
 Reaping is a writer's job, done opportunistically by the next hook run.
 
@@ -222,12 +230,28 @@ mark stays on busy.
 |---|---|
 | Escape while a tool runs | `PostToolUseFailure` carries `is_interrupt` |
 | API error mid-turn | `StopFailure` fires instead of `Stop` |
-| Claude exits, pane lives | reader drops it, `pane_current_command` is not `claude` |
+| Claude exits, pane lives | `SessionEnd` fires `agent-state.sh remove`, which deletes the file |
 | Pane killed | reader drops it, the pane is gone |
 | Escape during output, then the user walks away | **not covered** |
+| Claude killed hard enough that `SessionEnd` never fires, pane lives | **not covered** — the mark survives until the pane closes and the next reap runs |
+| tmux server restart, then the freed pane id is handed to a new pane | **not covered** — state is machine-global, so it outlives the server; `--reap` keeps the file because the id is live again, and the bar marks a pane holding no Claude |
 
-The last row is the honest residual. It self-heals on the next prompt, and it is
-the one case where the user is at the machine and caused it themselves.
+The Escape row is the one that self-heals: the next prompt writes a fresh mark,
+and it is the one case where the user is at the machine and caused it themselves.
+
+The last two rows do not self-heal. The hard-kill mark clears when its pane
+closes and the next reap runs. The reused-id mark clears only when that reused
+pane closes, because a `busy` or `needs-you` file is never cleared by looking at
+the window — `agent-clear.sh` in its default mode deletes only `finished`.
+Stamping the tmux server pid into the state file and dropping marks whose pid no
+longer matches would close that row. It is not done today.
+
+Removing the `pane_current_command` filter from the reader widened this row.
+The filter was never a real guard — it discarded every pane on any install whose
+binary is not named `claude`, which is most of them — but on a colliding id it
+would have suppressed a phantom when the new pane ran a shell. The state file is
+the authoritative signal; the residual above is the price, recorded here rather
+than papered over.
 
 ---
 

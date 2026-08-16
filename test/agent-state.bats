@@ -34,8 +34,14 @@ _write_agent_tmux_stub() {
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 case "$*" in
-    "list-panes -a -F #{pane_id}|#{session_name}|#{pane_current_command}")
+    "list-panes -a -F #{pane_id}|#{session_name}")
         [ -n "${FAKE_PANES_FULL:-}" ] && printf '%s\n' "$FAKE_PANES_FULL"
+        ;;
+    "list-panes -a -F #{pane_pid}"*)
+        # resolve_agents_pane_by_cwd's 5-column tab-joined format. Matched by
+        # its unique #{pane_pid} prefix, NOT the full string: the real format
+        # contains literal tabs, which are fragile to carry in a case pattern.
+        [ -n "${FAKE_PANES_RESOLVE:-}" ] && printf '%s\n' "$FAKE_PANES_RESOLVE"
         ;;
     "list-panes -a -F #{pane_id}")
         [ -n "${FAKE_PANE_IDS:-}" ] && printf '%s\n' "$FAKE_PANE_IDS"
@@ -56,6 +62,20 @@ esac
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+}
+
+# _write_agent_ps_stub — canned `ps` for the detached-writer tests. The
+# resolver (resolve_agents_pane_by_cwd) snapshots the process table once;
+# FAKE_PS supplies "<pid> <ppid> <args...>" rows. Every stub call is logged so
+# a test can assert the CACHE path never scanned (`! grep '^ps '`).
+_write_agent_ps_stub() {
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "ps $*" >> "${STUB_LOG:-/dev/null}"
+[ -n "${FAKE_PS:-}" ] && printf '%s\n' "$FAKE_PS"
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
 }
 
 # ===========================================================================
@@ -298,6 +318,148 @@ STUBEOF
 }
 
 # ===========================================================================
+# DETACHED WRITER — hooks/agent-state.sh with TMUX/TMUX_PANE unset
+# (`claude agents` background sessions). Key = agents/<dashboard-pane>~<sid>.
+# ===========================================================================
+
+@test "writer(detached): resolves the dashboard pane by cwd, writes agents/<pane>~<sid>" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"UserPromptSubmit","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    # Pane %9 (pane_pid 100) hosts a `claude agents --cwd /fake/proj`
+    # dashboard (pid 200, ppid 100 -> one ppid-chain step to the pane).
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_RESOLVE=\$'100\t\$5\t@2\t%9\t/fake/proj'
+        export FAKE_PS='200 100 claude agents --cwd /fake/proj'
+        export FAKE_PANE_IDS='%9'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(cat "$dir/agents/%9~abcd-1234")" = "busy" ]
+    # The resolve path did scan the process table.
+    grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "writer(detached): a cached file makes the next event skip ps entirely" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    local JSON='{"hook_event_name":"Stop","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%9'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' finished
+    "
+    [ "$status" -eq 0 ]
+    [ "$(cat "$dir/agents/%9~abcd-1234")" = "finished" ]
+    # The pane came from the file NAME — the per-session ps scan must not
+    # repeat on every event. This is the once-per-agent-session guarantee.
+    ! grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "writer(detached): remove deletes the cached file and never scans" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    local JSON='{"hook_event_name":"SessionEnd","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%9'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' remove
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/agents/%9~abcd-1234" ]
+    ! grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "writer(detached): remove with no cached file is a silent no-op — no resolve, no dir" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"SessionEnd","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PS='200 100 claude agents --cwd /fake/proj'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' remove
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -d "$dir" ]
+    ! grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "writer(detached): payload without session_id writes nothing" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"UserPromptSubmit","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PS='200 100 claude agents --cwd /fake/proj'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -d "$dir" ]
+}
+
+@test "writer(detached): no dashboard owns the cwd — no column, nothing written" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"UserPromptSubmit","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    # FAKE_PS deliberately unset — the process table holds no dashboard.
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_RESOLVE=\$'100\t\$5\t@2\t%9\t/fake/proj'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -d "$dir" ]
+}
+
+@test "writer(detached): a stale cached pane self-heals — write, then the reap deletes it" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    local JSON='{"hook_event_name":"UserPromptSubmit","session_id":"abcd-1234","cwd":"/fake/proj"}'
+    _write_agent_tmux_stub
+    _write_agent_ps_stub
+    # %9 is NOT in the live listing (tmux restarted); the listing is non-empty
+    # so the reap runs. The cache hit writes to the stale name, the reap in the
+    # same invocation removes it, and the NEXT event would re-resolve.
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' busy
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/agents/%9~abcd-1234" ]
+}
+
+# ===========================================================================
 # READER — agent-query.sh
 # ===========================================================================
 
@@ -310,7 +472,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%2|beta|claude\n%3|gamma|claude'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%2|beta\n%3|gamma'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -325,7 +487,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%6|other|claude'
+        export FAKE_PANES_FULL='%6|other'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
@@ -335,20 +497,41 @@ STUBEOF
     [ -f "$dir/%5" ]
 }
 
-@test "reader: drops a pane whose pane_current_command is not claude" {
+@test "reader: pane in listing with no state file is not reported" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%7"
+    printf 'busy\n' > "$dir/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%7|gamma|vim'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%9|beta'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
-    [ -f "$dir/%7" ]
+    [ "$output" = "$(printf 'alpha\tbusy')" ]
+}
+
+@test "reader: never asks tmux for pane_current_command (the always-empty-bar regression)" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir"
+    printf 'busy\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%1|alpha'
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'alpha\tbusy')" ]
+    # The state file alone decides inclusion. `pane_current_command` reports the
+    # Claude binary's own name, which is a version string (e.g. `2.1.233`) on
+    # most installs and never the literal `claude`, so the filter that read it
+    # dropped every pane and the bar was empty for everyone. Not requesting the
+    # field is what keeps that filter from coming back.
+    ! grep -q "pane_current_command" "$BATS_TEST_TMPDIR/stub.log"
 }
 
 @test "reader: missing state directory prints nothing, exits 0, and creates no directory" {
@@ -367,9 +550,9 @@ STUBEOF
 @test "reader: never creates or deletes anything (falsifiable byte-identical snapshot)" {
     local dir="$BATS_TEST_TMPDIR/agents"
     mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"          # live, claude — will be printed
+    printf 'busy\n' > "$dir/%1"          # live pane — will be printed
     printf 'finished\n' > "$dir/%99"     # stale (pane gone) — must survive, untouched
-    printf 'needs-you\n' > "$dir/%8"     # live pane but not claude — must survive
+    printf 'needs-you\n' > "$dir/%8"     # live pane — reported, and still never touched
     _write_agent_tmux_stub
 
     local before after
@@ -377,16 +560,85 @@ STUBEOF
 
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL=\$'%1|alpha|claude\n%8|alpha|vim'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%8|alpha'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_QUERY'
     "
     [ "$status" -eq 0 ]
+    # %1=busy and %8=needs-you both roll up under session "alpha"; needs-you wins.
+    [ "$output" = "$(printf 'alpha\tneeds-you')" ]
 
     after="$(find "$dir" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir"/*)"
     [ "$before" = "$after" ]
     [ -f "$dir/%99" ]
     [ -f "$dir/%8" ]
+}
+
+@test "reader: dashboard column rolls up its agents — needs-you beats busy beats finished" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'needs-you\n' > "$dir/agents/%47~aa11"
+    printf 'busy\n'      > "$dir/agents/%47~bb22"
+    printf 'finished\n'  > "$dir/agents/%47~cc33"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%47|config'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    # The confirmed rule: needs-you if any, else busy if any, else finished.
+    [ "$output" = "$(printf 'config\tneeds-you')" ]
+}
+
+@test "reader: dashboard shows finished only when every agent finished" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'finished\n' > "$dir/agents/%47~aa11"
+    printf 'finished\n' > "$dir/agents/%47~bb22"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%47|config'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'config\tfinished')" ]
+}
+
+@test "reader: interactive pane files and agent files join in one listing" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n'     > "$dir/%26"
+    printf 'finished\n' > "$dir/agents/%47~aa11"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL=\$'%26|clux\n%47|config'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'clux\tbusy\nconfig\tfinished')" ]
+}
+
+@test "reader: agent file whose pane left the listing is skipped, never deleted" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n' > "$dir/agents/%9~aa11"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%1|alpha'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    # Ignored, not deleted — reaping is a writer's job.
+    [ -f "$dir/agents/%9~aa11" ]
 }
 
 # ===========================================================================
@@ -400,7 +652,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%1|alpha|claude'
+        export FAKE_PANES_FULL='%1|alpha'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_BAR' alpha
     "
@@ -429,7 +681,7 @@ STUBEOF
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
-        export FAKE_PANES_FULL='%1|alpha|claude'
+        export FAKE_PANES_FULL='%1|alpha'
         export FAKE_OPTS=\$'@clux-agent-glyph-needs=N\n@clux-agent-needs-color=red'
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
         '$AGENT_BAR' alpha
@@ -578,4 +830,42 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     [ -f "$dir/%99" ]
+}
+
+@test "clear: finished agent files clear on window view; busy and out-of-window survive" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'finished\n' > "$dir/agents/%1~aa11"   # in-window, finished -> removed
+    printf 'busy\n'     > "$dir/agents/%1~bb22"   # in-window, busy -> survives
+    printf 'finished\n' > "$dir/agents/%2~cc33"   # NOT in window -> survives
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_WINDOW_PANES='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_CLEAR' '@1'
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/agents/%1~aa11" ]
+    [ -f "$dir/agents/%1~bb22" ]
+    [ -f "$dir/agents/%2~cc33" ]
+}
+
+@test "clear --reap: sweeps agent files of dead dashboard panes, keeps live ones" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/agents"
+    printf 'busy\n' > "$dir/agents/%1~aa11"
+    printf 'busy\n' > "$dir/agents/%99~bb22"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_CLEAR' --reap
+    "
+    [ "$status" -eq 0 ]
+    [ -f "$dir/agents/%1~aa11" ]
+    [ ! -f "$dir/agents/%99~bb22" ]
+    # The agents/ directory entry itself never trips the flat loop.
+    [ -d "$dir/agents" ]
 }

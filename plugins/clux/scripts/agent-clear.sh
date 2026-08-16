@@ -11,8 +11,10 @@
 #                                   that window.
 #   agent-clear.sh --reap          called once at config load. Deletes state
 #                                   files whose pane id is not live anywhere on
-#                                   the server — closes the pane-id-reuse hole
-#                                   after a tmux server restart.
+#                                   the server — narrows the pane-id-reuse hole
+#                                   after a tmux server restart, but does not
+#                                   close it: a colliding id is live, so its
+#                                   file survives the reap.
 #
 # A refresh is triggered only when a mark was actually removed. A redraw alone
 # is not always enough: a bar built from a precomputed tmux option keeps showing
@@ -52,12 +54,25 @@ CLEARED=0
 while IFS= read -r pane; do
     [ -n "$pane" ] || continue
     f="$STATE_DIR/$pane"
-    [ -f "$f" ] || continue
-    st=""
-    IFS= read -r st < "$f" 2>/dev/null || true
-    st="${st//[[:space:]]/}"
-    [ "$st" = "finished" ] || continue
-    rm -f "$f" 2>/dev/null && CLEARED=1
+    if [ -f "$f" ]; then
+        st=""
+        IFS= read -r st < "$f" 2>/dev/null || true
+        st="${st//[[:space:]]/}"
+        if [ "$st" = "finished" ]; then
+            rm -f "$f" 2>/dev/null && CLEARED=1
+        fi
+    fi
+    # Detached-agent files owned by this pane (a `claude agents` dashboard):
+    # looking at the dashboard's window clears its finished marks, same as for
+    # an interactive pane. busy / needs-you survive, exactly as above.
+    for af in "$STATE_DIR/agents/$pane"~*; do
+        [ -f "$af" ] || continue
+        st=""
+        IFS= read -r st < "$af" 2>/dev/null || true
+        st="${st//[[:space:]]/}"
+        [ "$st" = "finished" ] || continue
+        rm -f "$af" 2>/dev/null && CLEARED=1
+    done
 done <<EOF
 $PANES
 EOF

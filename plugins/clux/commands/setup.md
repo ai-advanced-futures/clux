@@ -29,14 +29,42 @@ Launch **three subagents concurrently** using the Task tool with `subagent_type:
 Prompt the agent to:
 1. Verify tmux is installed: `command -v tmux`
 2. Get tmux version: `tmux -V`
-3. Find the plugin source scripts:
+3. Resolve the plugin source root:
    ```bash
-   find ~/.claude -path "*/clux/scripts/show-notification.sh" -type f 2>/dev/null | head -1
+   # Tier 1: the harness exported CLAUDE_PLUGIN_ROOT (hook processes always;
+   # command/subagent Bash calls sometimes). Tier 2: the installed cache
+   # ~/.claude/plugins/cache/<marketplace>/clux/<version>/ or a flat
+   # ~/.claude/plugins/clux/. Tier 3: a plain checkout at or below the cwd.
+   PLUGIN_ROOT=""
+   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+       PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   else
+       # Tier 2a: the loaded cache copy, searched ALONE first. A marketplace
+       # source checkout at ~/.claude/plugins/marketplaces/<mp>/plugins/clux/
+       # matches the same glob, and `marketplaces` sorts after `cache`, so one
+       # combined search returns that git tree instead of the version Claude
+       # Code actually loaded.
+       HIT=$(find "$HOME/.claude/plugins/cache" -maxdepth 5 -type f \
+           -path "*/clux/*/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       # Tier 2b: any other install shape under ~/.claude/plugins.
+       [ -n "$HIT" ] || HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+           \( -path "*/clux/*/scripts/show-notification.sh" \
+           -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] || HIT=$(find "$PWD" -maxdepth 4 -type f \
+           -path "*/plugins/clux/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] && PLUGIN_ROOT="${HIT%/scripts/show-notification.sh}"
+   fi
+   PLUGIN_SCRIPTS_DIR="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts}"
+   echo "PLUGIN_ROOT=$PLUGIN_ROOT"
+   echo "PLUGIN_SCRIPTS_DIR=$PLUGIN_SCRIPTS_DIR"
    ```
-4. Derive `PLUGIN_SCRIPTS_DIR` from the result (parent directory of that file)
-5. Verify all required scripts exist in `PLUGIN_SCRIPTS_DIR`:
+   When several versions are installed side by side, `sort -V | tail -1` picks the highest version (3.1.0 over 3.0.8) — deterministic, and it matches the version Claude Code actually loads. Report a clear failure when `PLUGIN_ROOT` is empty.
+4. Verify all required scripts exist in `PLUGIN_SCRIPTS_DIR`:
    - `show-notification.sh`, `jump-to-notification.sh`, `dismiss-notification.sh`, `notification-picker.sh`, `helpers.sh`, `path.sh`, `agent-query.sh`, `agent-bar.sh`, `agent-clear.sh`
-6. Return: tmux path, tmux version, `PLUGIN_SCRIPTS_DIR` path, list of missing scripts (if any)
+5. Return: tmux path, tmux version, `PLUGIN_ROOT` and `PLUGIN_SCRIPTS_DIR` path, list of missing scripts (if any)
 
 ### Agent B: tmux.conf Analysis
 
@@ -75,7 +103,41 @@ Prompt the agent to:
 Prompt the agent to:
 1. Find and read the plugin hooks file:
    ```bash
-   find ~/.claude -path "*/clux/hooks/hooks.json" -type f 2>/dev/null | head -1
+   # Tier 1: the harness exported CLAUDE_PLUGIN_ROOT (hook processes always;
+   # command/subagent Bash calls sometimes). Tier 2: the installed cache
+   # ~/.claude/plugins/cache/<marketplace>/clux/<version>/ or a flat
+   # ~/.claude/plugins/clux/. Tier 3: a plain checkout at or below the cwd.
+   PLUGIN_ROOT=""
+   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
+       PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   else
+       # Tier 2a: the loaded cache copy, searched ALONE first. A marketplace
+       # source checkout at ~/.claude/plugins/marketplaces/<mp>/plugins/clux/
+       # matches the same glob, and `marketplaces` sorts after `cache`, so one
+       # combined search returns that git tree instead of the version Claude
+       # Code actually loaded.
+       HIT=$(find "$HOME/.claude/plugins/cache" -maxdepth 5 -type f \
+           -path "*/clux/*/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       # Tier 2b: any other install shape under ~/.claude/plugins.
+       [ -n "$HIT" ] || HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+           \( -path "*/clux/*/scripts/show-notification.sh" \
+           -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] || HIT=$(find "$PWD" -maxdepth 4 -type f \
+           -path "*/plugins/clux/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       [ -n "$HIT" ] && PLUGIN_ROOT="${HIT%/scripts/show-notification.sh}"
+   fi
+   PLUGIN_SCRIPTS_DIR="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts}"
+   HOOKS_FILE="${PLUGIN_ROOT:+$PLUGIN_ROOT/hooks/hooks.json}"
+   # PLUGIN_ROOT is resolved from scripts/show-notification.sh, so a tree that
+   # carries the scripts but not the hooks (a partially synced cache, a deployed
+   # copy) yields a non-empty HOOKS_FILE that does not exist. Empty it here so the
+   # not-found branch below still fires.
+   [ -f "$HOOKS_FILE" ] || HOOKS_FILE=""
+   echo "PLUGIN_ROOT=$PLUGIN_ROOT"
+   echo "HOOKS_FILE=$HOOKS_FILE"
    ```
 2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop`, `Notification`, and `UserPromptSubmit` events. Note: clux's hooks.json now registers a SECOND command on those same events (plus `SessionEnd`) — `agent-state.sh <state>`, which writes the per-pane agent-state file the tmux status bar reads. Both commands run in parallel from the same event; this is not a new event and needs no settings.json handling
 3. Read `~/.claude/settings.json` and check for existing system hooks:
