@@ -2,6 +2,20 @@
 
 All notable changes to clux are documented here.
 
+## [3.2.0]
+
+### Added
+
+- **Detached `claude agents` sessions now mark the bar.** A dashboard's real work runs in background sessions with no tmux pane, so `hooks/agent-state.sh` used to exit at its `TMUX_PANE` guard and the dashboard's session column stayed blank while its agents worked. The writer now has a second key: with `TMUX`/`TMUX_PANE` unset it reads `session_id` from the hook payload, resolves the owning dashboard pane by `cwd` (`resolve_agents_pane_by_cwd` — the same resolver `prefix+m` trusts), and writes `agents/<pane_id>~<session_id>` under the state dir, one file per agent. The reader joins those files into the dashboard's session, so its column shows `needs-you` if any agent needs you, else `busy` if any is busy, else `finished` when all are finished — the same max-rank roll-up interactive panes use. Design: `docs/superpowers/specs/2026-08-16-clux-detached-agent-state-design.md`
+- The expensive `ps -A` dashboard scan runs once per agent session, not once per event: after the first resolve, the pane comes back from the state file's own name. A stale cached pane (tmux restarted) self-heals — the reap that already runs after every write deletes it, and the next event re-resolves
+- `resolve_agents_pane_by_cwd()` and `_clux_canon_path()` moved from `helpers.sh` to `path.sh` so the state writer can call them without paying `helpers.sh`'s source-time `get_tmux_option` calls. `helpers.sh` sources `path.sh`, so `notify-tmux.sh` and the jump path are unchanged
+- `reap_agent_state_dir()` sweeps `agents/` files whose dashboard pane closed; `agent-clear.sh` clears an agent's `finished` mark when you look at the dashboard's window. `agent-bar.sh`, `hooks.json`, and existing tmux.conf wiring: zero changes
+
+### Known issues
+
+- **An agent killed with no `SessionEnd` leaves its mark** (typically `busy`) until its dashboard pane closes. There is no cheap liveness test for a detached session
+- **A fully headless run stays unmarked.** No dashboard means no tmux pane, and the bar has no column to draw it in. This is the feature's designed scope, not a gap the code can close
+
 ## [3.1.1]
 
 ### Fixed

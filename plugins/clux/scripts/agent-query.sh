@@ -18,6 +18,13 @@
 # reap_agent_state_dir() delete it once the pane is gone. The Claude
 # binary's own command name (e.g. `2.1.233` on many installs) is NOT
 # consulted.
+#
+# Detached agents contribute through a second pass: agents/<pane>~<sid> files
+# rank into the session that owns <pane> (the `claude agents` dashboard's
+# pane), and the existing max-rank roll-up then gives a dashboard column
+# needs-you if any agent needs you, else busy if any is busy, else finished.
+# Same skip rule: a file whose pane is not in the listing is ignored, never
+# deleted.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
@@ -54,6 +61,44 @@ while IFS= read -r line; do
 done <<EOF
 $PANES
 EOF
+
+# Second pass: detached-agent files. The pane id comes from the file NAME
+# (before the '~'), so the join against the listing is the same exact-name
+# lookup — no tmux call and no ps call is added.
+for f in "$STATE_DIR"/agents/*; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"
+    case "$base" in
+        .tmp.*) continue ;;
+        %*~*) ;;
+        *) continue ;;
+    esac
+    pane="${base%%~*}"
+
+    IFS= read -r st 2>/dev/null < "$f" || continue
+    st="${st//[[:space:]]/}"
+    case "$st" in
+        needs-you) rank=3 ;;
+        busy)      rank=2 ;;
+        finished)  rank=1 ;;
+        *)         continue ;;
+    esac
+
+    sess=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if [ "${line%%|*}" = "$pane" ]; then
+            sess="${line#*|}"
+            break
+        fi
+    done <<EOF
+$PANES
+EOF
+    [ -n "$sess" ] || continue
+
+    ROWS="${ROWS}${sess}	${rank}
+"
+done
 
 [ -n "$ROWS" ] || exit 0
 
