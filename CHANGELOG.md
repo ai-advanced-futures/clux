@@ -8,6 +8,13 @@ All notable changes to clux are documented here.
 
 - **The agent-state bar was always empty.** `scripts/agent-query.sh` required `#{pane_current_command}` to equal the literal string `claude`, but the Claude binary reports its own version string (e.g. `2.1.233`) on many installs, never `claude` — so the guard discarded every pane clux's own hook had just written state for. The reader no longer consults `pane_current_command` at all: the state file is the authoritative signal — it exists only because `hooks/agent-state.sh` wrote it from a real Claude pane, and dead panes are reaped by `reap_agent_state_dir()`
 - **`/clux:setup` and `/clux:validate` could not find their own plugin source.** The `find ~/.claude -path "*/clux/scripts/..."` glob never matches the real cache layout `~/.claude/plugins/cache/<marketplace>/clux/<version>/scripts/`. Both commands now prefer `$CLAUDE_PLUGIN_ROOT` and otherwise pick the highest installed version deterministically
+- Plugin-source discovery searches `~/.claude/plugins/cache` on its own before the rest of `~/.claude/plugins`. A marketplace source checkout at `marketplaces/<mp>/plugins/clux/` matches the same glob and sorts after `cache`, so one combined search returned that git tree rather than the version Claude Code had loaded — `/clux:validate` then reported false out-of-sync lines and `/clux:setup` deployed from it
+- `HOOKS_FILE` is now tested for existence. It is derived from a plugin root resolved through `scripts/show-notification.sh`, so a tree carrying the scripts but not the hooks reported `OK hooks.json found` for a file that was not there, then failed all eight content checks
+- README pointed at `~/.claude/plugins/cache/ai-advanced-futures/clux/…`. That path does not exist: the cache segment is the marketplace name (`clux`), not the owner. The four references now use `cache/*/clux/`
+
+### Known issues
+
+- **A reused tmux pane id can show a phantom mark.** State is machine-global, so it outlives a tmux server restart, and `--reap` keeps a file whose id the new server has already handed to a different pane. The bar then marks a pane holding no Claude, and a `busy` or `needs-you` mark clears only when that pane closes. Dropping the `pane_current_command` filter widened this — the filter was never a real guard, but on a colliding id it would have suppressed the phantom when the new pane ran a shell. Stamping the tmux server pid into the state file would close it
 
 ## [3.1.0]
 

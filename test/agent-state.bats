@@ -350,6 +350,28 @@ STUBEOF
     [ "$output" = "$(printf 'alpha\tbusy')" ]
 }
 
+@test "reader: never asks tmux for pane_current_command (the always-empty-bar regression)" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir"
+    printf 'busy\n' > "$dir/%1"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%1|alpha'
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'alpha\tbusy')" ]
+    # The state file alone decides inclusion. `pane_current_command` reports the
+    # Claude binary's own name, which is a version string (e.g. `2.1.233`) on
+    # most installs and never the literal `claude`, so the filter that read it
+    # dropped every pane and the bar was empty for everyone. Not requesting the
+    # field is what keeps that filter from coming back.
+    ! grep -q "pane_current_command" "$BATS_TEST_TMPDIR/stub.log"
+}
+
 @test "reader: missing state directory prints nothing, exits 0, and creates no directory" {
     local dir="$BATS_TEST_TMPDIR/agents_absent"
     _write_agent_tmux_stub

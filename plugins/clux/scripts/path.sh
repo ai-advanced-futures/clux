@@ -60,8 +60,10 @@ resolve_agent_state_dir() {
     echo "${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
 }
 
-# Reap state files whose pane id is no longer live on the tmux server — closes
-# the pane-id-reuse hole after a server restart. Shared by the two writers:
+# Reap state files whose pane id is no longer live on the tmux server — narrows
+# the pane-id-reuse hole after a server restart. It does not close it: an id the
+# new server has already handed to a different pane is live, so the file is
+# kept, and the bar marks a pane that holds no Claude. Shared by the two writers:
 # hooks/agent-state.sh (opportunistic, after every write) and agent-clear.sh
 # --reap (once at config load). The empty-LIVE guard is load-bearing: a missing
 # server or a failed list-panes yields an empty listing and the reap is skipped

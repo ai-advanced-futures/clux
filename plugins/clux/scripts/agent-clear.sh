@@ -11,8 +11,10 @@
 #                                   that window.
 #   agent-clear.sh --reap          called once at config load. Deletes state
 #                                   files whose pane id is not live anywhere on
-#                                   the server — closes the pane-id-reuse hole
-#                                   after a tmux server restart.
+#                                   the server — narrows the pane-id-reuse hole
+#                                   after a tmux server restart, but does not
+#                                   close it: a colliding id is live, so its
+#                                   file survives the reap.
 #
 # A refresh is triggered only when a mark was actually removed. A redraw alone
 # is not always enough: a bar built from a precomputed tmux option keeps showing

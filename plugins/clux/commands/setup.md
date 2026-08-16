@@ -39,7 +39,16 @@ Prompt the agent to:
    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
        PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
    else
-       HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+       # Tier 2a: the loaded cache copy, searched ALONE first. A marketplace
+       # source checkout at ~/.claude/plugins/marketplaces/<mp>/plugins/clux/
+       # matches the same glob, and `marketplaces` sorts after `cache`, so one
+       # combined search returns that git tree instead of the version Claude
+       # Code actually loaded.
+       HIT=$(find "$HOME/.claude/plugins/cache" -maxdepth 5 -type f \
+           -path "*/clux/*/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       # Tier 2b: any other install shape under ~/.claude/plugins.
+       [ -n "$HIT" ] || HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
            \( -path "*/clux/*/scripts/show-notification.sh" \
            -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
            | LC_ALL=C sort -V | tail -1)
@@ -102,7 +111,16 @@ Prompt the agent to:
    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/scripts/show-notification.sh" ]; then
        PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
    else
-       HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
+       # Tier 2a: the loaded cache copy, searched ALONE first. A marketplace
+       # source checkout at ~/.claude/plugins/marketplaces/<mp>/plugins/clux/
+       # matches the same glob, and `marketplaces` sorts after `cache`, so one
+       # combined search returns that git tree instead of the version Claude
+       # Code actually loaded.
+       HIT=$(find "$HOME/.claude/plugins/cache" -maxdepth 5 -type f \
+           -path "*/clux/*/scripts/show-notification.sh" 2>/dev/null \
+           | LC_ALL=C sort -V | tail -1)
+       # Tier 2b: any other install shape under ~/.claude/plugins.
+       [ -n "$HIT" ] || HIT=$(find "$HOME/.claude/plugins" -maxdepth 6 -type f \
            \( -path "*/clux/*/scripts/show-notification.sh" \
            -o -path "*/clux/scripts/show-notification.sh" \) 2>/dev/null \
            | LC_ALL=C sort -V | tail -1)
@@ -113,6 +131,11 @@ Prompt the agent to:
    fi
    PLUGIN_SCRIPTS_DIR="${PLUGIN_ROOT:+$PLUGIN_ROOT/scripts}"
    HOOKS_FILE="${PLUGIN_ROOT:+$PLUGIN_ROOT/hooks/hooks.json}"
+   # PLUGIN_ROOT is resolved from scripts/show-notification.sh, so a tree that
+   # carries the scripts but not the hooks (a partially synced cache, a deployed
+   # copy) yields a non-empty HOOKS_FILE that does not exist. Empty it here so the
+   # not-found branch below still fires.
+   [ -f "$HOOKS_FILE" ] || HOOKS_FILE=""
    echo "PLUGIN_ROOT=$PLUGIN_ROOT"
    echo "HOOKS_FILE=$HOOKS_FILE"
    ```

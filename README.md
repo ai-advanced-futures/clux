@@ -39,7 +39,7 @@ set -g bell-action any
 Run `/clux:setup` inside Claude Code, or:
 
 ```bash
-~/.claude/plugins/cache/ai-advanced-futures/clux/*/scripts/validate-setup.sh
+~/.claude/plugins/cache/*/clux/*/scripts/validate-setup.sh
 ```
 
 ## Alternative: TPM Install
@@ -155,7 +155,7 @@ These tmux options apply to the reader/jump side (status bar and key handler). I
 
 **Solution:** Run validation:
 ```bash
-~/.claude/plugins/cache/ai-advanced-futures/clux/*/scripts/validate-setup.sh
+~/.claude/plugins/cache/*/clux/*/scripts/validate-setup.sh
 ```
 
 Or inside Claude Code:
@@ -167,8 +167,8 @@ Or inside Claude Code:
 
 Claude Code automatically sets `${CLAUDE_PLUGIN_ROOT}` when executing hooks. If you see path-related errors:
 
-1. Verify plugin is installed: `ls ~/.claude/plugins/cache/ai-advanced-futures/clux/`
-2. Check hooks.json: `cat ~/.claude/plugins/cache/ai-advanced-futures/clux/*/hooks/hooks.json`
+1. Verify plugin is installed: `ls ~/.claude/plugins/cache/*/clux/`
+2. Check hooks.json: `cat ~/.claude/plugins/cache/*/clux/*/hooks/hooks.json`
 3. For TPM installations, ensure hooks point to `~/.tmux/plugins/clux/`
 
 ### Window names not updating
