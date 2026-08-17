@@ -63,6 +63,7 @@ set -u
 SOCKET="clux-verify-$$"
 CONF="${1:-}"
 CLIENT_PID=""
+STDIN_DIR=""
 
 if [ -z "$CONF" ]; then
     echo "verify-tmux-conf.sh: usage: verify-tmux-conf.sh <path-to-candidate-config>" >&2
@@ -82,6 +83,10 @@ fi
 cleanup() {
     [ -n "$CLIENT_PID" ] && kill "$CLIENT_PID" >/dev/null 2>&1
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+    # Closing the write end lets the control client's read hit EOF; removing
+    # the directory takes the fifo with it. Nothing of ours outlives this.
+    exec 3>&- 2>/dev/null || true
+    [ -n "$STDIN_DIR" ] && rm -rf "$STDIN_DIR" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
@@ -94,13 +99,27 @@ if ! tmux -L "$SOCKET" new-session -d 2>/dev/null; then
     exit 1
 fi
 
-# `< <(tail -f /dev/null)` gives the control client a stdin that blocks
-# forever instead of hitting EOF immediately (a `< /dev/null` control client
-# reads EOF on its first read and self-detaches before source-file ever
-# runs, which reintroduces the exact "no current client" failure this exists
-# to avoid).
-tmux -L "$SOCKET" -C attach-session -t 0 < <(tail -f /dev/null) >/dev/null 2>&1 &
-CLIENT_PID=$!
+# The control client needs a stdin that blocks forever instead of hitting EOF
+# immediately: a `< /dev/null` control client reads EOF on its first read and
+# self-detaches before source-file ever runs, which reintroduces the exact "no
+# current client" failure this exists to avoid.
+#
+# A fifo this script holds open does that with NO extra process. The earlier
+# `< <(tail -f /dev/null)` worked, but bash 3.2 (macOS) does not report a
+# process substitution's pid in $!, so that tail could not be killed and every
+# invocation leaked one forever — two per /clux:setup run.
+#
+# Opening the fifo read-write on one fd never blocks, so there is no
+# ordering deadlock with the client's own open-for-read.
+STDIN_DIR="$(mktemp -d 2>/dev/null)" || STDIN_DIR=""
+if [ -n "$STDIN_DIR" ] && mkfifo "$STDIN_DIR/stdin" 2>/dev/null; then
+    exec 3<>"$STDIN_DIR/stdin"
+    tmux -L "$SOCKET" -C attach-session -t 0 <"$STDIN_DIR/stdin" >/dev/null 2>&1 &
+    CLIENT_PID=$!
+else
+    echo "verify-tmux-conf.sh: could not create the control client's stdin fifo" >&2
+    exit 1
+fi
 
 # Give the control client a moment to register as attached before the parse
 # runs — cheap (well under the interval a human would notice) and this is a

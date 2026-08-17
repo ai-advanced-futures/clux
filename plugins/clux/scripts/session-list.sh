@@ -13,9 +13,11 @@
 # agent runs there. See glyph() below.
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./path.sh
-# shellcheck disable=SC1091
-source "$CURRENT_DIR/path.sh"
+
+# path.sh is deliberately NOT sourced. This is the hot path — it runs on every
+# window switch — and it needs nothing from path.sh: every option it reads
+# comes back on the single batched `tmux display-message` call below, which
+# costs one fork instead of one per option.
 
 TAB=$'\t'
 
@@ -97,7 +99,14 @@ wins=$(tmux list-windows -a -F "#{session_name}${TAB}#{window_active}${TAB}#{win
 # line 1" on the BWK awk macOS ships) and exits 2, printing nothing — which
 # empties the whole bar, not just the glyph column. \037 cannot occur in a tmux
 # session name or in a clux state word, so the swap is lossless.
-agents=$("$HOME/.config/clux/scripts/agent-query.sh" 2>/dev/null) || agents=""
+#
+# Resolved next to this script, never through a literal ~/.config/clux path:
+# clux runs from the plugin tree as well as from the deploy directory, and
+# render-clux-conf.sh --scripts-dir points the whole install somewhere else on
+# purpose. A hardcoded deploy path silently blanks the glyph column in every
+# one of those cases, because a missing agent-query.sh is indistinguishable
+# here from "no agent is running". This matches agent-bar.sh.
+agents=$("$CURRENT_DIR/agent-query.sh" 2>/dev/null) || agents=""
 agents=$(printf '%s' "$agents" | tr '\n' '\037')
 
 awk -v order="$order" -v agents="$agents" \

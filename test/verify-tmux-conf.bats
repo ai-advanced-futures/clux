@@ -7,17 +7,19 @@
 # test_helper's setup() prepends the stub directory to PATH — the same
 # pattern test_helper.bash itself uses for REAL_JQ.
 #
-# IMPORTANT: verify-tmux-conf.sh backgrounds a control client fed by
-# `< <(tail -f /dev/null)` so a client is always "current" for the parse
-# (see the script's own header comment). That tail process is a
-# process-substitution grandchild the script's own trap cannot reap, so it
-# outlives every call. Two rules follow, in every test below:
-#   1. Never capture the call with bats' `run` / $( ) — that waits for every
-#      writer on the pipe to close and hangs forever on the leftover tail.
-#      Redirect to a file and read $? back instead (exactly what
-#      commands/setup.md's Phase 6 step 8 does, for the same reason).
-#   2. Reap the leaked process afterwards, or the whole suite run hangs on
-#      it even though verify-tmux-conf.sh itself already returned.
+# IMPORTANT: verify-tmux-conf.sh backgrounds a control client so a client is
+# always "current" for the parse (see the script's own header comment). Never
+# capture the call with bats' `run` / $( ) — that waits for every writer on
+# the pipe to close. Redirect to a file and read the status back instead
+# (exactly what commands/setup.md's Phase 6 step 8 does, for the same reason).
+#
+# There is no longer a process to reap. The script fed that client from
+# `< <(tail -f /dev/null)`, and bash 3.2 (macOS) does not report a process
+# substitution's pid in $!, so the tail could not be killed and one leaked per
+# call. These tests used to clean up with `pkill -f 'tail -f /dev/null'`, which
+# would equally have killed an unrelated process of the user's sharing that
+# command line. The script now holds its own fifo open and leaves nothing
+# behind, so the pkill is gone.
 
 load test_helper
 
@@ -39,11 +41,9 @@ _run_verify() {
     else
         VERIFY_STATUS=$?
     fi
-    pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
 }
 
 teardown() {
-    pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
     rm -rf "$BATS_TEST_TMPDIR"
 }
 

@@ -15,11 +15,29 @@
 #   arg1 = "quiet" -> skip the forced redraw (periodic path; the next interval
 #                     redraw will pick up the new value on its own).
 #
-# Each token is set only when the script that computes it exits 0 AND prints
-# something — deliberately not `set -e`, so one renderer dying does not skip
-# the other, and a renderer that dies leaves the previous option value in
-# place rather than blanking that half of the bar. Because `tmux set-option`
-# is atomic, hooks firing at once need no lock.
+# Neither token is written when the script that computes it FAILS —
+# deliberately not `set -e`, so one renderer dying does not skip the other,
+# and a renderer that dies leaves the previous option value in place rather
+# than blanking that half of the bar. Because `tmux set-option` is atomic,
+# hooks firing at once need no lock.
+#
+# The two differ on what an exit-0-with-empty result means, and the
+# difference is load-bearing:
+#
+#   show-notification.sh  empty IS the answer. `[ -f "$NOTIFY_FILE" ] || exit 0`
+#                         is its normal "nothing pending" path, reached every
+#                         time a notification is dismissed or jumped to. So an
+#                         empty result must be WRITTEN, clearing the badge.
+#                         Guarding on non-empty here left a dismissed
+#                         notification on the bar until an unrelated one
+#                         replaced it — a regression against the pre-3.3
+#                         wiring, where a live #() job simply rendered nothing.
+#
+#   session-list.sh       empty is never a real answer: a running tmux server
+#                         always has at least one session, so the renderer
+#                         always has a row to draw. An empty result there means
+#                         it failed without saying so, and keeping the previous
+#                         bar is the safer reading.
 
 set -u
 
@@ -29,7 +47,7 @@ if bar_out=$("$CURRENT_DIR/session-list.sh") && [ -n "$bar_out" ]; then
     tmux set-option -g @clux_session_bar "$bar_out"
 fi
 
-if status_out=$("$CURRENT_DIR/show-notification.sh") && [ -n "$status_out" ]; then
+if status_out=$("$CURRENT_DIR/show-notification.sh"); then
     tmux set-option -g @clux_status "$status_out"
 fi
 

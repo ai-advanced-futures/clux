@@ -255,6 +255,17 @@ PAIRS
     printf 'run-shell "%s/session-bar-refresh.sh"\n' "$SCRIPTS_DIR"
 }
 
+# The directory must exist BEFORE mktemp, not after: the temp file is created
+# next to $OUT so the later mv is a rename inside one filesystem. On a bare
+# machine ~/.config/clux does not exist yet, and creating it afterwards is too
+# late — mktemp fails, the "${OUT}.tmp.$$" fallback points into the same
+# missing directory, the render redirect fails, and the script exits 1 without
+# ever creating the directory it was about to write into.
+if ! mkdir -p "$(dirname "$OUT")"; then
+    echo "render-clux-conf.sh: cannot create $(dirname "$OUT")" >&2
+    exit 1
+fi
+
 TMP="$(mktemp "${OUT}.XXXXXX" 2>/dev/null)" || TMP="${OUT}.tmp.$$"
 if ! render > "$TMP"; then
     echo "render-clux-conf.sh: failed to render config" >&2
@@ -262,6 +273,5 @@ if ! render > "$TMP"; then
     exit 1
 fi
 
-mkdir -p "$(dirname "$OUT")"
 mv "$TMP" "$OUT"
 echo "$OUT"

@@ -37,12 +37,16 @@ REAL_TMUX="$(command -v tmux)"
 VERIFY_SCRIPT="$SCRIPTS_DIR/verify-tmux-conf.sh"
 FIXTURES_DIR="$BATS_TEST_DIRNAME/fixtures"
 
-BEFORE_FIXTURES="empty plain-status-left status-format-n author-real"
-AFTER_FIXTURES="already-installed installed-then-hand-edited"
+BEFORE_FIXTURES="empty plain-status-left status-format-n generated-by-tool author-real"
+AFTER_FIXTURES="already-installed installed-then-hand-edited status-format-n-installed"
 
-# See verify-tmux-conf.bats for why: verify-tmux-conf.sh backgrounds a
-# `< <(tail -f /dev/null)` helper process no trap can reap, so every call
-# here redirects to a file (never `run`/$( )) and reaps the leak afterward.
+# Every verify call redirects to a file (never `run`/$( )) so its output can
+# be shown on failure. It no longer needs to reap anything: verify-tmux-conf.sh
+# used to background a `< <(tail -f /dev/null)` helper whose pid bash 3.2 does
+# not report in $!, so it leaked one process per call and the tests papered
+# over it with `pkill -f 'tail -f /dev/null'` — which would also have killed
+# an unrelated process of the user's carrying that same command line. The
+# script now holds its own fifo open instead and leaves nothing behind.
 _run_verify() {
     local conf="$1" log="$2"
     if bash -c "PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$VERIFY_SCRIPT' '$conf'" >"$log" 2>&1 </dev/null; then
@@ -50,11 +54,9 @@ _run_verify() {
     else
         VERIFY_STATUS=$?
     fi
-    pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
 }
 
 teardown() {
-    pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
     rm -rf "$BATS_TEST_TMPDIR"
 }
 
@@ -122,7 +124,7 @@ _stub_author_real_home() {
 }
 
 @test "corpus: every before-fixture parses cleanly on a real, throwaway tmux server" {
-    for name in empty plain-status-left status-format-n; do
+    for name in empty plain-status-left status-format-n generated-by-tool; do
         local f="$FIXTURES_DIR/$name.conf"
         local log="$BATS_TEST_TMPDIR/$name.log"
         _run_verify "$f" "$log"
@@ -135,10 +137,71 @@ _stub_author_real_home() {
     _stub_author_real_home "$fake_home"
     local f="$FIXTURES_DIR/author-real.conf"
     local log="$BATS_TEST_TMPDIR/author-real.log"
-    HOME="$fake_home" bash -c "PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' HOME='$fake_home' '$VERIFY_SCRIPT' '$f'" >"$log" 2>&1 </dev/null
-    local status=$?
-    pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
-    [ "$status" -eq 0 ] || { cat "$log"; false; }
+    # `local status=$?` after a bare command cannot work here: bats runs each
+    # test under errexit, so a genuine failure aborts the test on the command
+    # itself and the diagnostic below never runs — the test would report a
+    # bare failure with the parse error still sitting unread in $log. The
+    # if/else keeps the non-zero exit inside a tested condition.
+    local vstatus=0
+    if ! HOME="$fake_home" bash -c "PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' HOME='$fake_home' '$VERIFY_SCRIPT' '$f'" >"$log" 2>&1 </dev/null; then
+        vstatus=1
+    fi
+    [ "$vstatus" -eq 0 ] || { echo "author-real failed:"; cat "$log"; false; }
+}
+
+@test "corpus: ASSERTION 4 — an installed config differs from its source by clux's additions ALONE" {
+    # The design's own words: "Every other line byte-identical to the input.
+    # Assertion 4 is the whole requirement, expressed as a test."
+    #
+    # status-format-n-installed.conf is status-format-n.conf after a correct
+    # install. Strip exactly what clux is allowed to add — the one source-file
+    # line and the two token strings — and what remains must be the original,
+    # byte for byte, comments and all. Any other edit the installer made shows
+    # up here as a diff.
+    local before="$FIXTURES_DIR/status-format-n.conf"
+    local after="$FIXTURES_DIR/status-format-n-installed.conf"
+    local stripped="$BATS_TEST_TMPDIR/stripped.conf"
+
+    sed -e '/^source-file -q .*clux\.tmux\.conf$/d' \
+        -e 's|#{@clux_session_bar}#(~/\.config/clux/scripts/session-bar-refresh\.sh quiet)||' \
+        -e 's|#\[align=centre\]#{@clux_status}||' \
+        "$after" > "$stripped"
+
+    diff -u "$before" "$stripped" || {
+        echo "installed fixture differs from its source by more than clux's additions"
+        false
+    }
+}
+
+@test "corpus: ASSERTION 5 — a second install adds nothing (each token still appears exactly once)" {
+    # Idempotence, stated as the property that actually matters: an installer
+    # run against an ALREADY-installed file must not add a second source-file
+    # line or a second token. Every after-fixture is by definition the input
+    # to a hypothetical second run, so asserting single-occurrence across all
+    # of them is that check.
+    for name in $AFTER_FIXTURES; do
+        local f="$FIXTURES_DIR/$name.conf"
+        local n
+        n=$(grep -c 'source-file -q .*clux\.tmux\.conf' "$f")
+        [ "$n" -eq 1 ] || { echo "$name: source-file appears $n times"; false; }
+        n=$(grep -F -o '#{@clux_session_bar}' "$f" | wc -l | tr -d ' ')
+        [ "$n" -eq 1 ] || { echo "$name: session-bar token appears $n times"; false; }
+        n=$(grep -F -o '#{@clux_status}' "$f" | wc -l | tr -d ' ')
+        [ "$n" -eq 1 ] || { echo "$name: status token appears $n times"; false; }
+    done
+}
+
+@test "corpus: the generated-by-tool fixture is detectable as generated, so setup can refuse it" {
+    # The sixth shape from the design's list. Nothing can safely edit it, so
+    # the corpus carries it to keep the refusal path honest: it must look like
+    # a before-fixture in every other way, and it must carry a generator
+    # marker a reader can act on.
+    local f="$FIXTURES_DIR/generated-by-tool.conf"
+    [ -f "$f" ]
+    grep -qiE 'do not edit|generated by' "$f" || {
+        echo "generated-by-tool.conf carries no marker setup could detect"
+        false
+    }
 }
 
 @test "corpus: every after-fixture parses cleanly on a real, throwaway tmux server (source-file -q tolerates the missing clux.tmux.conf)" {

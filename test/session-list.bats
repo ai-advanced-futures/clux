@@ -57,19 +57,36 @@ esac
 exit 0
 STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    # Run the renderer from a staged copy, not from the plugin tree, so every
+    # sibling it resolves ($CURRENT_DIR/session-order.sh, $CURRENT_DIR/
+    # agent-query.sh) is one this test controls. This is also what proves the
+    # script is location-independent: nothing here sits at the deploy path.
+    STAGED_DIR="$BATS_TEST_TMPDIR/staged"
+    mkdir -p "$STAGED_DIR"
+    cp "$SCRIPTS_DIR/session-list.sh" "$SCRIPTS_DIR/session-order.sh" "$STAGED_DIR/"
+    chmod +x "$STAGED_DIR/session-list.sh" "$STAGED_DIR/session-order.sh"
+    LIST_SCRIPT="$STAGED_DIR/session-list.sh"
 }
 
-# Writes an executable agent-query.sh stub at $HOME/.config/clux/scripts/ —
-# the literal path session-list.sh hardcodes (not relative to itself), and
-# prints $1 (real-newline-delimited "session<TAB>state" rows) verbatim.
+# Writes an executable agent-query.sh stub NEXT TO the staged session-list.sh,
+# printing $1 (real-newline-delimited "session<TAB>state" rows) verbatim.
+#
+# Next to the script, never at a literal $HOME/.config/clux/scripts path. An
+# earlier version of this helper wrote to that deploy path because the script
+# hardcoded it, which made the suite structurally unable to catch the very bug
+# it had: with agent-query.sh resolved through $HOME instead of through the
+# script's own directory, the glyph column silently blanked everywhere clux is
+# NOT deployed to exactly ~/.config/clux/scripts — the plugin tree, and any
+# `render-clux-conf.sh --scripts-dir` install. A test that encodes the defect
+# can only ever confirm it.
 _write_agent_query_stub() {
     local rows="$1"
-    mkdir -p "$HOME/.config/clux/scripts"
-    cat > "$HOME/.config/clux/scripts/agent-query.sh" <<STUBEOF
+    cat > "$STAGED_DIR/agent-query.sh" <<STUBEOF
 #!/usr/bin/env bash
 printf '%s\n' $(printf '%q' "$rows")
 STUBEOF
-    chmod +x "$HOME/.config/clux/scripts/agent-query.sh"
+    chmod +x "$STAGED_DIR/agent-query.sh"
 }
 
 @test "session-list: 0 agent rows — bar still renders, glyph column is a blank space" {
@@ -104,6 +121,30 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     [[ "$output" == *"#[fg=yellow]!#[default]"* ]]
+}
+
+@test "session-list: resolves agent-query.sh next to itself, not at the deploy path" {
+    _write_list_tmux_stub
+    _write_agent_query_stub 'alpha	busy'
+
+    # The staged copy is NOT at ~/.config/clux/scripts, and $HOME is an empty
+    # tmp dir, so a script that reaches for the literal deploy path finds
+    # nothing and renders a blank glyph column instead of the busy glyph. That
+    # is the whole failure: clux running from the plugin tree, or from any
+    # `render-clux-conf.sh --scripts-dir` install, silently loses agent state.
+    [ ! -e "$HOME/.config/clux/scripts/agent-query.sh" ]
+
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=cyan]*#[default]"* ]]
 }
 
 @test "session-list: 3 agent rows over real newlines — REGRESSION for the 2026-08-16 bar-emptying fault" {
