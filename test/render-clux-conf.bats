@@ -81,6 +81,43 @@ _make_fake_scripts_dir() {
     [ "$status" -ne 0 ]
 }
 
+@test "render-clux-conf: no binding carries a command-prompt substitution — the injection regression" {
+    # tmux substitutes a command-prompt answer into its command template BEFORE
+    # parsing the template, and offers no way to escape the substitution. So a
+    # `%1` inside a binding is a hole by construction, whatever the script it
+    # calls does afterwards: the old
+    #
+    #   bind-key A command-prompt -p "Session name:" \
+    #       "run-shell '.../new-workspace-prompt.sh \"%1\"'"
+    #
+    # ran arbitrary shell commands typed at the prompt, because a `"` in the
+    # answer closed the shell quote. Typing `ws" ; touch FILE ; "` created FILE
+    # on tmux 3.7b. The validation the script performed could never fire — the
+    # substitution happened before the script started.
+    #
+    # This asserts the property rather than the one binding: any future binding
+    # that reaches for command-prompt has to answer for it here.
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+
+    run grep -n '%1' "$out"
+    [ "$status" -ne 0 ] || { echo "a binding still substitutes a prompt answer:"; grep -n '%1' "$out"; false; }
+
+    run grep -n 'command-prompt' "$out"
+    [ "$status" -ne 0 ] || { echo "command-prompt is back:"; grep -n 'command-prompt' "$out"; false; }
+
+    # And the A key still exists — the point is a safe prompt, not no prompt.
+    grep -qF 'bind-key A display-popup' "$out" \
+        || { echo "the A binding is gone entirely"; grep -n 'bind-key A' "$out"; false; }
+    grep -qF 'new-workspace-prompt.sh' "$out" || false
+}
+
 @test "render-clux-conf: a passed theming flag is written, an omitted one is not" {
     local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
     local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"

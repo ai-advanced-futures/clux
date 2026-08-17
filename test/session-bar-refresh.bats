@@ -14,6 +14,7 @@
 
 load test_helper
 
+REAL_TMUX="$(command -v tmux)"
 REFRESH_SCRIPT="$SCRIPTS_DIR/session-bar-refresh.sh"
 
 # session-list.sh (called by session-bar-refresh.sh) renders nothing when
@@ -140,6 +141,44 @@ _stage() {
     [ "$status" -eq 0 ]
     run grep -qF 'set-option -g @clux_session_bar' "$log"
     [ "$status" -ne 0 ]
+}
+
+@test "session-bar-refresh: a server with no attached client is not a failure — the 'returned 1' regression" {
+    # Uses the REAL tmux, because the fault was in what real tmux does:
+    # `refresh-client -S` exits 1 with "no current client" when nothing is
+    # attached. That is the ordinary state at config-load time after
+    # `tmux new-session -d`, and on every session-created[91] hook fired by a
+    # script. The bar is computed fine; there is simply no client to redraw on.
+    # The non-zero exit made tmux report "'session-bar-refresh.sh' returned 1"
+    # to the next client that attached — the first thing a user saw on a fresh
+    # detached start.
+    local sock="clux-noclient-$$-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 80 -y 24
+    local sockpath
+    sockpath="$("$REAL_TMUX" -L "$sock" display-message -p '#{socket_path}')"
+
+    local out="$BATS_TEST_TMPDIR/refresh.out"
+    local rc=0
+    # The `if` is load-bearing: bats runs test bodies under errexit, so a bare
+    # failing command would abort here instead of reaching the assertions.
+    if ! env TMUX="$sockpath,0,0" PATH="$(dirname "$REAL_TMUX"):/usr/bin:/bin" \
+        "$REFRESH_SCRIPT" > "$out" 2>&1; then
+        rc=$?
+    fi
+
+    local bar
+    bar="$("$REAL_TMUX" -L "$sock" show-option -gqv @clux_session_bar)"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    rm -f "$sockpath" >/dev/null 2>&1 || true
+
+    [ "$rc" -eq 0 ] || { echo "exited $rc — tmux shows this as \"returned $rc\""; cat "$out"; false; }
+    # Output counts too: tmux surfaces a run-shell command's output, so letting
+    # "no current client" through on stderr would swap one message for another.
+    [ ! -s "$out" ] || { echo "output would reach the client: $(cat "$out")"; false; }
+    # And the work still happened — this must not become a script that exits 0
+    # by doing nothing.
+    [ -n "$bar" ] || { echo "@clux_session_bar was never seeded"; false; }
 }
 
 @test "session-bar-refresh: one renderer failing does not skip the other" {

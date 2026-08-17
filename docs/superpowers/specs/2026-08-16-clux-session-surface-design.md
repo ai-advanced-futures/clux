@@ -86,17 +86,33 @@ stdout and exits 0. Before creating, it runs `tmux has-session -t "=$name"`
 without it also matches `foobar`, a live bug in the original. On a hit it
 switches to the existing session (or prints it) instead of failing.
 
-`new-workspace-prompt.sh` validates the session name and rejects one
-containing a quote, backslash, semicolon, `#`, or a newline, with a
-`display-message`. It stores an accepted name in the transient global
-option `@clux-new-workspace-name`, then issues the second
-`command-prompt -I "<name>/" -p "Folder name:"` whose command passes only
-`%1` (the folder) to `new-workspace.sh`, which reads the name back from
-the option and unsets it. The trailing slash in the prefill is kept: it
-makes the folder field an autojump-friendly prefix the user completes.
-Only one user-supplied value ever reaches a tmux command string this
-way — the higher-risk one travels through an option, which tmux never
-re-parses.
+`new-workspace-prompt.sh` runs inside `display-popup -E` and asks for both
+values itself, with `read`. It stores the name in the transient global
+option `@clux-new-workspace-name`, then `exec`s `new-workspace.sh` with the
+folder as an argument; `new-workspace.sh` reads the name back and unsets it.
+An empty folder means "same as the name", which is what `new-workspace.sh`
+already does with one. The name is still rejected if it contains a quote,
+backslash, semicolon, or `#`, with a `display-message` — but as hygiene
+against tmux's own target syntax and the status-bar format, not as a
+security boundary.
+
+**This replaced two `command-prompt` calls, and the reason matters.** The
+first shape was `bind-key A command-prompt -p "Session name:" "run-shell
+'…/new-workspace-prompt.sh \"%1\"'"`, with the script issuing a second
+`command-prompt -I "<name>/" -p "Folder name:"` for the folder. The design
+called the folder the lower-risk value and said only one user-supplied value
+reached a tmux command string. Both claims were wrong: both prompts had the
+same shape, and `command-prompt` substitutes the answer into its command
+template *before* tmux parses the template, with no way to escape the
+substitution. Typing `ws" ; touch /tmp/pwned ; "` at the "Session name:"
+prompt created `/tmp/pwned` (observed on tmux 3.7b); a single quote instead
+truncated the name silently and the workspace was created under a different
+name than the one typed. The validation the script performed could never
+have prevented either, because the substitution happened before the script
+was started. A popup is the fix rather than a stricter reject list: no
+user-supplied value reaches a tmux command string on this path at all. The
+prefill (`<name>/`) is lost with it — bash 3.2 has no `read -i` — and is
+replaced by a stated default.
 
 Default key bindings, all in clux's own file:
 

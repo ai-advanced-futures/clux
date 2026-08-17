@@ -51,4 +51,23 @@ if status_out=$("$CURRENT_DIR/show-notification.sh"); then
     tmux set-option -g @clux_status "$status_out"
 fi
 
-[ "${1:-}" = "quiet" ] || tmux refresh-client -S
+# A redraw needs a client, and there is very often no client here.
+# `tmux refresh-client -S` exits 1 with "no current client" whenever none is
+# attached — the state at config-load time after `tmux new-session -d`, and on
+# every session-created[91] hook fired by a script that creates a session
+# detached. Both are ordinary. Both used to leave tmux reporting
+# "'session-bar-refresh.sh' returned 1" to the next client that attached,
+# which is the first thing a user saw on a fresh detached start.
+#
+# Nothing has actually failed in that case: both options were already written
+# above, and there is no client to redraw them on. So the redraw is
+# best-effort, and its failure is not this script's failure — hence the
+# explicit exit 0 rather than falling off the end on refresh-client's status.
+# stderr is dropped for the same reason: tmux surfaces a run-shell command's
+# output too, so letting "no current client" through would swap one spurious
+# message for another.
+if [ "${1:-}" != "quiet" ]; then
+    tmux refresh-client -S 2>/dev/null
+fi
+
+exit 0

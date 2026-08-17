@@ -31,19 +31,21 @@
 # session" guarantee, same two tmux calls in spirit — just reordered so the
 # parse actually happens on a queue that reports back.
 #
-# A real client must be attached before that source-file runs. clux.tmux.conf
-# ends with a synchronous (non -b) `run-shell session-bar-refresh.sh`, which
-# calls `tmux refresh-client -S` — and refresh-client fails with "no current
-# client" against a server nobody has attached to, which run-shell then
-# reports as the whole source-file command failing. That is not a config
-# defect: in every real load path (the user's own `tmux` attaching, or
-# `prefix + r` while already attached) a client IS current by the time this
-# line runs — confirmed directly against this candidate file: source-file
-# fails with no client attached and succeeds once one is. So this script
-# attaches one throwaway client of its own first, in control mode (`-C`,
-# which needs no real tty) with stdin held open so it cannot exit before
-# source-file runs, purely so "a client is current" is true here the same
-# way it always is for real.
+# A real client must be attached before that source-file runs, because
+# `cmdq_error` is delivered to a client: with nobody attached the parse error
+# has nowhere to go and this script would report a broken config as clean —
+# the exact failure mode of the verify_config() it replaced. So it attaches
+# one throwaway client of its own first, in control mode (`-C`, which needs no
+# real tty) with stdin held open so it cannot exit before source-file runs.
+#
+# The client used to be needed for a second reason as well, no longer true:
+# clux.tmux.conf ends with a synchronous `run-shell session-bar-refresh.sh`,
+# and that script's closing `tmux refresh-client -S` exited 1 with "no current
+# client" against an unattached server, which run-shell reported as the whole
+# source-file failing. session-bar-refresh.sh now treats a redraw with no
+# client as the ordinary thing it is (see its own closing comment), so a
+# candidate file no longer fails to source for that reason. The client stays
+# for the error-delivery reason above, which is the load-bearing one.
 #
 # Usage: verify-tmux-conf.sh <path-to-candidate-config>
 # Exit 0 and silent on success. Exit non-zero with tmux's own parse error on
@@ -64,6 +66,7 @@ SOCKET="clux-verify-$$"
 CONF="${1:-}"
 CLIENT_PID=""
 STDIN_DIR=""
+SOCKET_PATH=""
 
 if [ -z "$CONF" ]; then
     echo "verify-tmux-conf.sh: usage: verify-tmux-conf.sh <path-to-candidate-config>" >&2
@@ -83,6 +86,13 @@ fi
 cleanup() {
     [ -n "$CLIENT_PID" ] && kill "$CLIENT_PID" >/dev/null 2>&1
     tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+    # tmux does NOT unlink its socket file when the server exits — verified
+    # directly: a killed server leaves the socket behind indefinitely. With a
+    # shared socket name that cost one stale file forever; with the per-PID
+    # name above it costs one per call, and a single test run left 175 of them
+    # in the tmux directory. The server is dead by this line and the name
+    # carries our own pid, so removing the file is ours to do.
+    [ -n "$SOCKET_PATH" ] && rm -f "$SOCKET_PATH" >/dev/null 2>&1
     # Closing the write end lets the control client's read hit EOF; removing
     # the directory takes the fifo with it. Nothing of ours outlives this.
     exec 3>&- 2>/dev/null || true
@@ -98,6 +108,10 @@ if ! tmux -L "$SOCKET" new-session -d 2>/dev/null; then
     echo "verify-tmux-conf.sh: could not start the throwaway tmux server" >&2
     exit 1
 fi
+
+# Asked of the live server rather than rebuilt from $TMUX_TMPDIR/$UID by hand,
+# so cleanup() removes the file tmux actually created.
+SOCKET_PATH="$(tmux -L "$SOCKET" display-message -p '#{socket_path}' 2>/dev/null)"
 
 # The control client needs a stdin that blocks forever instead of hitting EOF
 # immediately: a `< /dev/null` control client reads EOF on its first read and

@@ -227,12 +227,14 @@ PAIRS
     printf "bind-key '{' run-shell \"%s/session-reorder.sh left\"\n" "$SCRIPTS_DIR"
     printf "bind-key '}' run-shell \"%s/session-reorder.sh right\"\n" "$SCRIPTS_DIR"
     printf 'bind-key g run-shell -b "%s/session-picker.sh"\n' "$SCRIPTS_DIR"
-    # Two-step prompt, exactly the shape new-workspace-prompt.sh expects: this
-    # first command-prompt is the ONLY user value that ever reaches a tmux
-    # command string directly (the session name); new-workspace-prompt.sh
-    # validates it, then issues its own second command-prompt for the folder
-    # and passes that one through @clux-new-workspace-name instead.
-    printf 'bind-key A command-prompt -p "Session name:" "run-shell '"'"'%s/new-workspace-prompt.sh \\"%%1\\"'"'"'"\n' "$SCRIPTS_DIR"
+    # A popup, NOT a command-prompt. `command-prompt` substitutes the typed
+    # answer into its command template before tmux parses it, with no way to
+    # escape the substitution, so a quote in the answer breaks out of the
+    # template — the earlier two-command-prompt shape here ran arbitrary shell
+    # commands typed at the "Session name:" prompt. new-workspace-prompt.sh
+    # reads both answers itself instead; see its header. No user-supplied value
+    # reaches a tmux command string on this path any more.
+    printf 'bind-key A display-popup -w 60%% -h 30%% -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key m run-shell "%s/jump-to-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key ` run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key DC run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"

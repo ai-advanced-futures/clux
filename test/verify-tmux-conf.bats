@@ -84,6 +84,25 @@ teardown() {
     [ -s "$log" ]
 }
 
+@test "verify-tmux-conf: it removes its own throwaway socket file" {
+    # tmux does NOT unlink a socket when its server exits — verified directly.
+    # With the per-invocation socket name (clux-verify-$$) that costs one stale
+    # file per call: a single run of this suite left 175 of them sitting in the
+    # tmux directory. cleanup() now removes the file it made.
+    local dir="/tmp/tmux-$(id -u)"
+    local before after
+    before="$(ls "$dir" 2>/dev/null | grep -c '^clux-verify-' || true)"
+
+    local conf="$BATS_TEST_TMPDIR/good.conf"
+    printf 'set -g @foo bar\n' > "$conf"
+    _run_verify "$conf" "$BATS_TEST_TMPDIR/verify.log"
+    [ "$VERIFY_STATUS" -eq 0 ] || { cat "$BATS_TEST_TMPDIR/verify.log"; false; }
+
+    after="$(ls "$dir" 2>/dev/null | grep -c '^clux-verify-' || true)"
+    [ "$after" -le "$before" ] \
+        || { echo "left $((after - before)) socket file(s) behind in $dir"; false; }
+}
+
 @test "verify-tmux-conf: no argument prints usage and exits 1" {
     run bash -c "'$VERIFY_SCRIPT'"
     [ "$status" -eq 1 ]
