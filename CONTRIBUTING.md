@@ -33,7 +33,8 @@ plugins/clux/
 │   ├── helpers.sh               # Shared utilities and config defaults
 │   ├── show-notification.sh     # tmux status bar display
 │   ├── configure-tmux.sh        # Autonomous tmux.conf modification
-│   ├── setup-tmux-conf.sh       # Lower-level tmux.conf helper
+│   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
+│   ├── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
 │   ├── validate-setup.sh        # 10-check validation script
 │   ├── jump-to-notification.sh  # Jump to notifying window
 │   ├── dismiss-notification.sh  # Dismiss top notification

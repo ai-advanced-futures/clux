@@ -1,0 +1,44 @@
+# clux deploy manifest — one script per line.
+#
+# The single list of scripts /clux:setup copies from the plugin's scripts/
+# directory into ~/.config/clux/scripts/. /clux:setup, /clux:validate and the
+# bats tests all read THIS file. None of them carries a list of its own.
+#
+# Why: two hand-written lists already drifted once. CHANGELOG 3.0.9 records
+# path.sh sitting in one list and not the other, which shipped installs with a
+# missing library.
+#
+# Readers must skip blank lines and lines whose first non-blank character is #:
+#
+#   grep -v '^[[:space:]]*#' deploy-manifest.txt | grep -v '^[[:space:]]*$'
+#
+# Left out on purpose: render-clux-conf.sh and verify-tmux-conf.sh run at SETUP
+# time only, from the plugin tree. No key binding, hook or status line ever
+# calls them, so deploying them would only put a dead copy on disk.
+
+# Libraries. Every script below sources one or both.
+helpers.sh
+path.sh
+
+# Notifications
+show-notification.sh
+jump-to-notification.sh
+dismiss-notification.sh
+notification-picker.sh
+notify-sound.sh
+truncate-title.sh
+
+# Agent state
+agent-query.sh
+agent-bar.sh
+agent-clear.sh
+
+# Session surface
+session-order.sh
+session-list.sh
+session-bar-refresh.sh
+session-reorder.sh
+switch-session.sh
+session-picker.sh
+new-workspace.sh
+new-workspace-prompt.sh

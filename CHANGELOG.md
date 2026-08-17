@@ -2,6 +2,39 @@
 
 All notable changes to clux are documented here.
 
+## [3.3.0]
+
+### Added
+
+- **clux now owns the whole session surface, not just the notification bar.** `/clux:setup` can render the session list itself: sessions and their windows in the bar, one agent-state column per session, keys to move between sessions and reorder them, a session picker with a live pane preview, and a key to create a new Claude workspace (an editor window plus a `claude agents` window). Design: `docs/superpowers/specs/2026-08-16-clux-session-surface-design.md`
+- Eight new scripts in `scripts/`, all deployed via the new `config/deploy-manifest.txt` (the single list `/clux:setup`, `/clux:validate`, and the tests all read — CHANGELOG 3.0.9 recorded the cost of two hand-written lists drifting apart):
+  - `session-order.sh` — the one source of truth for display order (custom order from `@clux-session-order`, else creation order)
+  - `session-list.sh` — renders the bar string; reads every `@clux-bar-*` option in one batched `display-message -p` call, joined on `\037` and split on `\037` (never a literal newline through `awk -v` — the exact fault that emptied the bar on 2026-08-16)
+  - `session-reorder.sh` — moves the current session left/right in the bar (`prefix + {` / `}`)
+  - `switch-session.sh` — jumps to the next/previous session in bar order (`prefix + N` / `P`)
+  - `session-bar-refresh.sh` — the single refresh entry point: computes `@clux_session_bar` and `@clux_status` in one invocation, then one `refresh-client -S`. Each token is set only when its renderer exits 0 and prints something, so a renderer that dies leaves the previous value in place instead of blanking the bar
+  - `session-picker.sh` — session picker with pane preview (`prefix + g`); `fzf-tmux -p`, else `fzf` inside a popup, else `choose-tree -Zs`, degrading independently of the `@clux-picker` option at run time
+  - `new-workspace.sh` / `new-workspace-prompt.sh` — creates a Claude workspace (`prefix + A`): an editor window (`---`) and an agents window (`claude`), addressed by window ID so index/renumbering bugs can't happen
+  - Two setup-time-only scripts, deliberately **not** in the deploy manifest since no key, hook, or status line ever calls them: `render-clux-conf.sh` (writes `~/.config/clux/clux.tmux.conf` whole, every run) and `verify-tmux-conf.sh` (parses a candidate config for real on a throwaway `tmux -L` server)
+- New key bindings, all in clux's own file: `N` / `P` (next/previous session), `{` / `}` (move session in the bar), `g` (session picker), `A` (new Claude workspace)
+- New `@clux-*` options: `@clux-dir-resolver` (`autojump` | `zoxide` | `path`), `@clux-editor`, `@clux-agents-command`, `@clux-picker` (`fzf` | `choose-tree`), `@clux-session-order`, and ten `@clux-bar-*` theming options (`-name-attached-style`, `-name-detached-style`, `-window-active-style`, `-window-inactive-style`, `-bracket-style`, `-separator-style`, `-window-open`, `-window-close`, `-separator`, `-name-length`). `/clux:setup` fills the bar options from the palette it already extracts during detection, and writes a line only for a value it actually found
+- `~/.config/clux/clux.tmux.conf`: the one file clux owns outright, rewritten whole on every `/clux:setup` run and every `prefix + r`. Holds the Part 3 answers, the theming lines, the ten key bindings, the refresh hooks (index band 90–99, reserved for clux), and a closing `agent-clear.sh --reap` + `session-bar-refresh.sh` to seed the bar clean. The user's own tmux.conf gets exactly one `source-file -q` line plus two token strings (`#{@clux_session_bar}#(…/session-bar-refresh.sh quiet)` and `#{@clux_status}`) and nothing else
+- `get_tmux_option()` and the `@clux-agent-glyph-*` / `@clux-agent-*-color` getters moved down into `path.sh` so `session-list.sh`'s hot path (one render per window switch) never pays `helpers.sh`'s five source-time option reads
+
+### Changed
+
+- **`@session_order` renamed to `@clux-session-order`.** `/clux:setup` migrates a live value with a direct server read-and-set (`tmux show-option -gqv @session_order` → `tmux set-option -g @clux-session-order`, gated on the destination being empty so a second run can never clobber a since-changed order) — nothing is written to any file, and the old option is left set in server memory and reported as a leftover, never unset. At run time `session-order.sh` reads only `@clux-session-order`; there is no legacy fallback
+- **`@session_bar` renamed to `@clux_session_bar`** (runtime-rendered string; underscored per the hyphens-for-config / underscores-for-runtime-state rule that now applies to every `@clux-*` option)
+- **`setup-tmux-conf.sh` is retired**, replaced by `render-clux-conf.sh` (writes the owned file whole) and `verify-tmux-conf.sh` (verifies it on a throwaway server). `CONTRIBUTING.md`'s file tree updated to match
+- `/clux:setup`'s judgement-heavy work (detection, the Part 3 questions, the migration diff) stays inline in `commands/setup.md` for this release rather than moving into a `skills/configuring-tmux/SKILL.md` as the design's Entry Point section describes — see Known issues
+
+### Known issues
+
+- **The setup skill split described in the design's "Entry point" section did not land.** `commands/setup.md` still carries all detection and migration logic inline rather than delegating to `plugins/clux/skills/configuring-tmux/SKILL.md`. Behavior is unaffected; a future pass should extract the skill
+- **No bats coverage yet for the eight new scripts.** The design's Testing section calls for one bats file per script plus a `session-list.bats` fixture with real newlines and a `#` in a session name, regression-testing the 2026-08-16 bar-emptying fault. None of that exists yet — the scripts were verified by hand against a throwaway `tmux -L` server, not by an automated suite
+- **`configure-tmux.sh` and `validate-setup.sh` are now orphaned.** Neither `commands/setup.md` nor `commands/validate.md` calls them anymore — both commands do their own checks inline — but the two scripts are still shipped in `scripts/` (outside the deploy manifest, so never deployed). They should be deleted or explicitly repurposed in a follow-up
+- **`CONTRIBUTING.md`'s file tree is stale beyond the `setup-tmux-conf.sh` → `render-clux-conf.sh`/`verify-tmux-conf.sh` swap.** It still omits `path.sh`, `truncate-title.sh`, `agent-query.sh`, `agent-bar.sh`, `agent-clear.sh`, `config/deploy-manifest.txt`, and all eight new session-surface scripts
+
 ## [3.2.0]
 
 ### Added
