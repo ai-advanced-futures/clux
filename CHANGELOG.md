@@ -2,6 +2,19 @@
 
 All notable changes to clux are documented here.
 
+## [3.4.0]
+
+### Fixed
+
+- **Agent state aliased between tmux servers, showing glyphs no one earned and deleting ones that were.** A pane id identifies a pane only *inside* one server — every server numbers its panes from `%0` — but the state store was one directory per `$HOME`, keyed by pane id alone. Two servers therefore shared one namespace. A `busy` Claude on server A drew a busy glyph on server B's `%0` as well (reproduced on tmux 3.7b with two one-pane servers). The other direction lost data: the reaper deleted files whose pane was not live, judged against **its own** server's listing, so any hook firing on B — a prompt typed in the other tmux — deleted A's files and made a Claude waiting for input vanish from A's bar. One server restarting had the same shape, since a fresh server hands out `%0` again; the reaper's own header admitted it could narrow that hole but not close it. State files now live under `<state-dir>/<pid>-<start_time>/`, one directory per tmux server. The pid alone would not have been enough — the kernel recycles pids, which is the same aliasing again — and including the start time is also what makes the key change across a restart, closing the reuse hole. `@clux-agent-state-dir` keeps its meaning as the root, so a user who set it keeps the location they chose. Design: `docs/superpowers/specs/2026-08-17-clux-server-scoped-agent-state-design.md`
+- The reaper gained two jobs beside its original one: it collects the directory of a server that has exited (`kill -0` on the pid in the name; a live foreign server is left completely alone, or the collector would become the cross-server deletion it replaces), and it deletes the unscoped files clux <= 3.3.0 wrote. Those legacy names record no server, so they cannot be attributed to one — moving them into the current server's directory would claim them for a server that may never have written them, manufacturing exactly the false glyph this release removes. They are deleted instead, which costs nothing real: the next hook fire rewrites the state that is still true
+- Cost of the scoping is one tmux round-trip, in `hooks/agent-state.sh` alone — it must know the key before it writes and has no listing to piggy-back on, and it already made three calls between the reap and the refresh. Every other caller asks for `#{pid}-#{start_time}` inside a `list-panes` format it was already fetching and pays nothing. That includes `agent-query.sh`, which runs once per status redraw per client and is the hottest path in clux
+- `/clux:validate` now reports this server's own store and the count of unscoped files left by an older clux, rather than only that the root directory exists — "the root is there but holds nothing of mine" is the state a puzzled user is actually in
+
+### Known issues
+
+- A store shared between machines over a network filesystem would alias again, because the server key is a pid. `XDG_STATE_HOME` is per-machine and `path.sh` already described the store as per-machine data; that description is now load-bearing rather than incidental
+
 ## [3.3.0]
 
 ### Added
@@ -46,7 +59,7 @@ All notable changes to clux are documented here.
 
 ### Known issues
 
-- **Agent state is keyed on pane id, which is only unique per tmux server.** Two servers sharing one state directory alias each other: a `%0` file written by one shows a glyph against the other's `%0`. Observed directly while verifying this release — an unrelated throwaway server drew a `finished` glyph it had never earned. This predates 3.3.0 (the keying is from 3.1.0, and `agent-bar.sh` has the same property), and closing it means putting a server discriminator in the state-file protocol that `hooks/agent-state.sh`, `agent-query.sh`, `agent-clear.sh`, and the detached `agents/<pane>~<sid>` names all share — with a migration for files an older version wrote. Deliberately not folded into this release's fixes. Most users run one server and never see it
+- **Agent state is keyed on pane id, which is only unique per tmux server.** Two servers sharing one state directory alias each other: a `%0` file written by one shows a glyph against the other's `%0`. Observed directly while verifying this release — an unrelated throwaway server drew a `finished` glyph it had never earned. This predates 3.3.0 (the keying is from 3.1.0, and `agent-bar.sh` has the same property), and closing it means putting a server discriminator in the state-file protocol that `hooks/agent-state.sh`, `agent-query.sh`, `agent-clear.sh`, and the detached `agents/<pane>~<sid>` names all share — with a migration for files an older version wrote. Deliberately not folded into this release's fixes. Most users run one server and never see it. **Fixed in 3.4.0**
 - **The corpus cannot yet drive a real installer.** `test/corpus.bats` asserts the invariant against fixture pairs (assertion 4 — an installed config differs from its source by clux's additions alone — is checked by stripping those additions and diffing back to the original). But the byte-preserving edit itself is judgement performed by the LLM, now inside `skills/configuring-tmux/SKILL.md`; there is no deterministic script for the corpus to run. The skill boundary at least gives the corpus a named subject, which is what the design's Testing section assumed. When a deterministic edit lands, its test should drive it across every fixture
 
 ## [3.2.0]

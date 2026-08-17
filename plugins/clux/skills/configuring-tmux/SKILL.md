@@ -502,7 +502,7 @@ When clux renders the session list, the per-session agent column is already part
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | where per-pane state files live |
+| `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | root of the state store; files live one level down, under a directory per tmux server |
 | `@clux-agent-glyph-busy` | `*` | glyph shown while Claude is working |
 | `@clux-agent-glyph-needs` | `!` | glyph shown when Claude needs your input |
 | `@clux-agent-glyph-done` | `v` | glyph shown when Claude finished |

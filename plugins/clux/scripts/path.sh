@@ -6,12 +6,13 @@
 # The path resolvers — resolve_notify_file(), resolve_agent_state_dir() — are
 # pure: they read env vars and a sidecar file and print a path.
 #
-# THREE functions here are deliberately NOT pure. reap_agent_state_dir() calls
+# FOUR functions here are deliberately NOT pure. reap_agent_state_dir() calls
 # tmux and deletes files; refresh_agent_bar() calls tmux;
-# resolve_agents_pane_by_cwd() calls tmux and ps. All live in this file so
-# their callers share one copy instead of each rolling its own, and all do
-# that work only when CALLED — sourcing still costs nothing. Do not add a
-# fourth impure function here without saying so in this header.
+# resolve_agent_server_key() calls tmux; resolve_agents_pane_by_cwd() calls
+# tmux and ps. All live in this file so their callers share one copy instead
+# of each rolling its own, and all do that work only when CALLED — sourcing
+# still costs nothing. Do not add a fifth impure function here without saying
+# so in this header.
 # (resolve_agents_pane_by_cwd moved here from helpers.sh: helpers.sh runs five
 # get_tmux_option calls at SOURCE time, and hooks/agent-state.sh must stay
 # cheap, so it can only source this file.)
@@ -36,14 +37,21 @@ resolve_notify_file() {
     echo "${HOME}/.config/tmux/claude_notification"
 }
 
-# Resolve the agent-state directory — one file per tmux pane, holding one word
-# (busy / needs-you / finished). Mirrors resolve_notify_file() exactly, same
-# three tiers, so the writer (hooks/agent-state.sh) and the readers
-# (agent-query.sh, agent-bar.sh, agent-clear.sh) can never disagree about where
-# the store lives. Never emits a trailing slash — every caller joins with "/".
+# Resolve the ROOT of the agent-state store. Mirrors resolve_notify_file()
+# exactly, same three tiers, so the writer (hooks/agent-state.sh) and the
+# readers (agent-query.sh, agent-bar.sh, agent-clear.sh) can never disagree
+# about where the store lives. Never emits a trailing slash — every caller
+# joins with "/".
+#
+# The state files themselves live one level down, under a directory named for
+# the tmux server that owns them — see resolve_agent_server_key(). This
+# function still answers the public @clux-agent-state-dir option, so a user who
+# set it keeps the location they chose; only the layout inside it changed.
 #
 # XDG_STATE_HOME (not the queue's ~/.config/tmux) is correct here: this data is
-# per-machine, regenerable, and not configuration.
+# per-machine, regenerable, and not configuration. Per-MACHINE is load-bearing
+# now: the server key below is a pid, so a store shared between machines over a
+# network filesystem would alias again.
 resolve_agent_state_dir() {
     # Tier 1: explicit env var (set by tmux setenv -g in claude-notify.tmux)
     if [ -n "${CLUX_AGENT_STATE_DIR:-}" ]; then
@@ -64,26 +72,92 @@ resolve_agent_state_dir() {
     echo "${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
 }
 
-# Reap state files whose pane id is no longer live on the tmux server — narrows
-# the pane-id-reuse hole after a server restart. It does not close it: an id the
-# new server has already handed to a different pane is live, so the file is
-# kept, and the bar marks a pane that holds no Claude. Shared by the two writers:
-# hooks/agent-state.sh (opportunistic, after every write) and agent-clear.sh
-# --reap (once at config load). The empty-LIVE guard is load-bearing: a missing
-# server or a failed list-panes yields an empty listing and the reap is skipped
-# whole, so it can never wipe the store. $1 = state dir.
+# A server key is "<pid>-<start_time>": digits, one dash, digits. Rejecting
+# anything else is what keeps a stray name in the store from being treated as
+# a server directory — the collector below deletes those, so the guard is the
+# thing standing between it and an unrelated file.
+_clux_valid_server_key() {
+    case "$1" in
+        ''|*[!0-9-]*|-*|*-|*-*-*) return 1 ;;
+    esac
+    return 0
+}
+
+# Name the tmux server this invocation belongs to.
+#
+# A pane id identifies a pane only WITHIN one server. Two tmux servers both
+# start numbering at %0, so a pane id alone is not a key for a store shared by
+# a whole $HOME: before this, one server drew glyphs for the other's agents,
+# and one server's reap deleted the other's files. Every state file therefore
+# lives under "<root>/<server key>/".
+#
+# The key is the server's pid and its start time. The pid alone would repeat —
+# the kernel recycles pids, and that is the same class of aliasing this whole
+# change exists to remove. The start time makes a repeat impossible in
+# practice. The key also CHANGES when a server restarts on the same socket,
+# which closes the pane-id-reuse hole the reaper could previously only narrow.
+#
+# Cost: one tmux round-trip. Callers that already run `tmux list-panes` must
+# NOT call this — they ask for "#{pid}-#{start_time}" in the format they were
+# already fetching and pay nothing (agent-query.sh, agent-clear.sh, and the
+# reaper below all do that). This function is for callers that have no such
+# call to piggy-back on. With no tmux server answering there is no key, and a
+# caller with no key must not read or write the store at all: a file outside a
+# server directory is a file nobody can attribute.
+resolve_agent_server_key() {
+    local key
+    key=$(tmux display-message -p '#{pid}-#{start_time}' 2>/dev/null)
+    _clux_valid_server_key "$key" || return 0
+    printf '%s' "$key"
+}
+
+# Reap the store. Three jobs, all of them the writers' work — hooks/agent-state.sh
+# calls this after every write, agent-clear.sh --reap once at config load.
+#
+#   1. Inside THIS server's directory, delete files whose pane is gone.
+#   2. Collect the directories of servers that have exited.
+#   3. Delete unscoped files left by clux <= 3.3.0.
+#
+# $1 = the store root (resolve_agent_state_dir).
+#
+# The empty-listing guard is load-bearing: a missing server or a failed
+# list-panes yields an empty listing and the reap is skipped whole, so it can
+# never wipe the store.
+#
+# Job 1 no longer reaches outside its own server, so the cross-server deletion
+# that used to hide a waiting agent is now structurally impossible rather than
+# merely avoided.
 reap_agent_state_dir() {
-    local state_dir="$1" live haystack f base pane
+    local state_dir="$1" listing srv row_key live haystack f d base pane pid
     [ -n "$state_dir" ] || return 0
-    live=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)
+    # ONE round-trip answers both questions the store asks: which server is
+    # this, and which of its panes are live. Every row carries the same server
+    # key, so reading it off the first row costs nothing.
+    listing=$(tmux list-panes -a -F '#{pid}-#{start_time} #{pane_id}' 2>/dev/null)
+    [ -n "$listing" ] || return 0
+    srv="${listing%% *}"
+    _clux_valid_server_key "$srv" || return 0
+
+    live=""
+    while IFS=' ' read -r row_key pane; do
+        [ -n "$pane" ] || continue
+        live="${live}${pane}"$'\n'
+    done <<EOF
+$listing
+EOF
     [ -n "$live" ] || return 0
     # Wrap the listing in newlines ONCE so a whole-line match becomes a plain
     # substring test done by bash itself. The delimiters are what keep `%1`
     # from matching `%10`, exactly as `grep -qxF` did. This runs after every
     # hook fire, so the previous `printf | grep` per state file cost two
     # processes per file per fire; this costs none.
-    haystack=$'\n'"$live"$'\n'
-    for f in "$state_dir"/*; do
+    # $live is built one "<pane>\n" at a time above, so it already ENDS with a
+    # newline — unlike the old $(...) capture, which stripped it and needed a
+    # second delimiter added here.
+    haystack=$'\n'"$live"
+
+    # --- Job 1: dead panes of THIS server ---------------------------------
+    for f in "$state_dir/$srv"/*; do
         [ -f "$f" ] || continue
         base="${f##*/}"
         case "$base" in
@@ -102,7 +176,7 @@ reap_agent_state_dir() {
     # This loop is also the writer's cache invalidation: a write through a
     # stale cached pane lands here in the same invocation and is deleted, so
     # the agent's next event re-resolves (the design doc's self-heal).
-    for f in "$state_dir"/agents/*; do
+    for f in "$state_dir/$srv"/agents/*; do
         [ -f "$f" ] || continue
         base="${f##*/}"
         case "$base" in
@@ -116,6 +190,48 @@ reap_agent_state_dir() {
             *) rm -f "$f" 2>/dev/null ;;
         esac
     done
+
+    # --- Job 2: directories of servers that have exited --------------------
+    # A live foreign server is left completely alone — the collector must not
+    # become the cross-server deletion it replaces. `kill -0` is the whole
+    # liveness test: should the kernel have handed that pid to something else,
+    # the start time in the key cannot match, so the worst outcome is a
+    # directory that is never read again, never a glyph on the wrong pane.
+    for d in "$state_dir"/*; do
+        [ -d "$d" ] || continue
+        base="${d##*/}"
+        [ "$base" = "$srv" ] && continue
+        _clux_valid_server_key "$base" || continue
+        pid="${base%%-*}"
+        kill -0 "$pid" 2>/dev/null && continue
+        # Only the shapes this store owns, then drop the emptied directories.
+        # Anything else in there is left where it is rather than deleted blind.
+        rm -f "$d"/%* "$d"/agents/%*~* 2>/dev/null
+        rmdir "$d/agents" 2>/dev/null
+        rmdir "$d" 2>/dev/null
+    done
+
+    # --- Job 3: files from before the store was scoped ---------------------
+    # clux <= 3.3.0 wrote "<root>/<pane_id>" and "<root>/agents/<pane>~<sid>".
+    # Those names record no server, so they cannot be attributed to one:
+    # claiming them for THIS server would manufacture exactly the false glyph
+    # the scoping removes. Deleting is the only honest option, and it costs
+    # nothing real — the next hook fire rewrites the state that is still true.
+    for f in "$state_dir"/*; do
+        [ -f "$f" ] || continue
+        case "${f##*/}" in
+            %*) rm -f "$f" 2>/dev/null ;;
+        esac
+    done
+    for f in "$state_dir"/agents/*; do
+        [ -f "$f" ] || continue
+        case "${f##*/}" in
+            %*~*) rm -f "$f" 2>/dev/null ;;
+        esac
+    done
+    rmdir "$state_dir/agents" 2>/dev/null
+
+    return 0
 }
 
 # Resolve the tmux pane of the `claude agents` dashboard that OWNS a given cwd.
