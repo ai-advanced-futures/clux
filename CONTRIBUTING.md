@@ -23,28 +23,56 @@ Thank you for your interest in contributing to clux — Claude Code tmux notific
 ```
 plugins/clux/
 ├── .claude-plugin/plugin.json   # Plugin metadata
+├── claude-notify.tmux           # tpm entry point
 ├── commands/                    # Claude Code slash commands
-│   ├── setup.md                 # /clux:setup
+│   ├── setup.md                 # /clux:setup — an entry point; states no rules
 │   └── validate.md              # /clux:validate
+├── skills/
+│   └── configuring-tmux/        # The whole setup procedure and every rule
+│       └── SKILL.md             #   governing it. /clux:setup invokes this
 ├── hooks/
 │   ├── hooks.json               # Auto-registered hooks
-│   └── notify-tmux.sh           # Main hook — writes notification queue
+│   ├── notify-tmux.sh           # Writes the notification queue
+│   └── agent-state.sh           # Writes the per-pane agent-state file
 ├── scripts/
+│   │                            # Libraries — sourced, never executed
+│   ├── path.sh                  # Path resolution and the agents-pane resolver
 │   ├── helpers.sh               # Shared utilities and config defaults
-│   ├── show-notification.sh     # tmux status bar display
-│   ├── configure-tmux.sh        # Autonomous tmux.conf modification
-│   ├── setup-tmux-conf.sh       # Lower-level tmux.conf helper
-│   ├── validate-setup.sh        # 10-check validation script
+│   │                            # Notifications
+│   ├── show-notification.sh     # Renders the notification token
 │   ├── jump-to-notification.sh  # Jump to notifying window
 │   ├── dismiss-notification.sh  # Dismiss top notification
 │   ├── notification-picker.sh   # Interactive notification picker
-│   └── notify-sound.sh          # Sound playback per notification type
-├── config/tmux-config.yaml      # Default tmux configuration reference
+│   ├── notify-sound.sh          # Sound playback per notification type
+│   ├── truncate-title.sh        # Per-OS safe title truncation
+│   │                            # Agent state — readers only, they never write
+│   ├── agent-query.sh           # Reads one session's rolled-up agent state
+│   ├── agent-bar.sh             # Renders the agent-state column or roll-up
+│   ├── agent-clear.sh           # Clears a finished mark; --reap sweeps stale files
+│   │                            # Session surface
+│   ├── session-order.sh         # The one source of truth for display order
+│   ├── session-list.sh          # Renders the bar string (hot path)
+│   ├── session-bar-refresh.sh   # The single refresh entry point
+│   ├── session-reorder.sh       # Moves a session in the bar
+│   ├── switch-session.sh        # Next/previous session in bar order
+│   ├── session-picker.sh        # Session picker with pane preview
+│   ├── new-workspace.sh         # Creates an editor + agents window pair
+│   ├── new-workspace-prompt.sh  # Reads both answers inside a popup
+│   │                            # Setup time only — never deployed
+│   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
+│   └── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
+├── config/
+│   ├── deploy-manifest.txt      # The single list of scripts setup deploys
+│   └── tmux-config.yaml         # Default tmux configuration reference
 ├── docs/
 │   ├── setup-guide.md           # User-facing setup guide
 │   └── REFERENCE-tmux-setup-strategy.md  # Architecture reference
 └── LICENSE
 ```
+
+`config/deploy-manifest.txt` is the only list of what `/clux:setup` copies into
+`~/.config/clux/scripts/`. `/clux:setup`, `/clux:validate`, and the tests all read
+it. A new script needs a line there, or `test/deploy-manifest.bats` fails.
 
 ### Testing hooks locally
 
@@ -58,10 +86,12 @@ After running, inspect the notification queue:
 cat "$HOME/.config/tmux/claude_notification"
 ```
 
-Run the validation script to check overall setup:
+To check the overall setup, run `/clux:validate` inside Claude Code. It is read-only.
+
+Run the test suite from the repository root:
 
 ```bash
-plugins/clux/scripts/validate-setup.sh
+bats test/
 ```
 
 Enable debug logging by setting `CLUX_DEBUG=1` in your environment before invoking any script. Debug output goes to `/tmp/clux.log`.
