@@ -26,10 +26,6 @@ _manifest_entries() {
 # — the manifest header explains why. Keep this list in step with that note.
 SETUP_ONLY="render-clux-conf.sh verify-tmux-conf.sh"
 
-# Shipped but called by nothing; tracked as a known issue in the CHANGELOG
-# rather than silently tolerated here.
-UNREFERENCED="configure-tmux.sh validate-setup.sh"
-
 # Sourced, never executed. They must be readable; the executable bit on them
 # means nothing. path.sh does not carry it and helpers.sh does, which is
 # untidy but harmless — asserting +x on either would be asserting an accident.
@@ -79,16 +75,44 @@ EOF
     listed="$(_manifest_entries)"
     for path in "$SCRIPTS_DIR"/*.sh; do
         local base="${path##*/}"
-        case " $SETUP_ONLY $UNREFERENCED " in
+        case " $SETUP_ONLY " in
             *" $base "*) continue ;;
         esac
         printf '%s\n' "$listed" | grep -qxF "$base" || unlisted="$unlisted $base"
     done
     [ -z "$unlisted" ] || {
         echo "present in scripts/ but missing from the manifest:$unlisted"
-        echo "add it to the manifest, or to SETUP_ONLY/UNREFERENCED here if it is deliberately not deployed"
+        echo "add it to the manifest, or to SETUP_ONLY here if it is deliberately not deployed"
         false
     }
+}
+
+@test "deploy-manifest: every script a listed script sources is itself listed" {
+    # The 3.0.9 bug in its original form: path.sh was left out of a deploy list
+    # even though helpers.sh and show-notification.sh both source it. The
+    # install then held scripts that source a file that is not there — the
+    # source failed, NOTIFY_FILE resolved empty, and the bar drew nothing. A
+    # missing library is silent, so only a closure check finds it.
+    #
+    # This test replaces test/configure-deploy.bats, which asserted the same
+    # closure over the `local scripts=( … )` array inside configure-tmux.sh.
+    # That script is gone, and the manifest is the list now.
+    local listed
+    listed="$(_manifest_entries)"
+    local missing=""
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        [ -f "$SCRIPTS_DIR/$entry" ] || continue
+        local dep
+        for dep in $(grep -E '^[[:space:]]*source ' "$SCRIPTS_DIR/$entry" 2>/dev/null \
+                     | grep -oE '[a-zA-Z0-9_-]+\.sh'); do
+            printf '%s\n' "$listed" | grep -qxF "$dep" \
+                || missing="$missing ${entry}->${dep}"
+        done
+    done <<EOF
+$listed
+EOF
+    [ -z "$missing" ] || { echo "sourced but not deployed:$missing"; false; }
 }
 
 @test "deploy-manifest: the setup-only scripts are deliberately absent from it" {

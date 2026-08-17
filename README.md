@@ -36,11 +36,13 @@ set -g bell-action any
 
 ### Validate
 
-Run `/clux:setup` inside Claude Code, or:
+Inside Claude Code, run:
 
-```bash
-~/.claude/plugins/cache/*/clux/*/scripts/validate-setup.sh
 ```
+/clux:validate
+```
+
+It is read-only — it reports what it finds and changes nothing. Run `/clux:setup` to repair anything it reports.
 
 ## Alternative: TPM Install
 
@@ -153,15 +155,12 @@ These tmux options apply to the reader/jump side (status bar and key handler). I
 
 **Symptom:** Prompts submitted but window doesn't rename / notifications don't appear.
 
-**Solution:** Run validation:
-```bash
-~/.claude/plugins/cache/*/clux/*/scripts/validate-setup.sh
+**Solution:** Run validation inside Claude Code:
+```
+/clux:validate
 ```
 
-Or inside Claude Code:
-```
-/clux:setup
-```
+Then run `/clux:setup` to repair what it reports.
 
 ### Plugin path issues
 

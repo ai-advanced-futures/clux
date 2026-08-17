@@ -23,13 +23,11 @@ This uses Claude Code's built-in tools to:
 
 No external API keys required — Claude Code drives the entire interactive flow.
 
-## Alternative: Script-Based Setup
-
-For a simpler, non-interactive script-based approach, the `configure-tmux.sh` script can be found in the plugin's `scripts/` directory.
+There is no script-based alternative. Editing a tmux.conf without losing what it already holds needs judgement, so `/clux:setup` is the only supported path.
 
 ## What Gets Configured
 
-Both methods add or update your tmux.conf to include:
+Setup adds or updates your tmux.conf to include:
 
 ```tmux
 # Status-left with notification appended after existing content
