@@ -10,7 +10,8 @@
 # SCOPE NOTE, stated plainly rather than faked: the actual byte-preserving
 # EDIT — inserting the source-file line and the two token strings into a
 # user's live tmux.conf — is judgement performed by the LLM itself inside
-# commands/setup.md (Phase 4, "Use the Edit tool on the single line ...").
+# skills/configuring-tmux/SKILL.md (Phase 4, "Use the Edit tool on the single
+# line ...").
 # There is no deterministic script in this repo that performs that edit, so
 # there is nothing here a bats process can invoke to drive it — the
 # config-updater design's own "Testing" section says exactly this about a

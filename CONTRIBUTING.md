@@ -25,8 +25,11 @@ plugins/clux/
 ├── .claude-plugin/plugin.json   # Plugin metadata
 ├── claude-notify.tmux           # tpm entry point
 ├── commands/                    # Claude Code slash commands
-│   ├── setup.md                 # /clux:setup
+│   ├── setup.md                 # /clux:setup — an entry point; states no rules
 │   └── validate.md              # /clux:validate
+├── skills/
+│   └── configuring-tmux/        # The whole setup procedure and every rule
+│       └── SKILL.md             #   governing it. /clux:setup invokes this
 ├── hooks/
 │   ├── hooks.json               # Auto-registered hooks
 │   ├── notify-tmux.sh           # Writes the notification queue

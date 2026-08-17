@@ -11,7 +11,8 @@
 # always "current" for the parse (see the script's own header comment). Never
 # capture the call with bats' `run` / $( ) — that waits for every writer on
 # the pipe to close. Redirect to a file and read the status back instead
-# (exactly what commands/setup.md's Phase 6 step 8 does, for the same reason).
+# (exactly what the configuring-tmux skill's Phase 6 step 8 does, for the same
+# reason).
 #
 # There is no longer a process to reap. The script fed that client from
 # `< <(tail -f /dev/null)`, and bash 3.2 (macOS) does not report a process

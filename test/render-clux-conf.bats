@@ -20,7 +20,8 @@ VERIFY_SCRIPT="$SCRIPTS_DIR/verify-tmux-conf.sh"
 # clux.tmux.conf's closing section runs synchronously at source time
 # (agent-clear.sh --reap, session-bar-refresh.sh) — without these, sourcing
 # the rendered file fails with "returned 127" before verification ever
-# exercises anything else, exactly as commands/setup.md's Phase 6 documents.
+# exercises anything else, exactly as the configuring-tmux skill's Phase 6
+# documents.
 _make_fake_scripts_dir() {
     local dir="$BATS_TEST_TMPDIR/fakescripts"
     mkdir -p "$dir"
@@ -159,7 +160,7 @@ _make_fake_scripts_dir() {
     # `< <(tail -f /dev/null)`, which outlives the script by design (see its
     # own header comment). A `run`/$( ) capture waits for every writer on the
     # pipe to close and hangs forever on that leftover process, so — exactly
-    # like commands/setup.md's own Phase 6 step 8 — redirect to a FILE and
+    # like the configuring-tmux skill's own Phase 6 step 8 — redirect to a FILE and
     # read the exit status back out-of-band instead.
     local log="$BATS_TEST_TMPDIR/verify.log"
     bash -c "PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$VERIFY_SCRIPT' '$out'" >"$log" 2>&1 </dev/null

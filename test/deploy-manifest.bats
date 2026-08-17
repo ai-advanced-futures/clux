@@ -134,11 +134,15 @@ EOF
     [ -z "$dupes" ] || { echo "duplicate manifest entries: $dupes"; false; }
 }
 
-@test "deploy-manifest: commands/setup.md and commands/validate.md both read it" {
+@test "deploy-manifest: the setup skill and commands/validate.md both read it" {
     # The manifest only prevents drift if the consumers actually use it
     # instead of carrying a fourth and fifth hand-written copy.
-    grep -q 'deploy-manifest' "$REPO_ROOT/plugins/clux/commands/setup.md" \
-        || { echo "commands/setup.md does not reference the manifest"; false; }
+    #
+    # The setup side is the skill, not commands/setup.md: the command is an
+    # entry point that states no rules, so naming the manifest there would be
+    # the second copy this manifest exists to prevent. See test/setup-skill.bats.
+    grep -q 'deploy-manifest' "$REPO_ROOT/plugins/clux/skills/configuring-tmux/SKILL.md" \
+        || { echo "the configuring-tmux skill does not reference the manifest"; false; }
     grep -q 'deploy-manifest' "$REPO_ROOT/plugins/clux/commands/validate.md" \
         || { echo "commands/validate.md does not reference the manifest"; false; }
 }
