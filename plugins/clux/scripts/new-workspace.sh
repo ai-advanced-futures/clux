@@ -183,6 +183,16 @@ else
         -c "$PROJECT_DIR" -n "---" -P -F '#{window_id}')
 fi
 
+# A failed create hands back an EMPTY window id, and tmux reads an empty
+# target as "the current pane" (verified: `send-keys -t ""` types into the
+# pane the user is looking at). Unguarded, a session tmux refused to create
+# would have the editor command — and further down the agents command — typed
+# into whatever the user was doing. Refuse instead.
+if [ -z "$WIN_ID_EDITOR" ]; then
+    _tmux display-message "clux: could not create session '$SESSION_NAME'" 2>/dev/null
+    exit 1
+fi
+
 # Pin the name. The "---" window is always created and pinned, regardless of
 # the editor choice — the "none" sentinel means nothing is sent to it, not
 # that it does not exist, so the workspace shape stays the one default shape.
@@ -199,6 +209,14 @@ fi
 # Create "claude" window (next available index after the editor window).
 WIN_ID_CLAUDE=$(_tmux new-window -t "$SESSION_NAME" -n "claude" -c "$PROJECT_DIR" \
     -P -F '#{window_id}')
+# Same empty-target trap as above, and this one is reachable even on a session
+# tmux DID create: a name holding a ":" makes "-t <name>" parse as
+# session:window, so new-window fails with "can't find window: …" while the
+# session itself exists.
+if [ -z "$WIN_ID_CLAUDE" ]; then
+    _tmux display-message "clux: could not add the claude window to '$SESSION_NAME'" 2>/dev/null
+    exit 1
+fi
 _tmux set-option -w -t "$WIN_ID_CLAUDE" automatic-rename off
 if [ "$AGENTS_CMD" != "none" ]; then
     _tmux send-keys -t "$WIN_ID_CLAUDE" "$AGENTS_CMD" Enter

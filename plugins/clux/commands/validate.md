@@ -562,6 +562,22 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    STATE_DIR=$(tmux show-option -gqv @clux-agent-state-dir)
    [ -n "$STATE_DIR" ] || STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents"
    [ -d "$STATE_DIR" ] && echo "OK  agent state dir exists ($STATE_DIR)" || echo "INFO agent state dir not yet created ($STATE_DIR — created on first hook fire)"
+   # State files sit one level down, under a directory named for the tmux
+   # server that owns the pane — a pane id repeats across servers, so it is not
+   # a key on its own. Report THIS server's directory: "the root exists but
+   # holds nothing of mine" is the state a puzzled user is actually in.
+   SRV=$(tmux display-message -p '#{pid}-#{start_time}' 2>/dev/null)
+   if [ -n "$SRV" ]; then
+       if [ -d "$STATE_DIR/$SRV" ]; then
+           echo "OK  this tmux server's store ($STATE_DIR/$SRV, $(find "$STATE_DIR/$SRV" -type f 2>/dev/null | wc -l | tr -d ' ') file(s))"
+       else
+           echo "INFO this tmux server has no store yet ($STATE_DIR/$SRV — created on first hook fire)"
+       fi
+       # Unscoped files are what clux <= 3.3.0 wrote. The reaper deletes them
+       # on its next run, because nothing records which server they came from.
+       OLD=$(find "$STATE_DIR" -maxdepth 1 -type f -name '%*' 2>/dev/null | wc -l | tr -d ' ')
+       [ "$OLD" -gt 0 ] && echo "INFO $OLD unscoped state file(s) from an older clux (removed on the next hook fire)"
+   fi
    ```
 9. **Leftovers from a hand-written setup** (INFO/WARN only — clux never deletes outside a confirmed migration):
    ```bash

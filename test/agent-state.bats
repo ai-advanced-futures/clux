@@ -15,6 +15,13 @@ AGENT_QUERY="$SCRIPTS_DIR/agent-query.sh"
 AGENT_BAR="$SCRIPTS_DIR/agent-bar.sh"
 AGENT_CLEAR="$SCRIPTS_DIR/agent-clear.sh"
 
+# State files live under a directory named for the tmux server that owns the
+# pane, because a pane id repeats across servers (path.sh,
+# resolve_agent_server_key). The stub below reports this key for every server
+# question, so the tests address "$dir/$SRV/%1". Cross-server behaviour needs
+# two real servers and is covered in agent-state-server-scope.bats.
+SRV="4242-1700000000"
+
 # ---------------------------------------------------------------------------
 # _write_agent_tmux_stub — canned tmux answering list-panes (full join row,
 # bare pane-id row, and windowed row), display-message, and show-option, from
@@ -28,14 +35,33 @@ AGENT_CLEAR="$SCRIPTS_DIR/agent-clear.sh"
 # while this function writes the stub — they must survive to be evaluated by
 # the stub script itself, at run time, against its own environment. Precedent:
 # _write_tmux_stub in e2e-agent-lifecycle.bats.
+#
+# Every pane listing now leads with the server key. The stub PREPENDS it rather
+# than making each test carry it, so the FAKE_* fixtures stay readable and say
+# only what their test is about. FAKE_SERVER_KEY overrides it, which is how a
+# test can present a listing from a different server.
 # ---------------------------------------------------------------------------
 _write_agent_tmux_stub() {
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+_srv="${FAKE_SERVER_KEY:-4242-1700000000}"
+# Prepend the server key to each row of a listing, with the given separator.
+_lead() {
+    local sep="$1" line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf '%s%s%s\n' "$_srv" "$sep" "$line"
+    done
+}
 case "$*" in
-    "list-panes -a -F #{pane_id}|#{session_name}")
-        [ -n "${FAKE_PANES_FULL:-}" ] && printf '%s\n' "$FAKE_PANES_FULL"
+    "display-message -p #{pid}-#{start_time}")
+        # resolve_agent_server_key. Matched BEFORE the generic display-message
+        # arm below, which answers a different question entirely.
+        printf '%s\n' "$_srv"
+        ;;
+    "list-panes -a -F #{pid}-#{start_time}|#{pane_id}|#{session_name}")
+        [ -n "${FAKE_PANES_FULL:-}" ] && printf '%s\n' "$FAKE_PANES_FULL" | _lead '|'
         ;;
     "list-panes -a -F #{pane_pid}"*)
         # resolve_agents_pane_by_cwd's 5-column tab-joined format. Matched by
@@ -43,11 +69,12 @@ case "$*" in
         # contains literal tabs, which are fragile to carry in a case pattern.
         [ -n "${FAKE_PANES_RESOLVE:-}" ] && printf '%s\n' "$FAKE_PANES_RESOLVE"
         ;;
-    "list-panes -a -F #{pane_id}")
-        [ -n "${FAKE_PANE_IDS:-}" ] && printf '%s\n' "$FAKE_PANE_IDS"
+    "list-panes -a -F #{pid}-#{start_time} #{pane_id}")
+        # the reaper's listing — one round-trip for the key and the live panes
+        [ -n "${FAKE_PANE_IDS:-}" ] && printf '%s\n' "$FAKE_PANE_IDS" | _lead ' '
         ;;
     "list-panes -t "*)
-        [ -n "${FAKE_WINDOW_PANES:-}" ] && printf '%s\n' "$FAKE_WINDOW_PANES"
+        [ -n "${FAKE_WINDOW_PANES:-}" ] && printf '%s\n' "$FAKE_WINDOW_PANES" | _lead '|'
         ;;
     "display-message "*)
         [ -n "${FAKE_WINDOW_ID:-}" ] && printf '%s\n' "$FAKE_WINDOW_ID"
@@ -92,7 +119,7 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/%1")" = "busy" ]
+    [ "$(cat "$dir/$SRV/%1")" = "busy" ]
 }
 
 @test "writer: Notification permission_prompt writes needs-you" {
@@ -106,7 +133,7 @@ STUBEOF
         printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%2 '$AGENT_HOOK' needs-you
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/%2")" = "needs-you" ]
+    [ "$(cat "$dir/$SRV/%2")" = "needs-you" ]
 }
 
 @test "writer: Notification idle_prompt writes needs-you" {
@@ -120,13 +147,13 @@ STUBEOF
         printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%2 '$AGENT_HOOK' needs-you
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/%2")" = "needs-you" ]
+    [ "$(cat "$dir/$SRV/%2")" = "needs-you" ]
 }
 
 @test "writer: Notification auth_success is a no-op (existing state untouched)" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%3"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%3"
     local JSON='{"hook_event_name":"Notification","notification_type":"auth_success","session_id":"s1"}'
     _write_agent_tmux_stub
     run bash -c "
@@ -137,7 +164,7 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     # Falsifiable: must still read 'busy', not 'needs-you' and not deleted.
-    [ "$(cat "$dir/%3")" = "busy" ]
+    [ "$(cat "$dir/$SRV/%3")" = "busy" ]
 }
 
 @test "writer: Notification with no notification_type field writes needs-you (grep-fallback parity)" {
@@ -151,7 +178,7 @@ STUBEOF
         printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%4 '$AGENT_HOOK' needs-you
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/%4")" = "needs-you" ]
+    [ "$(cat "$dir/$SRV/%4")" = "needs-you" ]
 }
 
 @test "writer: finished overwrites busy in place — exactly one file, atomic (no .tmp leftover)" {
@@ -165,9 +192,9 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%5 '$AGENT_HOOK' finished
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/%5")" = "finished" ]
+    [ "$(cat "$dir/$SRV/%5")" = "finished" ]
     # Atomicity proxy: no orphaned temp file, exactly one entry in the dir.
-    [ "$(find "$dir" -maxdepth 1 -type f | wc -l)" -eq 1 ]
+    [ "$(find "$dir/$SRV" -maxdepth 1 -type f | wc -l)" -eq 1 ]
     run bash -c "find '$dir' -maxdepth 1 -name '.tmp.*'"
     [ -z "$output" ]
 }
@@ -183,7 +210,7 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%6 '$AGENT_HOOK' remove
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/%6" ]
+    [ ! -f "$dir/$SRV/%6" ]
 
     run bash -c "
         export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
@@ -193,7 +220,7 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%7 '$AGENT_HOOK' end
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/%7" ]
+    [ ! -f "$dir/$SRV/%7" ]
 }
 
 @test "writer: unknown argument is a silent no-op and exits 0" {
@@ -208,7 +235,7 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     # No word is recognised for an unknown arg, so no pane file is ever written.
-    [ ! -f "$dir/%8" ]
+    [ ! -f "$dir/$SRV/%8" ]
 }
 
 @test "writer: TMUX unset — exits 0, silent, writes nothing, no state dir created" {
@@ -254,10 +281,10 @@ STUBEOF
 
 @test "writer: reaps state files for dead panes" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"
-    printf 'busy\n' > "$dir/%2"
-    printf 'finished\n' > "$dir/%99"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"
+    printf 'busy\n' > "$dir/$SRV/%2"
+    printf 'finished\n' > "$dir/$SRV/%99"
     _write_agent_tmux_stub
     run bash -c "
         export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
@@ -267,15 +294,15 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%1" ]
-    [ -f "$dir/%2" ]
-    [ ! -f "$dir/%99" ]
+    [ -f "$dir/$SRV/%1" ]
+    [ -f "$dir/$SRV/%2" ]
+    [ ! -f "$dir/$SRV/%99" ]
 }
 
 @test "writer: does NOT reap when tmux list-panes returns empty (wipe-everything guard)" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%99"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%99"
     _write_agent_tmux_stub
     # FAKE_PANE_IDS deliberately unset — stub answers empty for list-panes -a.
     run bash -c "
@@ -285,7 +312,7 @@ STUBEOF
         printf '' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' busy
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%99" ]
+    [ -f "$dir/$SRV/%99" ]
 }
 
 @test "writer: default refresh command is run after a write" {
@@ -340,15 +367,15 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     [ -z "$output" ]
-    [ "$(cat "$dir/agents/%9~abcd-1234")" = "busy" ]
+    [ "$(cat "$dir/$SRV/agents/%9~abcd-1234")" = "busy" ]
     # The resolve path did scan the process table.
     grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
 }
 
 @test "writer(detached): a cached file makes the next event skip ps entirely" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n' > "$dir/$SRV/agents/%9~abcd-1234"
     local JSON='{"hook_event_name":"Stop","session_id":"abcd-1234","cwd":"/fake/proj"}'
     _write_agent_tmux_stub
     _write_agent_ps_stub
@@ -360,7 +387,7 @@ STUBEOF
         printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' finished
     "
     [ "$status" -eq 0 ]
-    [ "$(cat "$dir/agents/%9~abcd-1234")" = "finished" ]
+    [ "$(cat "$dir/$SRV/agents/%9~abcd-1234")" = "finished" ]
     # The pane came from the file NAME — the per-session ps scan must not
     # repeat on every event. This is the once-per-agent-session guarantee.
     ! grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
@@ -368,8 +395,8 @@ STUBEOF
 
 @test "writer(detached): remove deletes the cached file and never scans" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n' > "$dir/$SRV/agents/%9~abcd-1234"
     local JSON='{"hook_event_name":"SessionEnd","session_id":"abcd-1234","cwd":"/fake/proj"}'
     _write_agent_tmux_stub
     _write_agent_ps_stub
@@ -381,7 +408,7 @@ STUBEOF
         printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' remove
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/agents/%9~abcd-1234" ]
+    [ ! -f "$dir/$SRV/agents/%9~abcd-1234" ]
     ! grep -q "^ps " "$BATS_TEST_TMPDIR/stub.log"
 }
 
@@ -440,8 +467,8 @@ STUBEOF
 
 @test "writer(detached): a stale cached pane self-heals — write, then the reap deletes it" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n' > "$dir/agents/%9~abcd-1234"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n' > "$dir/$SRV/agents/%9~abcd-1234"
     local JSON='{"hook_event_name":"UserPromptSubmit","session_id":"abcd-1234","cwd":"/fake/proj"}'
     _write_agent_tmux_stub
     _write_agent_ps_stub
@@ -456,7 +483,7 @@ STUBEOF
         printf '%s' '$JSON' | env -u TMUX -u TMUX_PANE '$AGENT_HOOK' busy
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/agents/%9~abcd-1234" ]
+    [ ! -f "$dir/$SRV/agents/%9~abcd-1234" ]
 }
 
 # ===========================================================================
@@ -465,10 +492,10 @@ STUBEOF
 
 @test "reader: rollup precedence needs-you > busy > finished, idle unlisted" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'needs-you\n' > "$dir/%1"
-    printf 'busy\n' > "$dir/%2"
-    printf 'finished\n' > "$dir/%3"
+    mkdir -p "$dir/$SRV"
+    printf 'needs-you\n' > "$dir/$SRV/%1"
+    printf 'busy\n' > "$dir/$SRV/%2"
+    printf 'finished\n' > "$dir/$SRV/%3"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -482,8 +509,8 @@ STUBEOF
 
 @test "reader: drops a state file whose pane is gone from the listing" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%5"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%5"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -494,13 +521,13 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     # Ignored, not deleted.
-    [ -f "$dir/%5" ]
+    [ -f "$dir/$SRV/%5" ]
 }
 
 @test "reader: pane in listing with no state file is not reported" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -514,8 +541,8 @@ STUBEOF
 
 @test "reader: never asks tmux for pane_current_command (the always-empty-bar regression)" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -549,14 +576,14 @@ STUBEOF
 
 @test "reader: never creates or deletes anything (falsifiable byte-identical snapshot)" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"          # live pane — will be printed
-    printf 'finished\n' > "$dir/%99"     # stale (pane gone) — must survive, untouched
-    printf 'needs-you\n' > "$dir/%8"     # live pane — reported, and still never touched
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"          # live pane — will be printed
+    printf 'finished\n' > "$dir/$SRV/%99"     # stale (pane gone) — must survive, untouched
+    printf 'needs-you\n' > "$dir/$SRV/%8"     # live pane — reported, and still never touched
     _write_agent_tmux_stub
 
     local before after
-    before="$(find "$dir" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir"/*)"
+    before="$(find "$dir/$SRV" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir/$SRV"/*)"
 
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -568,18 +595,18 @@ STUBEOF
     # %1=busy and %8=needs-you both roll up under session "alpha"; needs-you wins.
     [ "$output" = "$(printf 'alpha\tneeds-you')" ]
 
-    after="$(find "$dir" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir"/*)"
+    after="$(find "$dir/$SRV" -maxdepth 1 -type f | LC_ALL=C sort)$(cat "$dir/$SRV"/*)"
     [ "$before" = "$after" ]
-    [ -f "$dir/%99" ]
-    [ -f "$dir/%8" ]
+    [ -f "$dir/$SRV/%99" ]
+    [ -f "$dir/$SRV/%8" ]
 }
 
 @test "reader: dashboard column rolls up its agents — needs-you beats busy beats finished" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'needs-you\n' > "$dir/agents/%47~aa11"
-    printf 'busy\n'      > "$dir/agents/%47~bb22"
-    printf 'finished\n'  > "$dir/agents/%47~cc33"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'needs-you\n' > "$dir/$SRV/agents/%47~aa11"
+    printf 'busy\n'      > "$dir/$SRV/agents/%47~bb22"
+    printf 'finished\n'  > "$dir/$SRV/agents/%47~cc33"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -594,9 +621,9 @@ STUBEOF
 
 @test "reader: dashboard shows finished only when every agent finished" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'finished\n' > "$dir/agents/%47~aa11"
-    printf 'finished\n' > "$dir/agents/%47~bb22"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'finished\n' > "$dir/$SRV/agents/%47~aa11"
+    printf 'finished\n' > "$dir/$SRV/agents/%47~bb22"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -610,9 +637,9 @@ STUBEOF
 
 @test "reader: interactive pane files and agent files join in one listing" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n'     > "$dir/%26"
-    printf 'finished\n' > "$dir/agents/%47~aa11"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n'     > "$dir/$SRV/%26"
+    printf 'finished\n' > "$dir/$SRV/agents/%47~aa11"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -626,8 +653,8 @@ STUBEOF
 
 @test "reader: agent file whose pane left the listing is skipped, never deleted" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n' > "$dir/agents/%9~aa11"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n' > "$dir/$SRV/agents/%9~aa11"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -638,7 +665,7 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     # Ignored, not deleted — reaping is a writer's job.
-    [ -f "$dir/agents/%9~aa11" ]
+    [ -f "$dir/$SRV/agents/%9~aa11" ]
 }
 
 # ===========================================================================
@@ -647,8 +674,8 @@ STUBEOF
 
 @test "renderer: one-argument mode prints exactly the coloured glyph for a needs-you session" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'needs-you\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'needs-you\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -662,7 +689,7 @@ STUBEOF
 
 @test "renderer: one-argument mode prints a single space for an idle/unknown session" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
+    mkdir -p "$dir/$SRV"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -676,8 +703,8 @@ STUBEOF
 
 @test "renderer: glyph/color options are honoured" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'needs-you\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'needs-you\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -692,7 +719,7 @@ STUBEOF
 
 @test "renderer: no-argument rollup is empty when every session is idle" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
+    mkdir -p "$dir/$SRV"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -709,10 +736,10 @@ STUBEOF
 
 @test "clear: removes only 'finished' files for panes in the given window; busy and out-of-window files survive" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%1"   # in-window, finished -> must be removed
-    printf 'busy\n' > "$dir/%2"       # in-window, busy -> must survive
-    printf 'finished\n' > "$dir/%3"   # NOT in window -> must survive
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%1"   # in-window, finished -> must be removed
+    printf 'busy\n' > "$dir/$SRV/%2"       # in-window, busy -> must survive
+    printf 'finished\n' > "$dir/$SRV/%3"   # NOT in window -> must survive
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -721,16 +748,16 @@ STUBEOF
         '$AGENT_CLEAR' '@1'
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/%1" ]
-    [ -f "$dir/%2" ]
-    [ -f "$dir/%3" ]
+    [ ! -f "$dir/$SRV/%1" ]
+    [ -f "$dir/$SRV/%2" ]
+    [ -f "$dir/$SRV/%3" ]
 }
 
 @test "clear: refreshes the bar after it removes a mark, honouring the refresh option" {
     local dir="$BATS_TEST_TMPDIR/agents"
     local log="$BATS_TEST_TMPDIR/stub.log"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -741,15 +768,15 @@ STUBEOF
         '$AGENT_CLEAR' '@1'
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/%1" ]
+    [ ! -f "$dir/$SRV/%1" ]
     grep -qF "tmux run-shell -b /rebuild-bar" "$log" || false
 }
 
 @test "clear: does NOT refresh when it removed nothing" {
     local dir="$BATS_TEST_TMPDIR/agents"
     local log="$BATS_TEST_TMPDIR/stub.log"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"   # not 'finished' -> nothing to clear
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"   # not 'finished' -> nothing to clear
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -759,7 +786,7 @@ STUBEOF
         '$AGENT_CLEAR' '@1'
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%1" ]
+    [ -f "$dir/$SRV/%1" ]
     # A window switch that changes nothing must cost no rebuild of the bar.
     run grep -cF "refresh-client" "$log"
     [ "$output" = "0" ]
@@ -767,8 +794,8 @@ STUBEOF
 
 @test "clear: empty argument falls back to display-message and still clears" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -780,13 +807,13 @@ STUBEOF
     "
     [ "$status" -eq 0 ]
     grep -qF "display-message" "$BATS_TEST_TMPDIR/stub.log" || false
-    [ ! -f "$dir/%1" ]
+    [ ! -f "$dir/$SRV/%1" ]
 }
 
 @test "clear: unresolvable window exits 0 and deletes nothing" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%1"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%1"
     _write_agent_tmux_stub
     # FAKE_WINDOW_ID deliberately unset — display-message answers empty.
     run bash -c "
@@ -795,15 +822,15 @@ STUBEOF
         '$AGENT_CLEAR' ''
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%1" ]
+    [ -f "$dir/$SRV/%1" ]
 }
 
 @test "clear --reap: deletes only dead-pane files server-wide" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'busy\n' > "$dir/%1"
-    printf 'busy\n' > "$dir/%2"
-    printf 'finished\n' > "$dir/%99"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%1"
+    printf 'busy\n' > "$dir/$SRV/%2"
+    printf 'finished\n' > "$dir/$SRV/%99"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -812,15 +839,15 @@ STUBEOF
         '$AGENT_CLEAR' --reap
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%1" ]
-    [ -f "$dir/%2" ]
-    [ ! -f "$dir/%99" ]
+    [ -f "$dir/$SRV/%1" ]
+    [ -f "$dir/$SRV/%2" ]
+    [ ! -f "$dir/$SRV/%99" ]
 }
 
 @test "clear --reap: an empty pane listing deletes nothing" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir"
-    printf 'finished\n' > "$dir/%99"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%99"
     _write_agent_tmux_stub
     # FAKE_PANE_IDS deliberately unset.
     run bash -c "
@@ -829,15 +856,15 @@ STUBEOF
         '$AGENT_CLEAR' --reap
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/%99" ]
+    [ -f "$dir/$SRV/%99" ]
 }
 
 @test "clear: finished agent files clear on window view; busy and out-of-window survive" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'finished\n' > "$dir/agents/%1~aa11"   # in-window, finished -> removed
-    printf 'busy\n'     > "$dir/agents/%1~bb22"   # in-window, busy -> survives
-    printf 'finished\n' > "$dir/agents/%2~cc33"   # NOT in window -> survives
+    mkdir -p "$dir/$SRV/agents"
+    printf 'finished\n' > "$dir/$SRV/agents/%1~aa11"   # in-window, finished -> removed
+    printf 'busy\n'     > "$dir/$SRV/agents/%1~bb22"   # in-window, busy -> survives
+    printf 'finished\n' > "$dir/$SRV/agents/%2~cc33"   # NOT in window -> survives
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -846,16 +873,16 @@ STUBEOF
         '$AGENT_CLEAR' '@1'
     "
     [ "$status" -eq 0 ]
-    [ ! -f "$dir/agents/%1~aa11" ]
-    [ -f "$dir/agents/%1~bb22" ]
-    [ -f "$dir/agents/%2~cc33" ]
+    [ ! -f "$dir/$SRV/agents/%1~aa11" ]
+    [ -f "$dir/$SRV/agents/%1~bb22" ]
+    [ -f "$dir/$SRV/agents/%2~cc33" ]
 }
 
 @test "clear --reap: sweeps agent files of dead dashboard panes, keeps live ones" {
     local dir="$BATS_TEST_TMPDIR/agents"
-    mkdir -p "$dir/agents"
-    printf 'busy\n' > "$dir/agents/%1~aa11"
-    printf 'busy\n' > "$dir/agents/%99~bb22"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n' > "$dir/$SRV/agents/%1~aa11"
+    printf 'busy\n' > "$dir/$SRV/agents/%99~bb22"
     _write_agent_tmux_stub
     run bash -c "
         export CLUX_AGENT_STATE_DIR='$dir'
@@ -864,8 +891,8 @@ STUBEOF
         '$AGENT_CLEAR' --reap
     "
     [ "$status" -eq 0 ]
-    [ -f "$dir/agents/%1~aa11" ]
-    [ ! -f "$dir/agents/%99~bb22" ]
+    [ -f "$dir/$SRV/agents/%1~aa11" ]
+    [ ! -f "$dir/$SRV/agents/%99~bb22" ]
     # The agents/ directory entry itself never trips the flat loop.
-    [ -d "$dir/agents" ]
+    [ -d "$dir/$SRV/agents" ]
 }

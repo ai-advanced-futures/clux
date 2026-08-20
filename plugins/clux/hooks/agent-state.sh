@@ -7,9 +7,11 @@
 # GOVERNING PRINCIPLE: STATE LIVES IN FILES. HOOKS WRITE THOSE FILES. THE BAR
 # ONLY READS. This script is the only writer on the Claude Code side.
 #
-# Two kinds of session, two keys, one store:
-#   interactive (TMUX + TMUX_PANE set)  ->  $STATE_DIR/<pane_id>
-#   detached agent (neither set)        ->  $STATE_DIR/agents/<pane_id>~<session_id>
+# Two kinds of session, two keys, one store. $STORE is the store root plus the
+# key of the tmux server that owns the pane (resolve_agent_server_key, path.sh)
+# — a pane id repeats across servers, so it is not a key on its own:
+#   interactive (TMUX + TMUX_PANE set)  ->  $STORE/<pane_id>
+#   detached agent (neither set)        ->  $STORE/agents/<pane_id>~<session_id>
 # where <pane_id> for a detached agent is the pane of the `claude agents`
 # dashboard that owns it (resolve_agents_pane_by_cwd, path.sh). The pane id in
 # the file NAME is what lets the bar draw the mark on the dashboard's session
@@ -85,6 +87,22 @@ source "$CURRENT_DIR/../scripts/path.sh"
 STATE_DIR="$(resolve_agent_state_dir)"
 [ -n "$STATE_DIR" ] || exit 0
 
+# Which server's namespace this pane id belongs to. Resolved before any other
+# key work because BOTH paths need it — the detached path's cache glob lives
+# inside $STORE too. Costs one tmux round-trip on every fire; the reap and the
+# refresh at the bottom already make three between them.
+#
+# No key means no tmux server answering, and a state file written outside a
+# server directory is a file nobody can attribute later. Writing nothing is
+# right: the next event, from a session that does have a server, writes it.
+#
+# Detached: with TMUX unset this resolves the DEFAULT socket's server, which is
+# the same server resolve_agents_pane_by_cwd() lists panes from below, so the
+# pane and the key can never come from different servers.
+SRV="$(resolve_agent_server_key)"
+[ -n "$SRV" ] || exit 0
+STORE="$STATE_DIR/$SRV"
+
 # --- Key resolution ---------------------------------------------------------
 
 # Read session_id from the payload with pure bash. A session id is a UUID —
@@ -106,7 +124,7 @@ _agent_session_id() {
 # reaps, and a stale hit self-heals (see the write below).
 _agent_cached_key() {
     local f
-    for f in "$STATE_DIR/agents/"*"~$1"; do
+    for f in "$STORE/agents/"*"~$1"; do
         [ -f "$f" ] || return 0
         printf '%s' "agents/${f##*/}"
         return 0
@@ -134,9 +152,9 @@ _agent_resolve_key() {
 }
 
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
-    # Interactive path — unchanged: the store is keyed by this pane.
+    # Interactive path: this pane, in this server's namespace.
     KEY="$TMUX_PANE"
-    mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+    mkdir -p "$STORE" 2>/dev/null || exit 0
 else
     SID="$(_agent_session_id)"
     [ -n "$SID" ] || exit 0
@@ -148,18 +166,18 @@ else
         KEY="$(_agent_resolve_key "$SID")"
         [ -n "$KEY" ] || exit 0
     fi
-    mkdir -p "$STATE_DIR/agents" 2>/dev/null || exit 0
+    mkdir -p "$STORE/agents" 2>/dev/null || exit 0
 fi
 
 # --- Write ------------------------------------------------------------------
 
 if [ -n "$WORD" ]; then
-    TMP="$STATE_DIR/.tmp.$$"
+    TMP="$STORE/.tmp.$$"
     printf '%s\n' "$WORD" > "$TMP" 2>/dev/null || exit 0
-    mv -f "$TMP" "$STATE_DIR/$KEY" 2>/dev/null
+    mv -f "$TMP" "$STORE/$KEY" 2>/dev/null
     rm -f "$TMP" 2>/dev/null
 else
-    rm -f "$STATE_DIR/$KEY" 2>/dev/null
+    rm -f "$STORE/$KEY" 2>/dev/null
 fi
 
 # Reap — the writer's job, done opportunistically. Shared with agent-clear.sh

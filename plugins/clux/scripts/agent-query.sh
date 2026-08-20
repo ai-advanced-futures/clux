@@ -19,6 +19,11 @@
 # binary's own command name (e.g. `2.1.233` on many installs) is NOT
 # consulted.
 #
+# Only THIS tmux server's state is read. Pane ids repeat across servers — two
+# servers both start at %0 — so the store is one directory per server and this
+# reads exactly one of them. Another server's agents are that server's bar to
+# draw, and its session names are not even resolvable from here.
+#
 # Detached agents contribute through a second pass: agents/<pane>~<sid> files
 # rank into the session that owns <pane> (the `claude agents` dashboard's
 # pane), and the existing max-rank roll-up then gives a dashboard column
@@ -34,18 +39,32 @@ source "$CURRENT_DIR/path.sh"
 STATE_DIR="$(resolve_agent_state_dir)"
 [ -d "$STATE_DIR" ] || exit 0
 
-PANES=$(tmux list-panes -a -F '#{pane_id}|#{session_name}' 2>/dev/null)
+# The server key leads every row. It is the same on all of them — one server
+# answers one listing — so it costs nothing to ask for, and it is what keeps
+# this bar from reading the state of a Claude running under a DIFFERENT tmux
+# server, which numbers its panes from %0 exactly as this one does. This is the
+# hottest path in clux (one run per status redraw, per client), so the key is
+# folded into the format already being fetched rather than asked for
+# separately.
+PANES=$(tmux list-panes -a -F '#{pid}-#{start_time}|#{pane_id}|#{session_name}' 2>/dev/null)
 [ -n "$PANES" ] || exit 0
+
+SRV="${PANES%%|*}"
+_clux_valid_server_key "$SRV" || exit 0
+STORE="$STATE_DIR/$SRV"
+[ -d "$STORE" ] || exit 0
 
 ROWS=""
 while IFS= read -r line; do
     [ -n "$line" ] || continue
+    # Drop the leading server key, which is constant across the listing.
+    line="${line#*|}"
     # pane_id has no '|'; session_name may — so split on the first '|' only.
     pane="${line%%|*}"
     sess="${line#*|}"
 
     [ -n "$pane" ] || continue
-    f="$STATE_DIR/$pane"
+    f="$STORE/$pane"
     IFS= read -r st 2>/dev/null < "$f" || continue
     st="${st//[[:space:]]/}"
 
@@ -65,7 +84,7 @@ EOF
 # Second pass: detached-agent files. The pane id comes from the file NAME
 # (before the '~'), so the join against the listing is the same exact-name
 # lookup — no tmux call and no ps call is added.
-for f in "$STATE_DIR"/agents/*; do
+for f in "$STORE"/agents/*; do
     [ -f "$f" ] || continue
     base="${f##*/}"
     case "$base" in
@@ -87,6 +106,7 @@ for f in "$STATE_DIR"/agents/*; do
     sess=""
     while IFS= read -r line; do
         [ -n "$line" ] || continue
+        line="${line#*|}"          # drop the leading server key
         if [ "${line%%|*}" = "$pane" ]; then
             sess="${line#*|}"
             break

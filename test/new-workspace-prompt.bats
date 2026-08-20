@@ -136,3 +136,13 @@ _run_in_pty() {
     _run_in_pty "bad#name"
     [ ! -s "$RECORD" ] || { echo "# accepted: $(cat "$RECORD")"; false; }
 }
+
+# tmux ACCEPTS a colon in a session name but reads it as the session/window
+# separator in every target, so "a:b" builds a workspace nothing can address:
+# has-session says "can't find session: a", new-window says "can't find
+# window: b". The name has to be refused here, before new-workspace.sh runs.
+@test "new-workspace-prompt: a name containing a colon is rejected" {
+    _stage
+    _run_in_pty "bad:name"
+    [ ! -s "$RECORD" ] || { echo "colon accepted: $(cat "$RECORD")"; false; }
+}

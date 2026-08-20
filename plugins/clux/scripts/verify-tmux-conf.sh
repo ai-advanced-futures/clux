@@ -24,12 +24,21 @@
 # through that client's own command queue, and `cmdq_error` reaches it —
 # confirmed against an invalid option (exit 1, "invalid option: …" on
 # stderr), an unclosed brace (exit 1, "<file>:<line>: syntax error"), and a
-# clean file (exit 0, silent). So this script starts the throwaway server
-# with NO `-f` (a bare `new-session -d`, which always succeeds — it carries
-# none of the candidate's content), then `source-file`s the candidate into
-# that live server. Same throwaway `-L` socket, same "cannot disturb a live
-# session" guarantee, same two tmux calls in spirit — just reordered so the
-# parse actually happens on a queue that reports back.
+# clean file (exit 0, silent). So this script starts the throwaway server with
+# `-f /dev/null` (an EMPTY config, which always succeeds — it carries none of
+# the candidate's content), then `source-file`s the candidate into that live
+# server. Same throwaway `-L` socket, same "cannot disturb a live session"
+# guarantee, same two tmux calls in spirit — just reordered so the parse
+# actually happens on a queue that reports back.
+#
+# `-f /dev/null` is load-bearing, not tidiness. WITHOUT it tmux loads the
+# user's own ~/.tmux.conf into the "throwaway" server, so: the previous
+# clux.tmux.conf is sourced through that file's own `source-file` line and its
+# bindings and hooks are already in place before the candidate is read; a
+# plugin manager line (`run-shell ~/.tmux/plugins/tpm/tpm`) runs in full on
+# every single call, and the corpus test loop makes nine of them; and a
+# candidate that only parses because the user's file already defined an option
+# verifies clean. The server must carry nothing but the candidate.
 #
 # A real client must be attached before that source-file runs, because
 # `cmdq_error` is delivered to a client: with nobody attached the parse error
@@ -67,6 +76,7 @@ CONF="${1:-}"
 CLIENT_PID=""
 STDIN_DIR=""
 SOCKET_PATH=""
+STATE_DIR=""
 
 if [ -z "$CONF" ]; then
     echo "verify-tmux-conf.sh: usage: verify-tmux-conf.sh <path-to-candidate-config>" >&2
@@ -97,6 +107,7 @@ cleanup() {
     # the directory takes the fifo with it. Nothing of ours outlives this.
     exec 3>&- 2>/dev/null || true
     [ -n "$STDIN_DIR" ] && rm -rf "$STDIN_DIR" >/dev/null 2>&1
+    [ -n "$STATE_DIR" ] && rm -rf "$STATE_DIR" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
@@ -104,9 +115,30 @@ trap cleanup EXIT
 # reaching cleanup() — never touches the user's real socket.
 tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
 
-if ! tmux -L "$SOCKET" new-session -d 2>/dev/null; then
+# Named, not left to tmux's "0" default: the attach below has to name this
+# session, and "0" is only its name while nothing else claims it.
+SESSION="clux-verify"
+
+# `-f /dev/null` above keeps the USER'S tmux.conf out of this server, but the
+# candidate reaches the same reap by its own route: `clux.tmux.conf` ends with
+# `run-shell agent-clear.sh --reap`, and the `source-file` below really does run
+# it. Server scoping (3.4.0) already stops that reap from touching a live
+# server's directory, so what is left is the legacy sweep — which would delete
+# the unscoped files a still-running 3.3.0 server owns, during a VERIFICATION.
+# A verification must not write to the user's store at all. Point the store at a
+# scratch directory instead: exported before the server starts, since the server
+# hands its own environ to every run-shell child, and set on the server as well
+# so a child that inherits nothing still reads it.
+STATE_DIR="$(mktemp -d 2>/dev/null)" || STATE_DIR=""
+[ -n "$STATE_DIR" ] && export CLUX_AGENT_STATE_DIR="$STATE_DIR"
+
+if ! tmux -L "$SOCKET" -f /dev/null new-session -d -s "$SESSION" 2>/dev/null; then
     echo "verify-tmux-conf.sh: could not start the throwaway tmux server" >&2
     exit 1
+fi
+
+if [ -n "$STATE_DIR" ]; then
+    tmux -L "$SOCKET" set-environment -g CLUX_AGENT_STATE_DIR "$STATE_DIR" 2>/dev/null
 fi
 
 # Asked of the live server rather than rebuilt from $TMUX_TMPDIR/$UID by hand,
@@ -128,17 +160,35 @@ SOCKET_PATH="$(tmux -L "$SOCKET" display-message -p '#{socket_path}' 2>/dev/null
 STDIN_DIR="$(mktemp -d 2>/dev/null)" || STDIN_DIR=""
 if [ -n "$STDIN_DIR" ] && mkfifo "$STDIN_DIR/stdin" 2>/dev/null; then
     exec 3<>"$STDIN_DIR/stdin"
-    tmux -L "$SOCKET" -C attach-session -t 0 <"$STDIN_DIR/stdin" >/dev/null 2>&1 &
+    tmux -L "$SOCKET" -C attach-session -t "=$SESSION" <"$STDIN_DIR/stdin" >/dev/null 2>&1 &
     CLIENT_PID=$!
 else
     echo "verify-tmux-conf.sh: could not create the control client's stdin fifo" >&2
     exit 1
 fi
 
-# Give the control client a moment to register as attached before the parse
-# runs — cheap (well under the interval a human would notice) and this is a
-# one-shot verify, not a hot path.
-sleep 0.3
+# WAIT for the client to register as attached, rather than sleeping a fixed
+# amount and hoping. A fixed sleep is a race in both directions: too short on a
+# loaded machine and the parse runs with no client, which sends every error
+# nowhere and reports a BROKEN config as clean — the exact failure of the
+# verify_config() this script replaces; too long and every call pays for the
+# worst case. Poll instead, and treat "still no client" as this script's own
+# failure, because a silent clean answer would be a lie.
+attached=""
+i=0
+while [ "$i" -lt 100 ]; do
+    if [ -n "$(tmux -L "$SOCKET" list-clients -F '#{client_name}' 2>/dev/null)" ]; then
+        attached=1
+        break
+    fi
+    sleep 0.05
+    i=$((i + 1))
+done
+
+if [ -z "$attached" ]; then
+    echo "verify-tmux-conf.sh: no client attached to the throwaway server — cannot verify" >&2
+    exit 1
+fi
 
 ERR="$(tmux -L "$SOCKET" source-file "$CONF" 2>&1)"
 STATUS=$?

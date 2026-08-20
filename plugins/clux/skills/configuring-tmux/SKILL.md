@@ -502,7 +502,7 @@ When clux renders the session list, the per-session agent column is already part
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | where per-pane state files live |
+| `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | root of the state store; files live one level down, under a directory per tmux server |
 | `@clux-agent-glyph-busy` | `*` | glyph shown while Claude is working |
 | `@clux-agent-glyph-needs` | `!` | glyph shown when Claude needs your input |
 | `@clux-agent-glyph-done` | `v` | glyph shown when Claude finished |
@@ -784,11 +784,10 @@ The config repo copy (`404pilo/config`) is **not** touched. Committing the slimm
 
 ```bash
 # Redirect to a FILE. Never capture this with $( ) — verify-tmux-conf.sh
-# attaches a throwaway control client whose stdin is held open by a background
-# `tail -f /dev/null`, and that process outlives the script. A command
-# substitution waits for EVERY writer on the pipe, so it blocks forever on the
-# leftover tail even though the verify itself finished in a fraction of a
-# second. A file redirect gives the leftover process a file to hold instead.
+# attaches a throwaway control client in the BACKGROUND, and a command
+# substitution waits for every writer on the pipe, so it can block on that
+# client rather than on the verify, which finishes in a fraction of a second.
+# A file redirect gives the background client a file to hold instead.
 LOG=$(mktemp -t clux-verify)
 "$PLUGIN_SCRIPTS_DIR/verify-tmux-conf.sh" "$HOME/.config/clux/clux.tmux.conf" >"$LOG" 2>&1 </dev/null
 CLUX_STATUS=$?
