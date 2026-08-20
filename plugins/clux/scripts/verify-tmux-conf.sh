@@ -76,6 +76,7 @@ CONF="${1:-}"
 CLIENT_PID=""
 STDIN_DIR=""
 SOCKET_PATH=""
+STATE_DIR=""
 
 if [ -z "$CONF" ]; then
     echo "verify-tmux-conf.sh: usage: verify-tmux-conf.sh <path-to-candidate-config>" >&2
@@ -106,6 +107,7 @@ cleanup() {
     # the directory takes the fifo with it. Nothing of ours outlives this.
     exec 3>&- 2>/dev/null || true
     [ -n "$STDIN_DIR" ] && rm -rf "$STDIN_DIR" >/dev/null 2>&1
+    [ -n "$STATE_DIR" ] && rm -rf "$STATE_DIR" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
@@ -117,9 +119,26 @@ tmux -L "$SOCKET" kill-server >/dev/null 2>&1 || true
 # session, and "0" is only its name while nothing else claims it.
 SESSION="clux-verify"
 
+# `-f /dev/null` above keeps the USER'S tmux.conf out of this server, but the
+# candidate reaches the same reap by its own route: `clux.tmux.conf` ends with
+# `run-shell agent-clear.sh --reap`, and the `source-file` below really does run
+# it. Server scoping (3.4.0) already stops that reap from touching a live
+# server's directory, so what is left is the legacy sweep — which would delete
+# the unscoped files a still-running 3.3.0 server owns, during a VERIFICATION.
+# A verification must not write to the user's store at all. Point the store at a
+# scratch directory instead: exported before the server starts, since the server
+# hands its own environ to every run-shell child, and set on the server as well
+# so a child that inherits nothing still reads it.
+STATE_DIR="$(mktemp -d 2>/dev/null)" || STATE_DIR=""
+[ -n "$STATE_DIR" ] && export CLUX_AGENT_STATE_DIR="$STATE_DIR"
+
 if ! tmux -L "$SOCKET" -f /dev/null new-session -d -s "$SESSION" 2>/dev/null; then
     echo "verify-tmux-conf.sh: could not start the throwaway tmux server" >&2
     exit 1
+fi
+
+if [ -n "$STATE_DIR" ]; then
+    tmux -L "$SOCKET" set-environment -g CLUX_AGENT_STATE_DIR "$STATE_DIR" 2>/dev/null
 fi
 
 # Asked of the live server rather than rebuilt from $TMUX_TMPDIR/$UID by hand,

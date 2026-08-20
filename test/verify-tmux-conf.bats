@@ -115,3 +115,27 @@ teardown() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"no such file"* ]]
 }
+
+# A candidate `clux.tmux.conf` ends with `run-shell agent-clear.sh --reap`, and
+# `source-file` really does run it, so the reap fires against the THROWAWAY
+# server on every verify — twice per /clux:setup run, eight times per corpus
+# test. Server scoping keeps it off a live server's directory, but the legacy
+# sweep would still delete the unscoped files a running 3.3.0 server owns.
+# Proved against the pre-fix script: a planted "%99" was gone after one verify.
+# A verification must not write to the user's store at all.
+@test "verify-tmux-conf: verifying a candidate does not touch the user's agent-state store" {
+    local store="$BATS_TEST_TMPDIR/state"
+    mkdir -p "$store"
+    printf 'needs\n' > "$store/%99"
+
+    # The candidate carries the reap line itself, named as an absolute path so
+    # it runs whatever the throwaway server's cwd turns out to be.
+    local conf="$BATS_TEST_TMPDIR/candidate.conf"
+    printf 'run-shell "%s --reap"\n' "$SCRIPTS_DIR/agent-clear.sh" > "$conf"
+
+    CLUX_AGENT_STATE_DIR="$store" _run_verify "$conf" "$BATS_TEST_TMPDIR/verify.log"
+    [ "$VERIFY_STATUS" -eq 0 ] || { cat "$BATS_TEST_TMPDIR/verify.log"; false; }
+
+    [ -f "$store/%99" ] \
+        || { echo "the verify deleted a file in the user's state store"; ls -A "$store"; false; }
+}
