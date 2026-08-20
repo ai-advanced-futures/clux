@@ -60,9 +60,17 @@ fi
 # `read -r` stops at a newline, so a name can no longer contain one and the
 # old newline arm of this case is unreachable — dropped rather than left in
 # as dead reassurance.
+#
+# ":" is rejected for a different reason than the quoting characters: tmux
+# ACCEPTS it in a session name but reads it as the session/window separator in
+# every target. `has-session -t "=a:b"` reports "can't find session: a", so
+# new-workspace.sh never sees the existing workspace; `new-window -t "a:b"`
+# reports "can't find window: b"; and `move-window -t "a:b:0"` fails the same
+# way. The result is a half-built workspace the user cannot reach. Refusing
+# the name up front is the only place this can be stopped.
 case "$SESSION_NAME" in
-    *\'*|*\"*|*\\*|*';'*|*'#'*)
-        tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, or #"
+    *\'*|*\"*|*\\*|*';'*|*'#'*|*:*)
+        tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, colon, or #"
         exit 0
         ;;
 esac

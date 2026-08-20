@@ -78,9 +78,15 @@ Callers that already run `tmux list-panes` must not call it — they ask for
 | `reap_agent_state_dir()` | folded into its `list-panes -a` format | 0 |
 | `hooks/agent-state.sh` (once per hook fire) | `resolve_agent_server_key()` | 1 |
 
-The writer is the one place that pays, because it has to know the key before it
-writes and has no listing of its own to piggy-back on. It already makes three
-tmux calls between the reap and the refresh.
+The writer is the one place that pays, because it has to know the key **before**
+it writes. Its reap does fetch a listing further down, so the call looks
+hoistable — it is not. Six paths between the two can exit early (a failed
+`mkdir`, an absent session id, an unresolved dashboard pane, a failed write), so
+hoisting would pay for the listing on runs that never reach the reap, and
+`list-panes -a` returns a row per pane across every session where
+`display-message -p` returns one short string. The cheap call that always gets
+used beats the expensive one that sometimes does. It already makes three tmux
+calls between the reap and the refresh.
 
 **No key means no store access, on both sides.** With no tmux server answering,
 a state file would land outside any server directory — a file nobody could

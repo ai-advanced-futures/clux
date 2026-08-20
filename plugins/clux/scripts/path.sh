@@ -128,7 +128,7 @@ resolve_agent_server_key() {
 # that used to hide a waiting agent is now structurally impossible rather than
 # merely avoided.
 reap_agent_state_dir() {
-    local state_dir="$1" listing srv row_key live haystack f d base pane pid
+    local state_dir="$1" listing srv haystack f d base pane pid
     [ -n "$state_dir" ] || return 0
     # ONE round-trip answers both questions the store asks: which server is
     # this, and which of its panes are live. Every row carries the same server
@@ -138,23 +138,17 @@ reap_agent_state_dir() {
     srv="${listing%% *}"
     _clux_valid_server_key "$srv" || return 0
 
-    live=""
-    while IFS=' ' read -r row_key pane; do
-        [ -n "$pane" ] || continue
-        live="${live}${pane}"$'\n'
-    done <<EOF
-$listing
-EOF
-    [ -n "$live" ] || return 0
     # Wrap the listing in newlines ONCE so a whole-line match becomes a plain
     # substring test done by bash itself. The delimiters are what keep `%1`
     # from matching `%10`, exactly as `grep -qxF` did. This runs after every
     # hook fire, so the previous `printf | grep` per state file cost two
     # processes per file per fire; this costs none.
-    # $live is built one "<pane>\n" at a time above, so it already ENDS with a
-    # newline — unlike the old $(...) capture, which stripped it and needed a
-    # second delimiter added here.
-    haystack=$'\n'"$live"
+    #
+    # The key leads EVERY row and is the same on all of them, so dropping it is
+    # one substitution rather than a read loop over the listing. $srv is
+    # digits and one dash (the validator above guarantees it), so it carries no
+    # pattern metacharacter, and no pane id can contain it.
+    haystack=$'\n'"${listing//$srv /}"$'\n'
 
     # --- Job 1: dead panes of THIS server ---------------------------------
     for f in "$state_dir/$srv"/*; do
@@ -217,18 +211,10 @@ EOF
     # claiming them for THIS server would manufacture exactly the false glyph
     # the scoping removes. Deleting is the only honest option, and it costs
     # nothing real — the next hook fire rewrites the state that is still true.
-    for f in "$state_dir"/*; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in
-            %*) rm -f "$f" 2>/dev/null ;;
-        esac
-    done
-    for f in "$state_dir"/agents/*; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in
-            %*~*) rm -f "$f" 2>/dev/null ;;
-        esac
-    done
+    # Same shape as Job 2 above: name the glob and let `rm -f` do the filtering.
+    # An unmatched glob stays literal and `rm -f` on it is a silent no-op, and
+    # `%*` cannot match a server-key directory (digits and one dash) anyway.
+    rm -f "$state_dir"/%* "$state_dir"/agents/%*~* 2>/dev/null
     rmdir "$state_dir/agents" 2>/dev/null
 
     return 0

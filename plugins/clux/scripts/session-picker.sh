@@ -66,8 +66,14 @@ while IFS= read -r name; do
     [ -z "$row" ] && continue
     windows=$(printf '%s' "$row" | cut -f2)
     attached=$(printf '%s' "$row" | cut -f3)
+    # #{session_attached} is a COUNT of attached clients, not a flag. Testing
+    # it against "1" dropped the label from every session a second client had
+    # also attached to — the one case where the label matters most.
     suffix=""
-    [ "$attached" = "1" ] && suffix=" (attached)"
+    case "$attached" in
+        ''|*[!0-9]*|0) ;;
+        *) suffix=" (attached)" ;;
+    esac
     printf '%s\t%s: %s windows%s\n' "$name" "$name" "$windows" "$suffix" >> "$tmpfile"
 done <<EOF
 $order
