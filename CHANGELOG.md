@@ -2,6 +2,24 @@
 
 All notable changes to clux are documented here.
 
+## [3.6.0]
+
+### Changed
+
+- **The `prefix + A` workspace popup was restyled and made much shorter.** It was 30% of the terminal height, which grew it to fifteen lines on a tall screen for a two-field prompt, and it drew in plain text. It is now a fixed seven rows at the top-left corner (`-w 62 -h 7 -x 0 -y S`). The `S` position resolves to the line below the bar when `status-position` is `top` and the line above it when it is `bottom`, so the popup follows the bar and clux does not add a second setting for it
+- The popup draws in the colours the **bar** was already configured with. A popup is a real terminal, so it cannot use a tmux `#[...]` format; the new `clux_ansi()` helper in `helpers.sh` translates one tmux style string into an ANSI escape. It reads `@clux-bar-name-attached-style`, `@clux-bar-bracket-style`, `@clux-bar-separator-style`, `@clux-bar-window-open`, `@clux-bar-window-close`, and the two agent-state colours. No new option was added: reusing the bar's own options is what keeps the chip in the popup identical to the session chip on the bar, with nothing configured twice
+- The rejected-name branch now prints the reason **inside the popup** and waits for a key. The popup covers the status line that `display-message` writes to, so the old message could not be read before `-E` closed the popup. Both are written now, because a caller outside a popup still only sees the `display-message` one
+
+### Fixed
+
+- **Esc did not cancel the workspace prompt. It printed `^[` and waited.** `read -r` cannot see Esc: in the terminal's canonical mode it is one more character in the line. The terminal is now told that Esc **is** the interrupt character (`stty intr '^['`), so Esc takes the identical path Ctrl-C already took — SIGINT, the trap, exit 0, and tmux closes the popup. One `stty` call, no raw mode, and the line keeps its normal editing. A key-by-key raw-mode reader was written first and dropped: on macOS bash 3.2 with tmux 3.7b, any `stty` call after a timed-out raw read hangs, which would leave the popup open forever — worse than the bug. The cost of the chosen fix is that every escape *sequence* starts with Esc, so an arrow key cancels too; telling them apart needs a sub-second wait for the next byte, and bash 3.2 rejects a fractional `read -t`. A terminal that refuses the `stty` keeps the old behaviour rather than none
+- The interrupt character is restored on every exit path, including before the closing `exec`. `exec` replaces the process, so the EXIT trap never fires there
+- **The popup printed the literal text `▸` instead of a marker.** bash 3.2 — what macOS ships and what runs these scripts — has no `\uXXXX` escape in `printf`. Every such escape is now a literal UTF-8 character in the source
+
+### Internal
+
+- `test/new-workspace-prompt.bats` now stages `helpers.sh` and `path.sh` beside the script under test. Without them every staged run printed `get_tmux_option: command not found` into the popup — a real gap that the restyle exposed
+
 ## [3.5.0]
 
 ### Added

@@ -1236,3 +1236,71 @@ STUBEOF
     [ "$status" -eq 0 ]
     [[ "$output" == "-" ]] || false
 }
+
+# ---------------------------------------------------------------------------
+# clux_ansi — tmux style string to ANSI escape, for the prefix + A popup.
+# A popup runs a real shell, so it cannot use a tmux `#[...]` format; these
+# translate the SAME style options the bar draws with.
+# ---------------------------------------------------------------------------
+
+# `run` strips nothing, but an ESC in $output is awkward to compare against, so
+# every case below asks for the escape with the ESC replaced by "E".
+_ansi() {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        clux_ansi '$1' | tr '\033' 'E'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "clux_ansi: a full bar style becomes bg, fg and bold in one sequence" {
+    _ansi 'bg=#B48EAD,fg=#2E3440,bold'
+    [ "$output" = 'E[48;2;180;142;173;38;2;46;52;64;1m' ] \
+        || { echo "got: $output"; false; }
+}
+
+@test "clux_ansi: named and bright named colours map to the 30/90 ranges" {
+    _ansi 'fg=magenta'
+    [ "$output" = 'E[35m' ] || { echo "magenta: $output"; false; }
+    _ansi 'fg=brightblack'
+    [ "$output" = 'E[90m' ] || { echo "brightblack: $output"; false; }
+    _ansi 'bg=brightwhite'
+    [ "$output" = 'E[107m' ] || { echo "bg brightwhite: $output"; false; }
+}
+
+@test "clux_ansi: colourN and a bare number both use the 256-colour form" {
+    _ansi 'fg=colour208'
+    [ "$output" = 'E[38;5;208m' ] || { echo "colour208: $output"; false; }
+    _ansi 'fg=208'
+    [ "$output" = 'E[38;5;208m' ] || { echo "bare 208: $output"; false; }
+}
+
+@test "clux_ansi: an empty style prints nothing at all" {
+    _ansi ''
+    [ -z "$output" ] || { echo "expected no output, got: $output"; false; }
+}
+
+@test "clux_ansi: an unknown term is skipped, never emitted literally" {
+    # The failure this guards against is a broken screen: a style clux cannot
+    # translate must not reach the popup as a stray escape fragment.
+    _ansi 'fg=chartreuse,bold'
+    [ "$output" = 'E[1m' ] || { echo "got: $output"; false; }
+    _ansi 'fg=chartreuse'
+    [ -z "$output" ] || { echo "expected no output, got: $output"; false; }
+}
+
+@test "clux_ansi: the popup style accessors fall back to the bar's own defaults" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_bar_name_attached_style; get_bar_bracket_style; get_bar_separator_style
+    "
+    [ "$status" -eq 0 ]
+    # Same literals session-list.sh states for its hot path.
+    [[ "$output" == *"bg=magenta,fg=black,bold"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"fg=magenta"* ]]               || { echo "$output"; false; }
+    [[ "$output" == *"fg=brightblack"* ]]           || { echo "$output"; false; }
+}

@@ -246,7 +246,13 @@ PAIRS
     # commands typed at the "Session name:" prompt. new-workspace-prompt.sh
     # reads both answers itself instead; see its header. No user-supplied value
     # reaches a tmux command string on this path any more.
-    printf 'bind-key A display-popup -w 60%% -h 30%% -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
+    # Fixed rows, not a percentage: the popup holds four lines whatever the
+    # terminal is, and `-h 30%%` grew it to fifteen on a tall one. `-x 0 -y S`
+    # pins it to the top-left corner, just clear of the status line — S
+    # resolves to the line below the bar when status-position is top and the
+    # line above it when it is bottom, so the popup follows the bar rather
+    # than needing a second setting.
+    printf 'bind-key A display-popup -w 62 -h 7 -x 0 -y S -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key m run-shell "%s/jump-to-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key ` run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key DC run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"

@@ -302,3 +302,26 @@ _make_fake_scripts_dir() {
     [ "$status" -eq 0 ]
     [ "$output" = "$out" ]
 }
+
+@test "render-clux-conf: the A popup is fixed-height and pinned to the top-left" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$SCRIPTS_DIR/render-clux-conf.sh' --dir-resolver autojump --editor nvim \
+            --agents-command 'claude agents' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+
+    local line; line="$(grep -F 'bind-key A display-popup' "$out")"
+
+    # A percentage height grew this popup to fifteen rows on a tall terminal;
+    # it holds four lines whatever the terminal is.
+    [[ "$line" != *"-h 30%"* ]] || { echo "still a percentage height: $line"; false; }
+    [[ "$line" == *"-h 7"* ]]   || { echo "no fixed height: $line"; false; }
+
+    # -x 0 -y S pins it to the top-left, clear of the status line, and S
+    # follows status-position rather than needing a second setting.
+    [[ "$line" == *"-x 0"* ]] || { echo "not pinned to the left: $line"; false; }
+    [[ "$line" == *"-y S"* ]] || { echo "not pinned to the status line: $line"; false; }
+}

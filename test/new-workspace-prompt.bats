@@ -31,6 +31,11 @@ _stage() {
     STAGE="$BATS_TEST_TMPDIR/staged"
     mkdir -p "$STAGE"
     cp "$PROMPT_SCRIPT" "$STAGE/new-workspace-prompt.sh"
+    # The prompt sources helpers.sh for its colours, and helpers.sh sources
+    # path.sh. Both resolve through $CURRENT_DIR, so both belong beside the
+    # staged copy — without them the styles come out empty and every run
+    # prints "get_tmux_option: command not found" into the popup.
+    cp "$SCRIPTS_DIR/helpers.sh" "$SCRIPTS_DIR/path.sh" "$STAGE/"
     cat > "$STAGE/new-workspace.sh" <<'STUB'
 #!/usr/bin/env bash
 # Records what the prompt handed over, then exits so the popup would close.
@@ -145,4 +150,67 @@ _run_in_pty() {
     _stage
     _run_in_pty "bad:name"
     [ ! -s "$RECORD" ] || { echo "colon accepted: $(cat "$RECORD")"; false; }
+}
+
+@test "new-workspace-prompt: no printf carries a \u escape bash 3.2 cannot expand" {
+    # bash 3.2 is what macOS ships, and its printf has no \u — it prints the
+    # six characters verbatim, so the popup showed "\u25b8 name". Literal UTF-8
+    # is the only form every supported bash renders.
+    run grep -n '\\u[0-9a-fA-F]\{4\}' "$PROMPT_SCRIPT"
+    [ "$status" -ne 0 ] \
+        || { echo "a \\u escape survives, and bash 3.2 will print it literally:"; echo "$output"; false; }
+}
+
+@test "new-workspace-prompt: the popup draws its markers, not escape text" {
+    # Drives the real script through a pty the way the popup does, and reads
+    # back what landed on screen. This is the check that would have caught the
+    # \u regression from the user's side rather than from the source's.
+    _stage
+    local sock="clux-test-$$-draw"
+    "$REAL_TMUX" -L "$sock" -f /dev/null new-session -d -x 62 -y 7 \
+        "$STAGE/new-workspace-prompt.sh" 2>/dev/null
+    sleep 1
+    local screen
+    screen="$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)"
+    "$REAL_TMUX" -L "$sock" kill-server 2>/dev/null || true
+
+    [[ "$screen" != *'\u'* ]] \
+        || { echo "an unexpanded escape reached the screen:"; echo "$screen"; false; }
+    [[ "$screen" == *"New workspace"* ]] \
+        || { echo "the header never drew:"; echo "$screen"; false; }
+    [[ "$screen" == *"name"* ]] \
+        || { echo "the name prompt never drew:"; echo "$screen"; false; }
+}
+
+@test "new-workspace-prompt: Esc cancels the prompt instead of typing ^[" {
+    # Esc used to be an ordinary character in the line: it echoed "^[" and the
+    # prompt kept waiting, so the only way out of the popup was Ctrl-C. The
+    # terminal now carries Esc as its interrupt character, so Esc takes the
+    # same path Ctrl-C did.
+    _stage
+    local sock="clux-test-$$-esc-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
+    sleep 1
+    "$REAL_TMUX" -L "$sock" send-keys -l "partial"
+    sleep 0.4
+    "$REAL_TMUX" -L "$sock" send-keys Escape
+    sleep 2
+
+    # The interrupt reaches the whole foreground process group, so the pane
+    # ends with the script. Either the server is gone or no prompt is left.
+    local alive=0
+    "$REAL_TMUX" -L "$sock" has-session >/dev/null 2>&1 && alive=1
+    local screen=""
+    [ "$alive" -eq 1 ] && screen="$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+
+    if [ "$alive" -eq 1 ]; then
+        [[ "$screen" != *"partial"* ]] \
+            || { echo "Esc left the prompt waiting with the text still typed:"; echo "$screen"; false; }
+    fi
+
+    # And nothing was created or stored on the way out.
+    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
 }
