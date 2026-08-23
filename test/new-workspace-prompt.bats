@@ -74,6 +74,39 @@ _run_in_pty() {
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" >/dev/null 2>&1 || true
 }
 
+# Polls the pane instead of sleeping a flat worst case. How long tmux needs to
+# start a pane, and the script to draw into it, is the machine's business — a
+# fixed sleep is either slower than it has to be or shorter than it can afford.
+# Prints the last screen it read either way, so a failing caller can show it.
+_wait_for_screen() {
+    local sock="$1" needle="$2" tries="${3:-40}" screen=""
+    while [ "$tries" -gt 0 ]; do
+        screen="$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)"
+        case "$screen" in *"$needle"*) printf '%s' "$screen"; return 0 ;; esac
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    printf '%s' "$screen"
+    return 1
+}
+
+# The mirror of the above: waits for the pane to stop showing something, and
+# treats a server that has exited as success — a cancelled prompt takes the
+# whole pane with it, so "gone" is the expected end state either way.
+_wait_for_gone() {
+    local sock="$1" needle="$2" tries="${3:-40}"
+    while [ "$tries" -gt 0 ]; do
+        "$REAL_TMUX" -L "$sock" has-session >/dev/null 2>&1 || return 0
+        case "$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)" in
+            *"$needle"*) ;;
+            *) return 0 ;;
+        esac
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
 @test "new-workspace-prompt: with no tty it refuses to run and says to re-run setup" {
     # The shape a stale clux.tmux.conf produces: the old binding called this
     # through run-shell, which has no tty. `read` would hit EOF at once and the
@@ -169,9 +202,8 @@ _run_in_pty() {
     local sock="clux-test-$$-draw"
     "$REAL_TMUX" -L "$sock" -f /dev/null new-session -d -x 62 -y 7 \
         "$STAGE/new-workspace-prompt.sh" 2>/dev/null
-    sleep 1
     local screen
-    screen="$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)"
+    screen="$(_wait_for_screen "$sock" "New workspace")" || true
     "$REAL_TMUX" -L "$sock" kill-server 2>/dev/null || true
 
     [[ "$screen" != *'\u'* ]] \
@@ -192,11 +224,13 @@ _run_in_pty() {
     "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
     "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
         "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
-    sleep 1
+    _wait_for_screen "$sock" "New workspace" >/dev/null \
+        || { echo "the prompt never drew, so Esc was never the thing under test"; false; }
     "$REAL_TMUX" -L "$sock" send-keys -l "partial"
-    sleep 0.4
+    _wait_for_screen "$sock" "partial" >/dev/null \
+        || { echo "the typed text never echoed, so nothing was waiting for Esc"; false; }
     "$REAL_TMUX" -L "$sock" send-keys Escape
-    sleep 2
+    _wait_for_gone "$sock" "partial" || true
 
     # The interrupt reaches the whole foreground process group, so the pane
     # ends with the script. Either the server is gone or no prompt is left.

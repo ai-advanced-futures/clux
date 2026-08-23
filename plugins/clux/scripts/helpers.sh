@@ -344,10 +344,12 @@ _clux_ansi_color() {
         \#??????)
             r=$((16#${val:1:2})); g=$((16#${val:3:2})); b=$((16#${val:5:2}))
             printf ';%s;2;%s;%s;%s' "$((base + 8))" "$r" "$g" "$b" ; return 0 ;;
-        colour*|color*)
-            idx="${val#colo}"; idx="${idx#u}"; idx="${idx#r}"
-            case "$idx" in ''|*[!0-9]*) return 0 ;; esac
-            printf ';%s;5;%s' "$((base + 8))" "$idx" ; return 0 ;;
+    esac
+    # `colourN`, `colorN` and a bare `N` are one case: strip the prefix tmux
+    # allows, then let the single numeric test below emit the 256-colour form.
+    case "$val" in
+        colour*) val="${val#colour}" ;;
+        color*)  val="${val#color}"  ;;
     esac
     case "$val" in
         ''|*[!0-9]*) ;;

@@ -88,8 +88,10 @@ _clux_term_restore() {
     _CLUX_STTY_SAVED=""
 }
 trap '_clux_term_restore' EXIT TERM
-# A cancel is not an error: the popup closes and nothing is created.
-trap '_clux_term_restore; exit 0' INT
+# A cancel is not an error: the popup closes and nothing is created. `exit`
+# from inside a trap handler still runs the EXIT trap, so the restore above is
+# the only one needed here (checked on bash 3.2).
+trap 'exit 0' INT
 
 _CLUX_STTY_SAVED="$(stty -g 2>/dev/null)"
 # A terminal that will not take this keeps the old behaviour rather than none:
