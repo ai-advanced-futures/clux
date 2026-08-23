@@ -311,6 +311,12 @@ clux_ansi() {
     local spec="$1" part key val out=""
     [ -n "$spec" ] || return 0
     local IFS=,
+    # `$spec` is split on commas UNQUOTED, which also exposes it to pathname
+    # expansion: a style value holding `*` would otherwise be replaced by
+    # whatever happens to sit in the popup's working directory. Globbing is off
+    # for the loop and restored right after it.
+    local _reset_glob=""
+    case "$-" in *f*) ;; *) _reset_glob=1; set -f ;; esac
     for part in $spec; do
         # Trim surrounding whitespace without spawning anything.
         part="${part#"${part%%[![:space:]]*}"}"
@@ -324,12 +330,13 @@ clux_ansi() {
             reverse)              out="${out};7" ; continue ;;
         esac
         case "$part" in
-            fg=*) key=fg; val="${part#fg=}" ;;
-            bg=*) key=bg; val="${part#bg=}" ;;
-            *)    key=fg; val="$part" ;;
+            fg=*) key='fg'; val="${part#fg=}" ;;
+            bg=*) key='bg'; val="${part#bg=}" ;;
+            *)    key='fg'; val="$part" ;;
         esac
         out="${out}$(_clux_ansi_color "$key" "$val")"
     done
+    [ -n "$_reset_glob" ] && set +f
     [ -n "$out" ] || return 0
     printf '\033[%sm' "${out#;}"
 }
@@ -341,7 +348,11 @@ _clux_ansi_color() {
     [ "$key" = "bg" ] && base=40 || base=30
     case "$val" in
         default) printf ';%s' "$((base + 9))" ; return 0 ;;
-        \#??????)
+        # Six HEX digits, not six of anything: `\#??????` also matched
+        # `#GGHHII`, and `$((16#GG))` then printed a bash arithmetic error on
+        # stderr — straight onto the popup screen, which is the one failure
+        # this whole function is written to avoid.
+        \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
             r=$((16#${val:1:2})); g=$((16#${val:3:2})); b=$((16#${val:5:2}))
             printf ';%s;2;%s;%s;%s' "$((base + 8))" "$r" "$g" "$b" ; return 0 ;;
     esac

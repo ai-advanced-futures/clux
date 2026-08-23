@@ -1291,6 +1291,36 @@ _ansi() {
     [ -z "$output" ] || { echo "expected no output, got: $output"; false; }
 }
 
+@test "clux_ansi: a six-character value that is not hex prints nothing, not an error" {
+    # `\#??????` matched six of ANYTHING, so `#GGHHII` reached $((16#GG)) and
+    # bash wrote "value too great for base" to stderr. clux_ansi is called
+    # inside $( ), which captures stdout only, so that text went straight onto
+    # the popup screen — the one failure this function exists to prevent.
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        clux_ansi 'fg=#GGHHII' 2>&1 | tr '\033' 'E'
+    "
+    [ -z "$output" ] || { echo "expected silence, got: $output"; false; }
+}
+
+@test "clux_ansi: a style term is never expanded against the filesystem" {
+    # The loop splits $spec unquoted, which also exposed it to pathname
+    # expansion. The popup inherits the pane's working directory, so a file
+    # sitting there could decide the colour the popup drew in.
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        cd '$BATS_TEST_TMPDIR'
+        : > 'fg=red'
+        source '$SCRIPTS_DIR/helpers.sh'
+        clux_ansi 'fg=*' | tr '\033' 'E'
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "a filename became the colour: $output"; false; }
+}
+
 @test "clux_ansi: the popup style accessors fall back to the bar's own defaults" {
     run bash -c "
         export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'

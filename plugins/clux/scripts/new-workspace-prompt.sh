@@ -63,15 +63,21 @@ if [ ! -t 0 ]; then
     exit 0
 fi
 
-# --- Esc cancels -----------------------------------------------------------
+# --- Esc and Ctrl-C both cancel --------------------------------------------
 #
 # `read -r` cannot see Esc: in the terminal's canonical mode it is just another
 # character in the line, which is why Esc used to echo "^[" and wait. Rather
 # than read key by key in raw mode, the terminal is told that Esc IS the
-# interrupt character. Esc then takes the identical path Ctrl-C already took —
-# SIGINT, the trap below, exit 0, and tmux closes the popup on the exit.
+# interrupt character, so Esc raises SIGINT and the trap below closes the
+# popup.
 #
-# One stty call, no raw mode, and the line keeps its normal editing.
+# `intr` names ONE character, so that alone would TAKE Ctrl-C away: it would
+# stop raising SIGINT and land in the line as a literal \003. Ctrl-C is
+# therefore moved onto `quit`, which raises SIGQUIT, and the trap catches both
+# signals. Both keys cancel, and the key `quit` gave up (Ctrl-\) has no use in
+# a two-field prompt.
+#
+# No raw mode, and the line keeps its normal editing.
 #
 # The cost is that every escape SEQUENCE starts with Esc, so an arrow key
 # cancels too. In a two-field prompt with no cursor movement that is a fair
@@ -91,12 +97,25 @@ trap '_clux_term_restore' EXIT TERM
 # A cancel is not an error: the popup closes and nothing is created. `exit`
 # from inside a trap handler still runs the EXIT trap, so the restore above is
 # the only one needed here (checked on bash 3.2).
-trap 'exit 0' INT
+trap 'exit 0' INT QUIT
 
 _CLUX_STTY_SAVED="$(stty -g 2>/dev/null)"
-# A terminal that will not take this keeps the old behaviour rather than none:
-# Esc cannot cancel, Ctrl-C still can.
+# A terminal that takes neither keeps the old behaviour rather than none: Esc
+# cannot cancel, and Ctrl-C is untouched because `intr` never moved.
 stty intr '^[' 2>/dev/null || :
+stty quit '^C' 2>/dev/null || :
+
+# The guard for a terminal that took `intr` but not `quit`: Ctrl-C would then
+# be a literal \003 in the line, and the reject list below names no control
+# character, so the workspace would be created under a name carrying one. A
+# control character is never part of a name anybody typed on purpose, so it is
+# read as the cancel the user meant.
+_clux_cancelled_line() {
+    case "$1" in
+        *[[:cntrl:]]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # Header: the same chip and brackets the bar draws, then the key hints.
 printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · esc cancel%s\n\n' \
@@ -106,8 +125,10 @@ printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · es
 printf '  %s▸%s name    ' "$MARK" "$RESET"
 IFS= read -r SESSION_NAME || exit 0
 
-# Empty means the prompt was cancelled — not an error.
-if [ -z "$SESSION_NAME" ]; then
+# Empty means the prompt was cancelled — not an error. So does a control
+# character: on a terminal that took the stty above, that is the Ctrl-C the
+# user pressed to get out.
+if [ -z "$SESSION_NAME" ] || _clux_cancelled_line "$SESSION_NAME"; then
     exit 0
 fi
 
@@ -129,7 +150,11 @@ case "$SESSION_NAME" in
         # text is printed here as well. The pause is what keeps `-E` from
         # closing the popup before the reason can be read.
         tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, colon, or #"
-        printf '\n  %s!%s a name cannot contain a quote, backslash, semicolon, colon or #\n' "$BAD" "$RESET"
+        # One SHORT line, and no blank line before it: `-h 7` minus the popup
+        # border leaves five rows of sixty columns, and the sentence this used
+        # to be was sixty-seven — it wrapped, which pushed the header off the
+        # top. Header, blank, name, this, and the pause are exactly five.
+        printf '  %s!%s a name cannot hold  '"'"' " \\ ; : or #\n' "$BAD" "$RESET"
         printf '  %spress any key%s' "$DIM" "$RESET"
         read -rsn1
         exit 0
@@ -140,8 +165,14 @@ esac
 # new-workspace.sh already does with an empty folder. The old second prompt
 # prefilled "<name>/" for the user to complete; bash 3.2 (macOS) has no
 # `read -i`, and a stated default reads better than a prefill nobody can edit.
-printf '  %s▸%s folder  ' "$MARK" "$RESET"
+# The default is STATED, not prefilled — that is what the comment above is
+# about, and a bare "folder" prompt hides it. The dim suffix is the whole
+# reason Enter alone is usable here.
+printf '  %s▸%s folder  %s[%s]%s ' "$MARK" "$RESET" "$DIM" "$SESSION_NAME" "$RESET"
 IFS= read -r FOLDER_NAME || exit 0
+if _clux_cancelled_line "$FOLDER_NAME"; then
+    exit 0
+fi
 if [ -z "$FOLDER_NAME" ]; then
     FOLDER_NAME="$SESSION_NAME"
 fi
