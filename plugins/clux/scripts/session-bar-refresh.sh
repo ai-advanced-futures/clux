@@ -98,9 +98,10 @@
 #
 # Known, accepted jitter: the hook path has no client id, so it always reads
 # the SHARED counter (@clux_frame_idx), which a per-client periodic tick never
-# advances. On a two-client server, a hook fire therefore momentarily draws
-# whatever frame the shared counter is sitting at before the next periodic
-# tick resumes each client's own sequence. Advancing the counter on the hook
+# advances. This is not limited to a two-client server: on ANY install whose
+# status line passes #{client_pid}, the shared counter stays at 0, so every
+# hook-driven full render draws frame 0 until the next periodic tick resumes
+# the client's own sequence. Advancing the counter on the hook
 # path is forbidden by design (a burst of hooks would fast-forward the
 # animation); picking one client's counter over another is racy. This
 # one-frame jitter on a user-initiated event is the accepted cost.
@@ -168,6 +169,7 @@ esac
 # A missing or non-numeric counter is 0 — first tick ever, or a value some
 # other process clobbered.
 case "$idx_raw" in ''|*[!0-9]*) idx_raw=0 ;; esac
+idx_raw=$(( 10#$idx_raw ))   # base ten: a leading zero must not read as octal
 
 # --- Frame list — the second copy of helpers.sh's get_agent_frame() rule ---
 # Unset -frames falls back to the RAW @clux-agent-glyph-busy value (not
@@ -199,6 +201,10 @@ fi
 _frame_at() {
     local i="$1" f
     case "$i" in ''|*[!0-9]*) i=0 ;; esac
+    # 10# forces base ten. A digits-only value can still carry a leading zero
+    # ("08"), which bash would read as octal and reject with "value too great
+    # for base" — an error on a path whose whole job is to never fail.
+    i=$(( 10#$i ))
     f="${frames[$(( i % nframes ))]}"
     [ -n "$f" ] || f='*'
     printf '%s' "${f//#/##}"
@@ -207,6 +213,7 @@ _frame_at() {
 # --- Template freshness (periodic path only) --------------------------------
 _tpl_fresh() {
     case "$tpl_at" in ''|*[!0-9]*) return 1 ;; esac
+    tpl_at=$(( 10#$tpl_at ))
     [ -n "$tpl_body" ] || return 1
     [ "$(( now - tpl_at ))" -lt "$FULL_EVERY" ]
 }

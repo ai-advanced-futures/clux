@@ -6,20 +6,75 @@ All notable changes to clux are documented here.
 
 ### Added
 
-- **The busy glyph now moves.** A session whose Claude is `busy` cycles through a small set of frames instead of sitting on one static character, so a user can tell "working" from "hung" at a glance. New option `@clux-agent-glyph-busy-frames`, a space-separated list, default `- \ | /` (four frames, one column each, plain ASCII — the same "guaranteed width in every terminal and font" rule the existing glyph defaults already follow). **Must be written single-quoted**: verified on tmux 3.7b that a double-quoted value (`set -g @x "- \ | /"`) loses the backslash to tmux's own double-quote parser and comes back as three frames, not four. A moon rotation (`◐ ◓ ◑ ◒`) is documented in `configuring-tmux/SKILL.md` as an opt-in example, not shipped as the default, because those glyphs are Unicode "ambiguous width" (one cell in a common terminal, two under a CJK locale). Setting `@clux-agent-glyph-busy` alone and leaving `-frames` unset keeps the glyph static — every existing config keeps its current look on upgrade
-- **`throttle.sh`** — a small, opt-in tool the user wires into their *own* `#()` status jobs: `throttle.sh <seconds> <command> [args…]` caches a job's output and re-runs the command only once every `<seconds>`. tmux re-runs **every** `#()` job on the status line on every redraw (measured: `refresh-client -S` re-runs all of them, not just the one segment that changed), so a job that used to cost nothing extra at `status-interval 2` starts paying twice as often once the interval drops for the animation above. clux does not rewrite any of the user's existing jobs — this is a tool to reach for, not a migration
+- **The busy glyph moves.** A session with a `busy` Claude shows a small set of
+  frames in turn. It no longer shows one character that does not move. You can
+  see the difference between "working" and "hung".
+- New option `@clux-agent-glyph-busy-frames`. It holds a list of frames,
+  separated by spaces. The default is `- \ | /`: four frames, one column each,
+  plain ASCII. This follows the width rule the other glyph defaults follow.
+- **Write the frames option with single quotes.** tmux removes the backslash
+  from a value in double quotes. The value then gives three frames, not four.
+  This was tested on tmux 3.7b.
+- A moon rotation (`◐ ◓ ◑ ◒`) is an example in `configuring-tmux/SKILL.md`. It
+  is not the default. These glyphs have "ambiguous width": one cell in most
+  terminals, two cells in a CJK locale.
+- Set `@clux-agent-glyph-busy` and do not set `-frames` to keep a glyph that
+  does not move. Each existing config keeps its look after an upgrade.
+- **`throttle.sh`** — a tool for your own `#()` status jobs. Use
+  `throttle.sh <seconds> <command> [args…]`. It keeps the output of a job and
+  runs the command again only after `<seconds>`. tmux runs every `#()` job on
+  the status line at each redraw. Thus a job costs more when you decrease
+  `status-interval` for the animation. clux does not change your jobs. Use this
+  tool if you want it.
 
 ### Changed
 
-- **`session-bar-refresh.sh` now caches the rendered bar as a template and substitutes one glyph per tick**, instead of re-running the ~110ms full render (`session-list.sh`) on every status redraw. A full render happens once every 5 seconds (the existing "periodic safety net" cadence, unchanged) or immediately on any hook (session/window switch, agent state change) — a cheap animation tick costs about 46ms instead of ~110ms. The animation frame is driven by a **counter** advanced once per tick, not by the wall clock: a clock-derived frame was measured to skip frames, because tmux only re-samples a `#()` job's cached result once per `status-interval`, checked at redraw time, and the two clocks drift. `@clux_bar_tpl` (the cached template, `<epoch><TAB><template>` in one option) and `@clux_frame_idx[_<client_pid>]` (the counter, keyed per attached client so two clients don't race one shared counter) are new **runtime** options — `render-clux-conf.sh` now clears both on every load, above the closing seed render, so a reload never substitutes a stale template left over from before the reload
-- The periodic status-line token gains an argument: `#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid})`. tmux runs a `#()` job once per attached client rendering the status line, not once per server — passing the client id lets each client own and advance only its own frame counter. The old, argument-less form (`session-bar-refresh.sh quiet`) still works: a missing or non-numeric id falls back to a single shared counter, so every existing 3.3/3.4-era install keeps working unchanged, just with a shared counter if more than one client is attached
-- **`agent-bar.sh` takes an optional leading `--frame N` pair**, shifted off before its existing "two modes, chosen by argument count alone" dispatch runs. Without `--frame`, output is byte-identical to today — the standalone-glyph installs described in `configuring-tmux/SKILL.md` §3.7 keep their current, static look with no code path that would freeze them on one animation frame
-- **`status-interval` guidance changes, not the CRITICAL RULE.** clux still only *reports* `status-interval` and never writes it in an existing config (Mode 2). The report text changes because the animation gives the setting a reason it didn't have before: the busy glyph advances one frame per `status-interval`, so `1` gives a roughly 1fps pulse and `2` gives one every two seconds — with `throttle.sh` wrapped around slow jobs, `1` costs about 30ms per second, not "a fork per second for no gain" as the pre-3.5.0 text said. Mode 1 (the bare-machine file clux authors from nothing) now writes `status-interval 1` with the new reason, matching what `README.md` already recommended
+- **`session-bar-refresh.sh` keeps the drawn bar as a template.** Each tick
+  replaces one glyph in that template. Before, each redraw did a full render
+  with `session-list.sh`, which takes approximately 110 ms. A full render now
+  occurs every 5 seconds, or immediately after a hook. A cheap tick takes
+  approximately 46 ms.
+- **A counter gives the frame, not the clock.** A frame from the clock skips
+  frames, because tmux reads the result of a `#()` job again only once each
+  `status-interval`, and the two clocks move apart.
+- Two new runtime options: `@clux_bar_tpl` holds the template with its time
+  stamp, and `@clux_frame_idx[_<client_pid>]` holds the counter. The counter
+  has one key for each attached client. Two clients thus do not share one
+  counter. `render-clux-conf.sh` clears both options at each load, so a reload
+  cannot use a template from before the reload.
+- The periodic token takes an argument:
+  `#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid})`. tmux
+  runs a `#()` job one time for each attached client that draws the status
+  line. The client id lets each client advance only its own counter. The form
+  without the argument continues to operate: clux uses one shared counter if
+  the id is absent or is not a number. Each 3.3 and 3.4 install thus continues
+  to operate.
+- **`agent-bar.sh` accepts an optional `--frame N` pair** before its other
+  arguments. Without `--frame`, the output is the same as before. The
+  standalone-glyph installs in `configuring-tmux/SKILL.md` §3.7 thus keep their
+  glyph that does not move.
+- **The `status-interval` guidance changes. The CRITICAL RULE does not.** clux
+  reports `status-interval` and does not write it in an existing config
+  (Mode 2). The busy glyph advances one frame each `status-interval`. Thus `1`
+  gives approximately one frame each second, and `2` gives one frame each two
+  seconds. With `throttle.sh` around slow jobs, `1` costs approximately 30 ms
+  each second. The text before 3.5.0 called `1` "a fork per second for no
+  gain". Mode 1 writes `status-interval 1`, which is what `README.md`
+  recommends.
 
 ### Note
 
-- Animation speed is bounded by `status-interval`; tmux's own minimum is 1 second, and `refresh-client -S` re-runs every `#()` job on the status line, so there is no way to repaint one segment faster than the rest of the bar
-- **Accepted one-frame jitter.** The hook path (session/window switches, agent-state changes) has no client id to key a counter with, so it always reads the *shared* `@clux_frame_idx`, which a per-client periodic tick never advances. On a server with two attached clients, a hook fire can therefore momentarily draw whatever frame the shared counter is sitting at before the next periodic tick resumes each client's own sequence. Advancing the counter on the hook path was rejected — a burst of hooks would fast-forward the animation — and picking one client's counter over another is racy, so this single-frame jitter on a user-initiated event is the accepted cost
+- `status-interval` limits the speed of the animation. The minimum in tmux is 1
+  second. `refresh-client -S` runs every `#()` job on the status line again.
+  Thus you cannot draw one segment more often than the rest of the bar.
+- **Accepted jitter of one frame.** The hook path has no client id. It thus
+  reads the shared `@clux_frame_idx`, which a periodic tick for one client does
+  not advance. A hook can thus draw the frame at which the shared counter
+  stands. The next periodic tick continues the sequence for that client. To
+  advance the counter on the hook path was refused: many hooks together would
+  move the animation forward too quickly. To use the counter of one client is a
+  race. This jitter of one frame, after an action by the user, is the accepted
+  cost.
 
 ## [3.4.0]
 

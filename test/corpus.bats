@@ -130,14 +130,17 @@ _stub_author_real_home() {
 }
 
 @test "corpus: the session-bar token string is the CONTIGUOUS pair, never #{@clux_session_bar} alone" {
-    # No closing ")" in the needle: since the animated-busy-glyph design
-    # (2026-08-23), the "quiet" job optionally carries a trailing
-    # "#{client_pid}" argument (status-format-n-installed.conf is on the new
-    # form; already-installed.conf and installed-then-hand-edited.conf stay on
-    # the argument-less legacy form on purpose — both must match here).
+    # Both token eras must match, and BOTH needles keep their closing ")":
+    # since the animated-busy-glyph design (2026-08-23) the "quiet" job
+    # optionally carries a trailing "#{client_pid}" argument
+    # (status-format-n-installed.conf is on the new form; already-installed.conf
+    # and installed-then-hand-edited.conf stay on the argument-less legacy form
+    # on purpose). Matching either COMPLETE form, rather than dropping the ")"
+    # to cover both, is what keeps this test able to fail on an unclosed "#(".
+    local head='#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet'
     for name in $AFTER_FIXTURES; do
         local f="$FIXTURES_DIR/$name.conf"
-        grep -qF '#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet' "$f" \
+        grep -qF "$head)" "$f" || grep -qF "$head #{client_pid})" "$f" \
             || { echo "$name: contiguous session-bar token string not found"; false; }
     done
 }

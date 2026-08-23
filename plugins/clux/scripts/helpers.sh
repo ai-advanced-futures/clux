@@ -266,6 +266,7 @@ get_agent_frame() {
         frames=( "$(get_agent_glyph_busy)" ); n=1
     fi
     case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
+    idx=$(( 10#$idx ))   # base ten: a leading zero must not read as octal
     f="${frames[$(( idx % n ))]}"
     [ -n "$f" ] || f='*'
     printf '%s' "${f//#/##}"

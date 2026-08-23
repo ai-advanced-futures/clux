@@ -34,7 +34,7 @@ set -g monitor-bell on
 set -g bell-action any
 ```
 
-`status-interval 1` is a fast redraw, not just a safety net: the busy glyph on clux's session bar advances one animation frame per interval, so `1` gives a roughly 1fps pulse. `/clux:setup` only ever *reports* this setting on an existing config — it never writes it there.
+`status-interval 1` gives a fast redraw. It is not only a safety net. The busy glyph on the clux session bar advances one frame each interval. Thus `1` gives approximately one frame each second. `/clux:setup` reports this setting on an existing config. It does not write it there.
 
 ### Validate
 
@@ -153,17 +153,33 @@ These tmux options apply to the reader/jump side (status bar and key handler). I
 
 ## Animated busy glyph
 
-On clux's own session bar (installed via `/clux:setup`), the glyph for a `busy` Claude cycles through frames instead of sitting still, so "working" reads differently from "hung" at a glance — default `- \ | /`, one frame per `status-interval`. Customize it with `@clux-agent-glyph-busy-frames` (**always single-quoted** — a double-quoted value loses its backslash to tmux's own parser). Set `@clux-agent-glyph-busy` alone and leave `-frames` unset to keep a static glyph. Full option table and an opt-in moon-rotation example: `plugins/clux/skills/configuring-tmux/SKILL.md`, §3.7.
+The clux session bar shows the glyph for a `busy` Claude in frames. The glyph
+moves. You can thus see the difference between "working" and "hung". The
+default is `- \ | /`, with one frame each `status-interval`.
+
+To change the frames, set `@clux-agent-glyph-busy-frames`. **Use single
+quotes.** tmux removes the backslash from a value in double quotes.
+
+To keep a glyph that does not move, set `@clux-agent-glyph-busy` and do not set
+`-frames`.
+
+For the full option table and a moon-rotation example, read
+`plugins/clux/skills/configuring-tmux/SKILL.md`, §3.7.
 
 ## throttle.sh — memoize a slow status-line job
 
-tmux re-runs every `#()` job on the status line on every redraw, not just the one segment that changed — so a faster `status-interval` (see above) makes your own status-line jobs pay too, not only clux's. `throttle.sh` caches a job's output and re-runs the command only every N seconds:
+tmux runs every `#()` job on the status line again at each redraw. It does not
+run only the segment that changed. Thus a smaller `status-interval` (read
+above) also costs more for your own jobs, not only for the clux job.
+
+`throttle.sh` keeps the output of a job. It runs the command again only after N
+seconds:
 
 ```bash
 #(~/.config/clux/scripts/throttle.sh 10 ~/.config/tmux/scripts/git.sh "#{pane_current_path}")
 ```
 
-It ships with clux but is entirely opt-in — `/clux:setup` never rewrites your existing `#()` jobs to use it.
+clux supplies this tool. Use it if you want it. `/clux:setup` does not change your `#()` jobs.
 
 ## Troubleshooting
 
