@@ -42,3 +42,6 @@ switch-session.sh
 session-picker.sh
 new-workspace.sh
 new-workspace-prompt.sh
+
+# Status-line helper (opt-in; the user wires it into their own #() jobs)
+throttle.sh

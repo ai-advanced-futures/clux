@@ -58,6 +58,8 @@ plugins/clux/
 │   ├── session-picker.sh        # Session picker with pane preview
 │   ├── new-workspace.sh         # Creates an editor + agents window pair
 │   ├── new-workspace-prompt.sh  # Reads both answers inside a popup
+│   │                            # Status-line helper (opt-in)
+│   ├── throttle.sh              # Memoizes any #() status job
 │   │                            # Setup time only — never deployed
 │   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
 │   └── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
