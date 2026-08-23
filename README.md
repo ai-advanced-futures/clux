@@ -34,6 +34,8 @@ set -g monitor-bell on
 set -g bell-action any
 ```
 
+`status-interval 1` is a fast redraw, not just a safety net: the busy glyph on clux's session bar advances one animation frame per interval, so `1` gives a roughly 1fps pulse. `/clux:setup` only ever *reports* this setting on an existing config — it never writes it there.
+
 ### Validate
 
 Inside Claude Code, run:
@@ -148,6 +150,20 @@ These tmux options apply to the reader/jump side (status bar and key handler). I
 
 - Claude Code ≥ v2.1.139
 - tmux running (agent sessions are headless; clux bridges them to your tmux status bar)
+
+## Animated busy glyph
+
+On clux's own session bar (installed via `/clux:setup`), the glyph for a `busy` Claude cycles through frames instead of sitting still, so "working" reads differently from "hung" at a glance — default `- \ | /`, one frame per `status-interval`. Customize it with `@clux-agent-glyph-busy-frames` (**always single-quoted** — a double-quoted value loses its backslash to tmux's own parser). Set `@clux-agent-glyph-busy` alone and leave `-frames` unset to keep a static glyph. Full option table and an opt-in moon-rotation example: `plugins/clux/skills/configuring-tmux/SKILL.md`, §3.7.
+
+## throttle.sh — memoize a slow status-line job
+
+tmux re-runs every `#()` job on the status line on every redraw, not just the one segment that changed — so a faster `status-interval` (see above) makes your own status-line jobs pay too, not only clux's. `throttle.sh` caches a job's output and re-runs the command only every N seconds:
+
+```bash
+#(~/.config/clux/scripts/throttle.sh 10 ~/.config/tmux/scripts/git.sh "#{pane_current_path}")
+```
+
+It ships with clux but is entirely opt-in — `/clux:setup` never rewrites your existing `#()` jobs to use it.
 
 ## Troubleshooting
 

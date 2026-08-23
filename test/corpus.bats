@@ -41,6 +41,19 @@ FIXTURES_DIR="$BATS_TEST_DIRNAME/fixtures"
 BEFORE_FIXTURES="empty plain-status-left status-format-n generated-by-tool author-real"
 AFTER_FIXTURES="already-installed installed-then-hand-edited status-format-n-installed"
 
+# Two eras of the "quiet" job, both represented on purpose (animated
+# busy-glyph design, 2026-08-23): already-installed.conf and
+# installed-then-hand-edited.conf stay on the argument-less legacy form
+# (session-bar-refresh.sh falls back to one shared frame counter on it, so a
+# 3.3/3.4-era install keeps working unchanged). status-format-n-installed.conf
+# carries the new "#{client_pid}" argument instead — no comment is added to
+# that fixture's own body for it, because ASSERTION 4 below diffs it, byte for
+# byte, against status-format-n.conf once clux's additions are stripped; a
+# stray comment there would fail that diff even though the install itself is
+# correct. It is also the one fixture that proves real tmux parses
+# "#{client_pid}" inside a #() job's argument, embedded in a single-quoted
+# status-format[0] value.
+
 # Every verify call redirects to a file (never `run`/$( )) so its output can
 # be shown on failure. It no longer needs to reap anything: verify-tmux-conf.sh
 # used to background a `< <(tail -f /dev/null)` helper whose pid bash 3.2 does
@@ -117,9 +130,14 @@ _stub_author_real_home() {
 }
 
 @test "corpus: the session-bar token string is the CONTIGUOUS pair, never #{@clux_session_bar} alone" {
+    # No closing ")" in the needle: since the animated-busy-glyph design
+    # (2026-08-23), the "quiet" job optionally carries a trailing
+    # "#{client_pid}" argument (status-format-n-installed.conf is on the new
+    # form; already-installed.conf and installed-then-hand-edited.conf stay on
+    # the argument-less legacy form on purpose — both must match here).
     for name in $AFTER_FIXTURES; do
         local f="$FIXTURES_DIR/$name.conf"
-        grep -qF '#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet)' "$f" \
+        grep -qF '#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet' "$f" \
             || { echo "$name: contiguous session-bar token string not found"; false; }
     done
 }
@@ -164,7 +182,7 @@ _stub_author_real_home() {
     local stripped="$BATS_TEST_TMPDIR/stripped.conf"
 
     sed -e '/^source-file -q .*clux\.tmux\.conf$/d' \
-        -e 's|#{@clux_session_bar}#(~/\.config/clux/scripts/session-bar-refresh\.sh quiet)||' \
+        -e 's|#{@clux_session_bar}#(~/\.config/clux/scripts/session-bar-refresh\.sh quiet #{client_pid})||' \
         -e 's|#\[align=centre\]#{@clux_status}||' \
         "$after" > "$stripped"
 
