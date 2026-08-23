@@ -77,7 +77,14 @@ separator_style="${separator_style:-fg=brightblack}"
 window_open="${window_open:-❰}"
 window_close="${window_close:-❱}"
 separator="${separator:-│}"
-glyph_busy="${glyph_busy:-*}"
+# CLUX_AGENT_GLYPH_BUSY (animated busy glyph, 2026-08-23 design): this
+# renderer stays a pure function of its inputs, so session-bar-refresh.sh
+# drives it to draw the frame-substitution sentinel through the environment
+# rather than through @clux-agent-glyph-busy — a user-owned option this file
+# must never write. This file deliberately does not source helpers.sh (see
+# the hot-path note above), so it can't inherit get_agent_glyph_busy()'s own
+# copy of this same override; it applies it to its own field instead.
+glyph_busy="${CLUX_AGENT_GLYPH_BUSY:-${glyph_busy:-*}}"
 glyph_needs="${glyph_needs:-!}"
 glyph_done="${glyph_done:-v}"
 busy_color="${busy_color:-cyan}"
