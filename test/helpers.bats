@@ -1051,3 +1051,188 @@ STUBEOF
     [ "$status" -eq 0 ]
     grep -qF "switch-client" "$stub_log" || false
 }
+
+# ---------------------------------------------------------------------------
+# Animated busy glyph (2026-08-23 design): CLUX_AGENT_GLYPH_BUSY overrides
+# get_agent_glyph_busy() so session-bar-refresh.sh (and anything else that
+# ever needs to) can drive agent-bar.sh-style renderers to draw the sentinel
+# without writing the user-owned @clux-agent-glyph-busy option.
+# ---------------------------------------------------------------------------
+
+@test "get_agent_glyph_busy: CLUX_AGENT_GLYPH_BUSY overrides the tmux option" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_AGENT_GLYPH_BUSY=Z
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_busy
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "Z" ]] || false
+}
+
+@test "get_agent_glyph_busy: unset CLUX_AGENT_GLYPH_BUSY falls back to the tmux option default" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        unset CLUX_AGENT_GLYPH_BUSY
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_busy
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "*" ]] || false
+}
+
+@test "get_agent_glyph_busy: an empty CLUX_AGENT_GLYPH_BUSY is not an override" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_AGENT_GLYPH_BUSY=''
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_busy
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "*" ]] || false
+}
+
+@test "get_agent_glyph_busy: CLUX_AGENT_GLYPH_BUSY does not leak into needs/done getters" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_AGENT_GLYPH_BUSY=Z
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_needs
+        get_agent_glyph_done
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == $'!\nv' ]] || false
+}
+
+# ---------------------------------------------------------------------------
+# get_agent_glyph_busy_frames() / get_agent_frame(): the frame list used ONLY
+# by agent-bar.sh, deliberately not routed through get_tmux_option — its body
+# is `echo "${value:-$default}"`, and this option's default contains a
+# backslash that a hostile echo (xpg_echo) would eat.
+# ---------------------------------------------------------------------------
+
+@test "get_agent_glyph_busy_frames: default is four ASCII frames, backslash intact" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_busy_frames
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '- \ | /' ]] || false
+}
+
+@test "get_agent_glyph_busy_frames: survives xpg_echo (the backslash is not eaten)" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        shopt -s xpg_echo 2>/dev/null || true
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_glyph_busy_frames
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == '- \ | /' ]] || false
+}
+
+@test "get_agent_frame: parses the default frame list by index, modulo wrap" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame 0; echo
+        get_agent_frame 1; echo
+        get_agent_frame 2; echo
+        get_agent_frame 3; echo
+        get_agent_frame 4
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == $'-\n\\\n|\n/\n-' ]] || false
+}
+
+@test "get_agent_frame: single-glyph fallback when -frames is unset but -busy is set" {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    *@clux-agent-glyph-busy-frames*) printf '\n' ;;
+    *@clux-agent-glyph-busy*) printf '@\n' ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame 2
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "@" ]] || false
+}
+
+@test "get_agent_frame: an all-whitespace frame list falls back to the busy glyph, never empty" {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    *@clux-agent-glyph-busy-frames*) printf '   \n' ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame 0
+    "
+    [ "$status" -eq 0 ]
+    [[ -n "$output" ]] || false
+    [[ "$output" == "*" ]] || false
+}
+
+@test "get_agent_frame: a frame containing # is doubled before it is printed" {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    *@clux-agent-glyph-busy-frames*) printf '%s\n' 'a#b c' ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame 0
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "a##b" ]] || false
+}
+
+@test "get_agent_frame: a non-numeric index falls back to frame 0, never errors" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame notanumber
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "-" ]] || false
+}
+
+@test "get_agent_frame: a missing index falls back to frame 0" {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        get_agent_frame
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == "-" ]] || false
+}

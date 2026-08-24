@@ -196,6 +196,101 @@ _make_fake_scripts_dir() {
     diff <(grep -v '^# Generated:' "$out1") <(grep -v '^# Generated:' "$out2")
 }
 
+@test "render-clux-conf: drops @clux_bar_tpl above the closing seed render (animated busy glyph, 3.5.0)" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'set -gu @clux_bar_tpl' "$out" || { echo "no set -gu @clux_bar_tpl line"; false; }
+    local drop_line seed_line
+    drop_line=$(grep -n 'set -gu @clux_bar_tpl' "$out" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n 'run-shell ".*session-bar-refresh\.sh"$' "$out" | tail -1 | cut -d: -f1)
+    [ -n "$drop_line" ] || false
+    [ -n "$seed_line" ] || false
+    [ "$drop_line" -lt "$seed_line" ] || {
+        echo "@clux_bar_tpl drop (line $drop_line) is not above the seed render (line $seed_line)"
+        false
+    }
+}
+
+@test "render-clux-conf: sweeps every @clux_frame_idx* option, including the per-client form" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF '@clux_frame_idx' "$out" || { echo "no @clux_frame_idx sweep line"; false; }
+    # The sweep line carries the regex, not a literal set -gu per counter —
+    # it must name the option prefix so both the shared and per-client forms
+    # are covered by one line.
+}
+
+@test "render-clux-conf: never emits @clux-agent-glyph-busy-frames — no matching flag exists" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --bar-name-attached-style 'bg=red,fg=white' \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    run grep -c '@clux-agent-glyph-busy-frames' "$out"
+    [ "$output" = "0" ]
+}
+
+@test "render-clux-conf: the generated conf clears animation runtime state on a throwaway real server" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+
+    # Real tmux, not the logging stub install_stubs put on PATH — same
+    # PATH-narrowing trick the "output parses cleanly" test above uses.
+    local real_path; real_path="$(dirname "$REAL_TMUX"):/usr/bin:/bin"
+    local sock="clux-render-test-$$"
+    local log="$BATS_TEST_TMPDIR/probe.log"
+
+    bash -c "
+        PATH='$real_path'
+        tmux -L '$sock' -f /dev/null new-session -d -x 80 -y 24
+        tmux -L '$sock' set-option -g @clux_frame_idx 3
+        tmux -L '$sock' set-option -g @clux_frame_idx_9999 2
+        tmux -L '$sock' set-option -g @clux_bar_tpl 'leftover'
+        tmux -L '$sock' set-option -g @clux-agent-glyph-busy '@'
+        tmux -L '$sock' source-file '$out'
+        {
+            printf 'frame_idx=%s\n' \"\$(tmux -L '$sock' show-option -gqv @clux_frame_idx)\"
+            printf 'frame_idx_pid=%s\n' \"\$(tmux -L '$sock' show-option -gqv @clux_frame_idx_9999)\"
+            printf 'bar_tpl=%s\n' \"\$(tmux -L '$sock' show-option -gqv @clux_bar_tpl)\"
+            printf 'busy=%s\n' \"\$(tmux -L '$sock' show-option -gqv @clux-agent-glyph-busy)\"
+        } > '$log'
+        tmux -L '$sock' kill-server
+    " >/dev/null 2>&1
+
+    local frame_idx frame_idx_pid bar_tpl busy
+    frame_idx=$(grep '^frame_idx=' "$log" | cut -d= -f2-)
+    frame_idx_pid=$(grep '^frame_idx_pid=' "$log" | cut -d= -f2-)
+    bar_tpl=$(grep '^bar_tpl=' "$log" | cut -d= -f2-)
+    busy=$(grep '^busy=' "$log" | cut -d= -f2-)
+
+    [ -z "$frame_idx" ] || { echo "@clux_frame_idx survived: $frame_idx"; false; }
+    [ -z "$frame_idx_pid" ] || { echo "@clux_frame_idx_9999 survived: $frame_idx_pid"; false; }
+    [ -z "$bar_tpl" ] || { echo "@clux_bar_tpl survived: $bar_tpl"; false; }
+    [ "$busy" = "@" ] || { echo "unrelated @clux-agent-glyph-busy did not survive: $busy"; false; }
+}
+
 @test "render-clux-conf: prints the output path on stdout" {
     local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
     local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"

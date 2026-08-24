@@ -22,7 +22,7 @@ Two goals, and setup must reach whichever one the machine asks for:
 - **clux owns exactly one file**: `~/.config/clux/clux.tmux.conf`. It is rewritten whole on every run, so it needs no markers inside it. Never hand-edit it — call `render-clux-conf.sh`
 - **The user's tmux.conf gets one line and two token strings, and nothing else**:
   - `source-file -q ~/.config/clux/clux.tmux.conf`
-  - `#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet)` — the session-bar token string, **contiguous**, never the `#{...}` part alone
+  - `#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid})` — the session-bar token string, **contiguous**, never the `#{...}` part alone. `#{client_pid}` keys the per-client animation-frame counter (see the animated-busy-glyph note under §3.7) — the argument-less form still works on an install from before 3.5.0, falling back to one shared counter
   - `#{@clux_status}` — the notification token
 - **Never write a setting clux does not own.** `status-interval`, `status-position`, colors outside clux's own bar, the prefix key, pane keys, copy mode, the clipboard, resurrect — all stay the user's. Where clux wants a particular value, **report it and leave it alone**
 - **Never overwrite an existing status display** — read the current value and insert the tokens into it
@@ -292,8 +292,9 @@ clux setup — analysis results:
     source-file line for clux.tmux.conf: not present (will be added)
     #{@clux_session_bar}: 0   #{@clux_status}: 0   session-bar-refresh.sh quiet: 0
     Legacy wiring: #(…/show-notification.sh) at line 239 (replaced by #{@clux_status})
-    status-interval: 2  (clux works best at 1 or 2 — no change needed, and clux
-                         will not write it either way)
+    status-interval: 2  (the busy glyph advances one frame per status-interval —
+                         1 gives a ~1fps pulse, 2 gives one every two seconds;
+                         no change needed, and clux will not write it either way)
     status-left-length: 150 (fine)
     tpm loads claude-notify.tmux: no
 
@@ -504,6 +505,7 @@ When clux renders the session list, the per-session agent column is already part
 |--------|---------|---------|
 | `@clux-agent-state-dir` | `${XDG_STATE_HOME:-$HOME/.local/state}/clux/agents` | root of the state store; files live one level down, under a directory per tmux server |
 | `@clux-agent-glyph-busy` | `*` | glyph shown while Claude is working |
+| `@clux-agent-glyph-busy-frames` | `- \ \| /` | frames the busy glyph cycles through in clux's own session bar, one per `status-interval`. Set `@clux-agent-glyph-busy` alone and leave this unset to keep a static glyph — see the note below the table |
 | `@clux-agent-glyph-needs` | `!` | glyph shown when Claude needs your input |
 | `@clux-agent-glyph-done` | `v` | glyph shown when Claude finished |
 | `@clux-agent-busy-color` | `cyan` | foreground color for the busy glyph |
@@ -511,7 +513,25 @@ When clux renders the session list, the per-session agent column is already part
 | `@clux-agent-done-color` | `green` | foreground color for the finished glyph |
 | `@clux-agent-refresh-command` | `refresh-client -S` | tmux command run after each state write |
 
-Glyph defaults are plain ASCII on purpose: the bar reserves exactly ONE column per session, and a two-column glyph (an emoji, a nerd-font icon) would reflow it. A user who sets a wide glyph owns the reflow. There is no `@clux-agent-glyph-idle` — `get_tmux_option` collapses a single-space value to its default, so idle is a literal space the renderer emits.
+Glyph defaults are plain ASCII on purpose: the bar reserves exactly ONE column per session, and a two-column glyph (an emoji, a nerd-font icon) would reflow it. A user who sets a wide glyph owns the reflow. There is no `@clux-agent-glyph-idle` — `get_tmux_option` collapses a single-space value to its default, so idle is a literal space the renderer emits. `@clux-agent-glyph-busy-frames` does not change this: the shipped default (`- \ | /`) stays one plain-ASCII column, same as every other glyph default here.
+
+**`@clux-agent-glyph-busy-frames` must always be written single-quoted.** Verified on tmux 3.7b: a double-quoted value —
+
+```tmux
+set -g @clux-agent-glyph-busy-frames "- \ | /"    # WRONG — do not do this
+```
+
+— loses the backslash to tmux's own double-quote parser and comes back as three frames (`- | /`), not four. Single-quoted, it survives intact:
+
+```tmux
+set -g @clux-agent-glyph-busy-frames '- \ | /'
+```
+
+Opt-in moon rotation — not the shipped default, because these glyphs are Unicode "ambiguous width": one cell in a common terminal, two cells under a CJK locale, and the bar reserves exactly one:
+
+```tmux
+set -g @clux-agent-glyph-busy-frames '◐ ◓ ◑ ◒'
+```
 
 ```tmux
 # Plain status line: compact roll-up of every non-idle session
@@ -520,6 +540,16 @@ set -g status-right "#(DEPLOY_DIR/agent-bar.sh) #{status-right}"
 # The user's own session-list bar: one reserved column per session
 #(DEPLOY_DIR/agent-bar.sh #{session_name})
 ```
+
+Neither snippet above moves: `@clux-agent-glyph-busy-frames` is read by clux's own session bar (`session-list.sh` via `session-bar-refresh.sh`), not by `agent-bar.sh`. A standalone `agent-bar.sh` install keeps a static glyph unless it is invoked with an explicit `--frame N` — nothing in this skill ever calls it that way, so the two snippets above render exactly as they always have.
+
+**`throttle.sh` — memoize a slow status-line job.** tmux re-runs **every** `#()` job on the status line on every redraw, not just the one segment whose content changed (measured with `refresh-client -S`). So a faster `status-interval` — see the note above about the animated busy glyph — makes the user's *own* `#()` jobs pay too, not just clux's. `throttle.sh` is a small opt-in tool for that: cache a job's output and only re-run the command every N seconds.
+
+```tmux
+#(~/.config/clux/scripts/throttle.sh 10 ~/.config/tmux/scripts/git.sh "#{pane_current_path}")
+```
+
+`throttle.sh <seconds> <command> [args…]` — a cache miss runs the command and caches stdout; a cache hit is a single bash start (~5ms), no fork of the wrapped command. Deployed via the manifest like every other script, at `~/.config/clux/scripts/throttle.sh`. Setup does **not** rewrite the user's existing `#()` jobs to use it — it is a tool to reach for, opted into by editing the user's own status line, same as every other line in this section.
 
 Ask explicitly — this is opt-in, default off:
 ```
@@ -576,15 +606,15 @@ Write `${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf` — the XDG path, not `
 # tmux.conf — created by /clux:setup.
 # clux owns only the source-file line at the bottom of this file. Everything
 # else here is a plain starting point: edit it freely, clux will not rewrite it.
-set -g status-interval 2
+set -g status-interval 1
 set -g status-left-length 150
 set -g monitor-bell on
 set -g bell-action any
-set -g 'status-format[0]' '#[align=left] #{@clux_session_bar}#[align=centre]#{@clux_status}#[align=right]#(~/.config/clux/scripts/session-bar-refresh.sh quiet) '
+set -g 'status-format[0]' '#[align=left] #{@clux_session_bar}#[align=centre]#{@clux_status}#[align=right]#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid}) '
 source-file -q ~/.config/clux/clux.tmux.conf
 ```
 
-- `status-interval 2`, not 1: the bar is event-driven, so the interval is only a safety net, and `1` costs a fork per second per client for no gain.
+- `status-interval 1`: the busy glyph advances one frame per `status-interval`, so `1` gives a ~1fps pulse. The bar is otherwise event-driven — this interval is only the periodic safety net — and a bare-machine install has exactly one `#()` job on the line, so a quiet tick is cheap (about 30ms/s; see the `throttle.sh` note under §3.7 for a job that is not this one).
 - The `source-file` line is **last**, so clux's hooks register after the status settings they redraw.
 - The result is stock tmux plus a working clux bar and working session keys. Prefix stays `C-b`. Pane keys stay stock.
 
@@ -601,15 +631,17 @@ That is exactly where the currently shipped setup puts `#(show-notification.sh)`
 **The session-bar token string is contiguous text**:
 
 ```
-#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet)
+#{@clux_session_bar}#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid})
 ```
 
-Never insert `#{@clux_session_bar}` alone. tmux does not re-expand a `#()` found inside an option value, so the periodic safety net that keeps the bar fresh between hook-covered events cannot live in clux's own file — it has to be literal text in the rendered status line. It renders zero characters (the `quiet` argument skips the redraw) and goes in as part of the same single edit.
+Never insert `#{@clux_session_bar}` alone. tmux does not re-expand a `#()` found inside an option value, so the periodic safety net that keeps the bar fresh between hook-covered events cannot live in clux's own file — it has to be literal text in the rendered status line. It renders zero characters (the `quiet` argument skips the redraw) and goes in as part of the same single edit. `#{client_pid}` lets `session-bar-refresh.sh` key its per-client animation-frame counter — see the animated-busy-glyph note under §3.7.
 
 For a shared setting clux wants but does not own, **report and move on**:
 
 ```
-clux works best with status-interval at 1 or 2. Yours is 2. No change needed.
+clux works best with status-interval at 1: the busy glyph advances one frame
+per interval, so 1 gives a ~1fps pulse. Yours is 2 (one frame every two
+seconds — still smooth, just slower). No change needed.
 ```
 
 ### Optional migration (only when Agent B found a hand-written session surface)

@@ -10,7 +10,7 @@
 # talks to tmux itself and never asks a question — every value it needs
 # arrives as a flag.
 #
-# Six sections, in the order the design specifies:
+# Seven sections, in the order the design specifies:
 #   1. Header comment (version stamp, ownership rule, hook-band reservation)
 #   2. Part 3 answers: @clux-dir-resolver, @clux-editor, @clux-agents-command,
 #      @clux-picker, and the optional @clux-agent-refresh-command escape hatch
@@ -19,14 +19,26 @@
 #      default, so this file stays honest about what it inferred)
 #   4. Key bindings: N P { } g A, plus the existing m ` DC M
 #   5. Hooks, hook index band 90-99 (clux's reserved band)
-#   6. A load-time reap + one bar render, last, so the bar it seeds carries no
+#   6. A drop of the animation runtime state a previous load left behind
+#      (@clux_bar_tpl, @clux_frame_idx[_<client_pid>] — see the naming rule
+#      below), ABOVE the seed render in section 7
+#   7. A load-time reap + one bar render, last, so the bar it seeds carries no
 #      marks left over from a previous server
 #
 # Deliberately absent, per the design: no @clux-session-order line (it is
 # live server state, not something this file resets on every reload — that
 # would undo every reorder the moment the file is re-sourced), and no
 # @clux_session_bar / @clux_status lines (those are the two RUNTIME strings
-# clux's hooks render into, never config this file sets).
+# clux's hooks render into, never config this file sets). @clux_bar_tpl and
+# @clux_frame_idx[_<client_pid>] are two more RUNTIME (@clux_*, underscored)
+# options in the same family — added by the animated-busy-glyph design
+# (2026-08-23) — and this file's relationship to them is the mirror image:
+# it does not SET them either, but it does actively CLEAR them (section 6),
+# because a stale @clux_bar_tpl surviving a config reload would keep
+# substituting into the bar for up to FULL_EVERY seconds afterward.
+# @clux_bar_tpl_at from an earlier design pass no longer exists as a separate
+# option — @clux_bar_tpl now carries "<epoch><TAB><template>" in one option,
+# so do not add it back.
 
 set -uo pipefail
 
@@ -251,6 +263,31 @@ PAIRS
     printf 'set-hook -g '"'"'window-linked[91]'"'"' "run-shell -b %s/session-bar-refresh.sh"\n' "$SCRIPTS_DIR"
     printf 'set-hook -g '"'"'window-unlinked[91]'"'"' "run-shell -b %s/session-bar-refresh.sh"\n' "$SCRIPTS_DIR"
 
+    echo
+    echo "# --- Drop animation runtime state a previous load left behind ---"
+    # @clux_bar_tpl and @clux_frame_idx[_<client_pid>] are RUNTIME options the
+    # animated-busy-glyph design (2026-08-23) reads and writes on every status
+    # redraw — never config this file sets going forward, same rule as
+    # @clux_session_bar / @clux_status above. Dropping them here matters on
+    # "prefix + r" (a re-source of a LIVE server): without this, a stale
+    # @clux_bar_tpl from before the reload would keep substituting into the bar
+    # for up to FULL_EVERY (5s) seconds after a config change. Both are cleared
+    # ABOVE the seed render below, so the seed render is the first thing to
+    # repopulate them — never the reverse.
+    printf '%s\n' 'set -gu @clux_bar_tpl'
+    # printf, not echo: this line carries \( \) and \1, which xpg_echo (or a
+    # /bin/sh-ish echo) would interpret before they ever reach the sed
+    # expression written into the conf file — the same trap
+    # get_agent_glyph_busy_frames() in helpers.sh documents for its own
+    # backslash-bearing default.
+    #
+    # Single-quoted in the GENERATED conf, not double-quoted: tmux expands a
+    # "$name" inside its own double-quoted run-shell argument before /bin/sh
+    # ever sees it, so the double-quoted form of this line fails at runtime
+    # with `set-option -gu ""` (verified on tmux 3.7b). xargs -n1 runs its
+    # command zero times on empty input, so this is a no-op on a fresh server
+    # that has never animated (verified).
+    printf '%s\n' "run-shell 'tmux show-options -g | sed -n \"s/^\\(@clux_frame_idx[^ ]*\\) .*/\\1/p\" | xargs -n1 tmux set-option -gu'"
     echo
     echo "# --- Seed the bar (reap dead marks first, so nothing stale renders) ---"
     printf 'run-shell "%s/agent-clear.sh --reap"\n' "$SCRIPTS_DIR"

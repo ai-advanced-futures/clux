@@ -192,9 +192,85 @@ get_agent_nav_key()         { get_tmux_option "@clux-agent-nav-key" "Left"; }
 # inside a command substitution, so a value of a single space is stripped to
 # empty and silently falls back to the default — a space-valued option can
 # never be honoured. The idle column is a literal space emitted by the renderer.
-get_agent_glyph_busy()      { get_tmux_option "@clux-agent-glyph-busy"  "*"; }
+#
+# get_agent_glyph_busy() also honours CLUX_AGENT_GLYPH_BUSY (animated busy
+# glyph, 2026-08-23 design). This is how session-bar-refresh.sh drives ANY
+# renderer built on this getter to draw the sentinel without ever writing the
+# user-owned @clux-agent-glyph-busy option (invariant: clux never writes a
+# setting it does not own). session-list.sh does not call this getter — it is
+# the hot path and deliberately does not source helpers.sh — so it applies the
+# same override to its own field directly; see session-list.sh. The `:-` is
+# load-bearing: callers run under `set -u`.
+get_agent_glyph_busy() {
+    if [ -n "${CLUX_AGENT_GLYPH_BUSY:-}" ]; then
+        printf '%s\n' "$CLUX_AGENT_GLYPH_BUSY"
+        return
+    fi
+    get_tmux_option "@clux-agent-glyph-busy" "*"
+}
 get_agent_glyph_needs()     { get_tmux_option "@clux-agent-glyph-needs" "!"; }
 get_agent_glyph_done()      { get_tmux_option "@clux-agent-glyph-done"  "v"; }
+
+# get_agent_glyph_busy_frames() — the frames the busy glyph cycles through,
+# one per status-interval (animated busy glyph, 2026-08-23 design). Read
+# WITHOUT get_tmux_option(): that helper's body is `echo "${value:-$default}"`,
+# and this option's own default contains a backslash — under `shopt -s
+# xpg_echo` (or a /bin/sh-ish echo) that echo eats it and the four-frame
+# default silently becomes three. Default is single-quoted, ASCII, one column
+# each — same invariant as the glyphs above.
+#
+# @clux-agent-glyph-busy-frames unset falls back to @clux-agent-glyph-busy's
+# OWN raw tmux value, not through get_agent_glyph_busy() (which would also
+# apply CLUX_AGENT_GLYPH_BUSY — the sentinel override belongs to
+# session-bar-refresh.sh's substitution path, not to this default lookup).
+# That is what makes "set @clux-agent-glyph-busy alone and leave -frames
+# unset" keep the glyph static: a user who customised only the single glyph
+# gets that one glyph as a one-frame list, never the shipped four-frame
+# rotation. Only when BOTH options are genuinely unset does the shipped
+# default take over.
+get_agent_glyph_busy_frames() {
+    local frames_raw busy_raw
+    frames_raw=$(tmux show-option -gqv "@clux-agent-glyph-busy-frames" 2>/dev/null)
+    if [ -n "$frames_raw" ]; then
+        printf '%s\n' "$frames_raw"
+        return
+    fi
+    busy_raw=$(tmux show-option -gqv "@clux-agent-glyph-busy" 2>/dev/null)
+    if [ -n "$busy_raw" ]; then
+        printf '%s\n' "$busy_raw"
+        return
+    fi
+    printf '%s\n' '- \ | /'
+}
+
+# get_agent_frame <index> — for agent-bar.sh ONLY. session-bar-refresh.sh must
+# NOT call this: it is the hot path and does not source helpers.sh (repo
+# invariant), so it carries its own copy of this exact parsing logic inline.
+# The two copies are pinned together by the cross-check test in
+# test/session-bar-refresh.bats — if you change the rule here, change it
+# there too.
+#
+# Prints the frame at <index> mod the frame count, with every '#' doubled so
+# it can be substituted into a finished bar string without injecting a style
+# (session-list.sh's esc() does the same for session/window names). Falls
+# back to the single busy glyph when the frame list is empty after parsing,
+# and to '*' past that — the sentinel must never be what a caller sees, and
+# neither must an empty column.
+get_agent_frame() {
+    local idx="${1:-0}" raw f n
+    local frames
+    raw=$(get_agent_glyph_busy_frames)
+    IFS=' ' read -r -a frames <<< "$raw"      # -r: a bare `read -a` eats the backslash a second time
+    n=${#frames[@]}
+    if [ "$n" -eq 0 ]; then
+        frames=( "$(get_agent_glyph_busy)" ); n=1
+    fi
+    case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
+    idx=$(( 10#$idx ))   # base ten: a leading zero must not read as octal
+    f="${frames[$(( idx % n ))]}"
+    [ -n "$f" ] || f='*'
+    printf '%s' "${f//#/##}"
+}
 
 # Agent-state bar colours — foreground only, tmux named colours as defaults so
 # an 8-colour terminal and the user's palette both work. Deliberately NOT wired

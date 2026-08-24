@@ -2,6 +2,80 @@
 
 All notable changes to clux are documented here.
 
+## [3.5.0]
+
+### Added
+
+- **The busy glyph moves.** A session with a `busy` Claude shows a small set of
+  frames in turn. It no longer shows one character that does not move. You can
+  see the difference between "working" and "hung".
+- New option `@clux-agent-glyph-busy-frames`. It holds a list of frames,
+  separated by spaces. The default is `- \ | /`: four frames, one column each,
+  plain ASCII. This follows the width rule the other glyph defaults follow.
+- **Write the frames option with single quotes.** tmux removes the backslash
+  from a value in double quotes. The value then gives three frames, not four.
+  This was tested on tmux 3.7b.
+- A moon rotation (`◐ ◓ ◑ ◒`) is an example in `configuring-tmux/SKILL.md`. It
+  is not the default. These glyphs have "ambiguous width": one cell in most
+  terminals, two cells in a CJK locale.
+- Set `@clux-agent-glyph-busy` and do not set `-frames` to keep a glyph that
+  does not move. Each existing config keeps its look after an upgrade.
+- **`throttle.sh`** — a tool for your own `#()` status jobs. Use
+  `throttle.sh <seconds> <command> [args…]`. It keeps the output of a job and
+  runs the command again only after `<seconds>`. tmux runs every `#()` job on
+  the status line at each redraw. Thus a job costs more when you decrease
+  `status-interval` for the animation. clux does not change your jobs. Use this
+  tool if you want it.
+
+### Changed
+
+- **`session-bar-refresh.sh` keeps the drawn bar as a template.** Each tick
+  replaces one glyph in that template. Before, each redraw did a full render
+  with `session-list.sh`, which takes approximately 110 ms. A full render now
+  occurs every 5 seconds, or immediately after a hook. A cheap tick takes
+  approximately 46 ms.
+- **A counter gives the frame, not the clock.** A frame from the clock skips
+  frames, because tmux reads the result of a `#()` job again only once each
+  `status-interval`, and the two clocks move apart.
+- Two new runtime options: `@clux_bar_tpl` holds the template with its time
+  stamp, and `@clux_frame_idx[_<client_pid>]` holds the counter. The counter
+  has one key for each attached client. Two clients thus do not share one
+  counter. `render-clux-conf.sh` clears both options at each load, so a reload
+  cannot use a template from before the reload.
+- The periodic token takes an argument:
+  `#(~/.config/clux/scripts/session-bar-refresh.sh quiet #{client_pid})`. tmux
+  runs a `#()` job one time for each attached client that draws the status
+  line. The client id lets each client advance only its own counter. The form
+  without the argument continues to operate: clux uses one shared counter if
+  the id is absent or is not a number. Each 3.3 and 3.4 install thus continues
+  to operate.
+- **`agent-bar.sh` accepts an optional `--frame N` pair** before its other
+  arguments. Without `--frame`, the output is the same as before. The
+  standalone-glyph installs in `configuring-tmux/SKILL.md` §3.7 thus keep their
+  glyph that does not move.
+- **The `status-interval` guidance changes. The CRITICAL RULE does not.** clux
+  reports `status-interval` and does not write it in an existing config
+  (Mode 2). The busy glyph advances one frame each `status-interval`. Thus `1`
+  gives approximately one frame each second, and `2` gives one frame each two
+  seconds. With `throttle.sh` around slow jobs, `1` costs approximately 30 ms
+  each second. The text before 3.5.0 called `1` "a fork per second for no
+  gain". Mode 1 writes `status-interval 1`, which is what `README.md`
+  recommends.
+
+### Note
+
+- `status-interval` limits the speed of the animation. The minimum in tmux is 1
+  second. `refresh-client -S` runs every `#()` job on the status line again.
+  Thus you cannot draw one segment more often than the rest of the bar.
+- **Accepted jitter of one frame.** The hook path has no client id. It thus
+  reads the shared `@clux_frame_idx`, which a periodic tick for one client does
+  not advance. A hook can thus draw the frame at which the shared counter
+  stands. The next periodic tick continues the sequence for that client. To
+  advance the counter on the hook path was refused: many hooks together would
+  move the animation forward too quickly. To use the counter of one client is a
+  race. This jitter of one frame, after an action by the user, is the accepted
+  cost.
+
 ## [3.4.0]
 
 ### Fixed

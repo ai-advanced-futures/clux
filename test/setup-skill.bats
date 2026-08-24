@@ -70,7 +70,22 @@ SKILL="$REPO_ROOT/plugins/clux/skills/configuring-tmux/SKILL.md"
                 'tmux/scripts/' \
                 'render-clux-conf.sh' \
                 'verify-tmux-conf.sh' \
-                'AskUserQuestion'; do
+                'AskUserQuestion' \
+                '@clux-agent-glyph-busy-frames' \
+                'throttle.sh'; do
+        grep -qF "$part" "$SKILL" || missing="$missing [$part]"
+    done
+    [ -z "$missing" ] || { echo "the skill lost:$missing"; false; }
+}
+
+@test "setup-skill: the ASCII-glyph-default rationale is unchanged and not caveated by the animation" {
+    # The animated-busy-glyph design (2026-08-23) is explicit: the shipped
+    # default stays ASCII, so this language does not change and does not
+    # grow a caveat. Losing either string silently is exactly the kind of
+    # drift this file exists to catch.
+    local missing="" part
+    for part in 'plain ASCII on purpose' \
+                'owns the reflow'; do
         grep -qF "$part" "$SKILL" || missing="$missing [$part]"
     done
     [ -z "$missing" ] || { echo "the skill lost:$missing"; false; }

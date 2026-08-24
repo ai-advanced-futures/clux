@@ -446,6 +446,18 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
       && ! grep -Fq 'clux/scripts/session-bar-refresh.sh quiet' "$TMUX_CONF"; then
        echo "WARN the 'quiet' refresh job does not point at ~/.config/clux/scripts/ — it is a hand-written copy, not clux's"
    fi
+   # Report-only: whether the periodic job keys its own per-client animation
+   # frame counter. Its absence is not a failure — session-bar-refresh.sh
+   # falls back to one shared counter — but with two attached clients that
+   # shared counter advances twice per interval and the two read-modify-write
+   # cycles race. Nothing here repairs it; re-running /clux:setup does.
+   if grep -Fq 'session-bar-refresh.sh quiet' "$TMUX_CONF"; then
+       if grep -Fq 'session-bar-refresh.sh quiet #{client_pid}' "$TMUX_CONF"; then
+           echo "OK  the 'quiet' job passes #{client_pid} — each attached client owns its own animation-frame counter"
+       else
+           echo "INFO the 'quiet' job carries no #{client_pid} — fine with one attached client; with two, they race one shared frame counter (re-run /clux:setup to pick up the newer token)"
+       fi
+   fi
    ```
    `#{@clux_session_bar}` and `session-bar-refresh.sh quiet` must **agree**: one present without the other is a FAIL. With the token but no `quiet` job the bar only updates on a hooked event and never recovers from a missed one; with the job but no token nothing renders at all.
 4. **The runtime strings are actually being rendered into**:
@@ -551,7 +563,8 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 8. **Agent state options and state dir** — shared with the notification surface, one source of truth for both:
    ```bash
-   for OPT in @clux-agent-glyph-busy:'*' @clux-agent-glyph-needs:'!' @clux-agent-glyph-done:v \
+   for OPT in @clux-agent-glyph-busy:'*' @clux-agent-glyph-busy-frames:'- \ | /' \
+              @clux-agent-glyph-needs:'!' @clux-agent-glyph-done:v \
               @clux-agent-busy-color:cyan @clux-agent-needs-color:yellow @clux-agent-done-color:green \
               @clux-agent-state-dir:"\${XDG_STATE_HOME:-\$HOME/.local/state}/clux/agents"; do
        NAME="${OPT%%:*}"
@@ -677,6 +690,7 @@ clux validate — health check results
 
   Agent state:
     ~ @clux-agent-glyph-busy (using default: *)
+    ~ @clux-agent-glyph-busy-frames (using default: - \ | /)
     ~ @clux-agent-glyph-needs (using default: !)
     ~ @clux-agent-glyph-done (using default: v)
     ~ @clux-agent-busy-color (using default: cyan)

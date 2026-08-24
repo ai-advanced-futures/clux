@@ -299,3 +299,100 @@ STUBEOF
     # Detached session uses the plain detached style, no window brackets for it.
     [[ "$output" == *"#[fg=magenta] idle "* ]]
 }
+
+# ---------------------------------------------------------------------------
+# CLUX_AGENT_GLYPH_BUSY env override (animated busy glyph, 2026-08-23 design).
+# session-list.sh deliberately does not source helpers.sh, so it cannot pick
+# up get_agent_glyph_busy()'s override — it applies the same override to its
+# own field, right after its existing batched read.
+# ---------------------------------------------------------------------------
+
+@test "session-list: CLUX_AGENT_GLYPH_BUSY overrides the busy column" {
+    _write_list_tmux_stub
+    _write_agent_query_stub 'alpha	busy'
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export CLUX_AGENT_GLYPH_BUSY='ZZ'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=cyan]ZZ#[default]"* ]]
+    [[ "$output" != *"#[fg=cyan]*#[default]"* ]]
+}
+
+@test "session-list: unset CLUX_AGENT_GLYPH_BUSY still honours the @clux-agent-glyph-busy option" {
+    _write_list_tmux_stub
+    _write_agent_query_stub 'alpha	busy'
+    local opts
+    opts="${SEP}${SEP}${SEP}${SEP}${SEP}${SEP}${SEP}${SEP}${SEP}${SEP}@${SEP}${SEP}${SEP}${SEP}${SEP}"
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        unset CLUX_AGENT_GLYPH_BUSY
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        export FAKE_OPTS='$opts'
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=cyan]@#[default]"* ]]
+}
+
+@test "session-list: both unset falls back to the plain * default" {
+    _write_list_tmux_stub
+    _write_agent_query_stub 'alpha	busy'
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        unset CLUX_AGENT_GLYPH_BUSY
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=cyan]*#[default]"* ]]
+}
+
+@test "session-list: the env override changes only the busy column — rest of the bar is unaffected" {
+    _write_list_tmux_stub
+    _write_agent_query_stub $'alpha\tbusy\nbeta\tneeds-you'
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER='alpha,beta'
+        export FAKE_SESSIONS=\$'\$0\talpha\n\$1\tbeta'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha\nbeta\t1\tbeta'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor\nbeta\t1\t0\teditor'
+        unset CLUX_AGENT_GLYPH_BUSY
+        '$LIST_SCRIPT'
+    " > "$BATS_TEST_TMPDIR/plain.out"
+    [ "$status" -eq 0 ]
+
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER='alpha,beta'
+        export FAKE_SESSIONS=\$'\$0\talpha\n\$1\tbeta'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha\nbeta\t1\tbeta'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor\nbeta\t1\t0\teditor'
+        export CLUX_AGENT_GLYPH_BUSY='Q'
+        '$LIST_SCRIPT'
+    " > "$BATS_TEST_TMPDIR/overridden.out"
+    [ "$status" -eq 0 ]
+
+    # Only the busy glyph itself should differ between the two renders.
+    local plain overridden expect
+    plain="$(cat "$BATS_TEST_TMPDIR/plain.out")"
+    overridden="$(cat "$BATS_TEST_TMPDIR/overridden.out")"
+    expect="${plain//\#\[fg=cyan\]\*\#\[default\]/\#[fg=cyan]Q\#[default]}"
+    [ "$overridden" = "$expect" ]
+}
