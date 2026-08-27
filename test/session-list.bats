@@ -13,7 +13,10 @@
 load test_helper
 
 LIST_SCRIPT="$SCRIPTS_DIR/session-list.sh"
-SEP=$'\037'
+REAL_TMUX="$(command -v tmux)"
+# Must match session-list.sh's own SEP. U+E001, not a control byte: tmux 3.4
+# escapes control bytes out of `display-message -p`, so \037 never split there.
+SEP=$'\356\200\201'
 
 # ---------------------------------------------------------------------------
 # _write_list_tmux_stub — one tmux stub serving every call session-list.sh
@@ -395,4 +398,53 @@ STUBEOF
     overridden="$(cat "$BATS_TEST_TMPDIR/overridden.out")"
     expect="${plain//\#\[fg=cyan\]\*\#\[default\]/\#[fg=cyan]Q\#[default]}"
     [ "$overridden" = "$expect" ]
+}
+
+# ---------------------------------------------------------------------------
+# Real-server option round-trip. Every case above feeds the batched option read
+# through a tmux STUB, which hands FAKE_OPTS back verbatim — so a stub can
+# never catch a tmux build that MANGLES the separator on the way out, and one
+# does: tmux 3.4 escapes control bytes out of `display-message -p`, turning a
+# literal 0x1F into the four characters \037. The read then never split, every
+# field but the first came back empty, the bar silently fell back to its
+# hardcoded defaults, and "\037" leaked onto the status line.
+#
+# This case sets the options on a REAL server and asserts the configured values
+# actually arrive. It fails on any separator the running tmux does not pass
+# through byte for byte.
+# ---------------------------------------------------------------------------
+@test "session-list: real-server — configured @clux-bar-* values reach the bar, separator intact" {
+    local sock="clux-list-$$-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -s alpha -x 80 -y 24
+    local sockpath
+    sockpath="$("$REAL_TMUX" -L "$sock" display-message -p '#{socket_path}')"
+
+    # Three fields spread across the batched read — first third, middle, and
+    # near the end — so a split that fails anywhere is caught. The session is
+    # detached, so it is the DETACHED name style that renders here.
+    "$REAL_TMUX" -L "$sock" set-option -g @clux-bar-name-detached-style "fg=#B48EAD,bold"
+    "$REAL_TMUX" -L "$sock" set-option -g @clux-bar-separator-style     "fg=#4C566A"
+    "$REAL_TMUX" -L "$sock" set-option -g @clux-bar-separator           "SEPGLYPH"
+
+    local out
+    out="$(env TMUX="$sockpath,0,0" PATH="$(dirname "$REAL_TMUX"):/usr/bin:/bin" \
+        CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/store" "$LIST_SCRIPT" 2>/dev/null)"
+
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    rm -f "$sockpath" >/dev/null 2>&1 || true
+
+    [ -n "$out" ] || { echo "renderer produced no output"; false; }
+
+    # The configured values arrived — i.e. the batched read really split.
+    [[ "$out" == *"fg=#B48EAD,bold"* ]] || { echo "detached name style missing: $out"; false; }
+    [[ "$out" == *"fg=#4C566A"*      ]] || { echo "separator style missing: $out"; false; }
+    [[ "$out" == *"SEPGLYPH"*        ]] || { echo "separator glyph missing: $out"; false; }
+
+    # No default leaked in as the symptom of an unsplit read...
+    [[ "$out" != *"fg=magenta"*     ]] || { echo "fell back to the default name style: $out"; false; }
+    [[ "$out" != *"fg=brightblack"* ]] || { echo "fell back to the default separator style: $out"; false; }
+    # ...and no separator, raw or escaped, reached the screen.
+    [[ "$out" != *'\037'* ]] || { echo "escaped separator leaked into the bar: $out"; false; }
+    [[ "$out" != *"$SEP"* ]] || { echo "raw separator leaked into the bar: $out"; false; }
 }

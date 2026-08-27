@@ -63,6 +63,13 @@ BAR_WINDOW_CLOSE=""
 BAR_SEPARATOR=""
 BAR_NAME_LENGTH=""
 
+AGENT_BUSY_COLOR=""
+AGENT_NEEDS_COLOR=""
+AGENT_DONE_COLOR=""
+AGENT_GLYPH_BUSY=""
+AGENT_GLYPH_NEEDS=""
+AGENT_GLYPH_DONE=""
+
 usage() {
     cat <<'USAGE'
 Usage: render-clux-conf.sh --dir-resolver V --editor V --agents-command V --picker V [options]
@@ -87,6 +94,16 @@ Optional:
   --bar-window-close VALUE
   --bar-separator VALUE
   --bar-name-length VALUE
+  --agent-busy-color VALUE        colour of the busy glyph in the bar's
+  --agent-needs-color VALUE        per-session agent column, and of the
+  --agent-done-color VALUE         glyph agent-bar.sh draws
+  --agent-glyph-busy VALUE        one column each — a two-column glyph
+  --agent-glyph-needs VALUE        (emoji, nerd-font icon) reflows the bar,
+  --agent-glyph-done VALUE         and the caller owns that reflow
+                                (@clux-agent-glyph-busy-frames is deliberately
+                                 NOT a flag: it needs single-quoting for its
+                                 backslash frame, and an animation choice is
+                                 not something detection reads off an old bar)
   --scripts-dir PATH            default: ~/.config/clux/scripts (the deployed
                                  location bind-key/hook lines point at)
   --out PATH                    default: ~/.config/clux/clux.tmux.conf
@@ -112,6 +129,12 @@ while [ $# -gt 0 ]; do
         --bar-window-close) BAR_WINDOW_CLOSE="${2:-}"; shift 2 ;;
         --bar-separator) BAR_SEPARATOR="${2:-}"; shift 2 ;;
         --bar-name-length) BAR_NAME_LENGTH="${2:-}"; shift 2 ;;
+        --agent-busy-color) AGENT_BUSY_COLOR="${2:-}"; shift 2 ;;
+        --agent-needs-color) AGENT_NEEDS_COLOR="${2:-}"; shift 2 ;;
+        --agent-done-color) AGENT_DONE_COLOR="${2:-}"; shift 2 ;;
+        --agent-glyph-busy) AGENT_GLYPH_BUSY="${2:-}"; shift 2 ;;
+        --agent-glyph-needs) AGENT_GLYPH_NEEDS="${2:-}"; shift 2 ;;
+        --agent-glyph-done) AGENT_GLYPH_DONE="${2:-}"; shift 2 ;;
         --scripts-dir) SCRIPTS_DIR="${2:-}"; shift 2 ;;
         --out) OUT="${2:-}"; shift 2 ;;
         --version) VERSION="${2:-}"; shift 2 ;;
@@ -214,7 +237,13 @@ BAR_SEPARATOR_STYLE:@clux-bar-separator-style
 BAR_WINDOW_OPEN:@clux-bar-window-open
 BAR_WINDOW_CLOSE:@clux-bar-window-close
 BAR_SEPARATOR:@clux-bar-separator
-BAR_NAME_LENGTH:@clux-bar-name-length"
+BAR_NAME_LENGTH:@clux-bar-name-length
+AGENT_BUSY_COLOR:@clux-agent-busy-color
+AGENT_NEEDS_COLOR:@clux-agent-needs-color
+AGENT_DONE_COLOR:@clux-agent-done-color
+AGENT_GLYPH_BUSY:@clux-agent-glyph-busy
+AGENT_GLYPH_NEEDS:@clux-agent-glyph-needs
+AGENT_GLYPH_DONE:@clux-agent-glyph-done"
 
     local any_theme=0 varname optname val
     while IFS=: read -r varname optname; do

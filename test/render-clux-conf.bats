@@ -325,3 +325,59 @@ _make_fake_scripts_dir() {
     [[ "$line" == *"-x 0"* ]] || { echo "not pinned to the left: $line"; false; }
     [[ "$line" == *"-y S"* ]] || { echo "not pinned to the status line: $line"; false; }
 }
+
+# ---------------------------------------------------------------------------
+# Agent colour/glyph flags (added for the "honour the bar the user already
+# had" case). Before these existed, a migrated hand-written bar could keep its
+# @clux-bar-* palette but NOT its agent-glyph colours: those had no flag, so
+# they survived only as live server state and reverted to the cyan/yellow/green
+# defaults on the next tmux server restart.
+# ---------------------------------------------------------------------------
+@test "render-clux-conf: agent colour flags are written, and omitted ones are not" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --agent-busy-color '#88C0D0' \
+            --agent-needs-color '#EBCB8B,bold' \
+            --agent-done-color '#A3BE8C' \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'set -g "@clux-agent-busy-color" "#88C0D0"' "$out" || false
+    grep -qF 'set -g "@clux-agent-needs-color" "#EBCB8B,bold"' "$out" || false
+    grep -qF 'set -g "@clux-agent-done-color" "#A3BE8C"' "$out" || false
+    # A glyph flag that was not passed stays out, same rule as @clux-bar-*.
+    run grep -c '@clux-agent-glyph-' "$out"
+    [ "$output" = "0" ]
+}
+
+@test "render-clux-conf: agent glyph flags are written independently of the colours" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --agent-glyph-busy '+' --agent-glyph-needs '?' --agent-glyph-done 'x' \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'set -g "@clux-agent-glyph-busy" "+"' "$out" || false
+    grep -qF 'set -g "@clux-agent-glyph-needs" "?"' "$out" || false
+    grep -qF 'set -g "@clux-agent-glyph-done" "x"' "$out" || false
+    run grep -c '@clux-agent-busy-color\|@clux-agent-needs-color\|@clux-agent-done-color' "$out"
+    [ "$output" = "0" ]
+}
+
+@test "render-clux-conf: a conf carrying agent colours parses on a throwaway real tmux server" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    "$RENDER_SCRIPT" --dir-resolver path --editor none \
+        --agents-command 'claude agents --cwd "$PWD"' --picker fzf \
+        --agent-busy-color '#88C0D0' --agent-needs-color '#EBCB8B,bold' \
+        --agent-done-color '#A3BE8C' --agent-glyph-done 'v' \
+        --scripts-dir "$scripts_dir" --out "$out" >/dev/null
+    PATH="$(dirname "$REAL_TMUX"):$PATH" run "$VERIFY_SCRIPT" "$out"
+    [ "$status" -eq 0 ]
+}

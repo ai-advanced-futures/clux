@@ -212,6 +212,28 @@ Prompt the agent to:
      - `bg_attention`: attention color (from message-style bg, e.g., `#EBCB8B`)
      - `fg_on_attention`: text on attention bg (from message-style fg, e.g., `#2E3440`)
      - `bg_alert`: alert/red color (from prefix_highlight_bg, e.g., `#BF616A`)
+   - **The bar the user already has is a better source than the config's styles.**
+     A hand-written `session-list.sh` states the exact colours the session bar
+     renders today, and the live server states what is set right now. Both beat
+     inferring a session-bar colour from `status-style`. Read them:
+     ```bash
+     OLD_LIST="$HOME/.config/tmux/scripts/session-list.sh"
+     # The glyph function and the row builders carry the real values, e.g.
+     #   if (st == "busy") return "#[fg=#88C0D0]*#[default]"
+     #   wins[$1]= ... "#[bg=#81A1C1,fg=#ECEFF4,bold]" ...
+     [ -f "$OLD_LIST" ] && grep -n -E '#\[(fg|bg)=' "$OLD_LIST"
+     # Live options win over anything inferred: they are what renders NOW, and
+     # for the agent colours they are frequently the ONLY copy — nothing wrote
+     # them to a file, so they die with the server unless setup carries them.
+     for o in @clux-agent-busy-color @clux-agent-needs-color @clux-agent-done-color \
+              @clux-agent-glyph-busy @clux-agent-glyph-needs @clux-agent-glyph-done; do
+         v=$(tmux show-option -gqv "$o" 2>/dev/null)
+         [ -n "$v" ] && echo "live-option: $o = $v"
+     done
+     ```
+     Add to the color map, when found:
+     - `agent_busy` / `agent_needs` / `agent_done`: the three glyph colours
+     - `glyph_busy` / `glyph_needs` / `glyph_done`: the three glyphs
 6. **Detect a hand-written session surface** — the migration case (Part 5 of the design):
    ```bash
    OLD_DIR="$HOME/.config/tmux/scripts"
@@ -582,6 +604,23 @@ Only when 3.5 was "Yes". Map the palette Agent B extracted onto the `@clux-bar-*
 | `@clux-bar-window-close` | `❱` | (glyph) |
 | `@clux-bar-separator` | `│` | (glyph) |
 | `@clux-bar-name-length` | `24` | the existing `#{=N:window_name}` truncation width, when the config has one |
+| `@clux-agent-busy-color` | `cyan` | `<agent_busy>` |
+| `@clux-agent-needs-color` | `yellow` | `<agent_needs>` |
+| `@clux-agent-done-color` | `green` | `<agent_done>` |
+| `@clux-agent-glyph-busy` | `*` | `<glyph_busy>` |
+| `@clux-agent-glyph-needs` | `!` | `<glyph_needs>` |
+| `@clux-agent-glyph-done` | `v` | `<glyph_done>` |
+
+The six agent rows matter most on a **migration**. The `@clux-bar-*` palette can
+be inferred from the user's styles, but the agent glyph colours usually exist
+only as live server state — a hand-written bar hardcoded them in its own
+`session-list.sh`, and nothing wrote them to a file. Carry them or the bar
+silently reverts to `cyan`/`yellow`/`green` on the next tmux server restart,
+long after setup ran and with nothing to point at.
+
+`@clux-agent-glyph-busy-frames` has no flag on purpose: its default holds a
+backslash that needs single-quoting, and an animation cadence is not something
+detection reads off an old bar. A user who wants it sets it in their own file.
 
 The defaults are tmux **named** colours on purpose, so an 8-colour terminal and an unthemed machine both render readably. `@clux-bar-name-length` must be numeric — `render-clux-conf.sh` refuses a non-numeric value, because a bad `N` corrupts the whole tmux format string `session-list.sh` builds from it.
 
@@ -728,11 +767,13 @@ Call the renderer — never write `clux.tmux.conf` by hand. It emits the six sec
     --picker "<3.4 answer>" \
     --agent-refresh-command "run-shell -b $HOME/.config/clux/scripts/session-bar-refresh.sh" \
     --bar-name-attached-style "<only when detection found it>" \
-    --bar-name-length "<only when detection found it>"
+    --bar-name-length "<only when detection found it>" \
+    --agent-needs-color "<only when detection found it>" \
+    --agent-busy-color "<only when detection found it>"
 ```
 
 - Pass `--agent-refresh-command` **only** when 3.5 was "Yes".
-- Pass a `--bar-*` flag **only** for a value detection actually found.
+- Pass a `--bar-*` or `--agent-*` flag **only** for a value detection actually found.
 - `$PWD` inside the agents command must reach the option **unexpanded**; the renderer single-quotes the value for exactly that reason, so pass it through verbatim and do not pre-expand it.
 - The renderer writes no `@clux-session-order`, `@clux_session_bar` or `@clux_status` line. Those three are live server state, and a `set -g` for any of them would reset it on every reload — which for `@clux-session-order` is exactly the failure the reorder keys exist to prevent.
 

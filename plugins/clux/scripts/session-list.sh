@@ -40,12 +40,25 @@ order=$("$CURRENT_DIR/session-order.sh" | tr '\n' ',')
 # @clux-agent-glyph-*/@clux-agent-*-color names agent-bar.sh already reads
 # keeps the two renderers from ever disagreeing about a glyph.
 #
-# \037-joined, matching the transport the agents block below uses, so a
-# value that turned out to be multi-line could never repeat the
-# literal-newline-in-`awk -v` fault: BWK awk (macOS) rejects a newline
-# inside a -v assignment and exits 2 printing nothing, which emptied the
-# whole status bar on 2026-08-16 — not just the field that held it.
-SEP=$'\037'
+# Joined on U+E001, a private-use code point, so a value that turned out to
+# be multi-line could never repeat the literal-newline-in-`awk -v` fault: BWK
+# awk (macOS) rejects a newline inside a -v assignment and exits 2 printing
+# nothing, which emptied the whole status bar on 2026-08-16 — not just the
+# field that held it.
+#
+# NOT \037, and not any other control byte. tmux 3.4's `display-message -p`
+# ESCAPES control bytes on the way out: a literal 0x1F comes back as the four
+# characters \037, so this read never split. Field 1 swallowed the whole
+# string, every other field came back empty and fell through to its default
+# below, and the literal text "\037" leaked into the status bar. Measured on
+# tmux 3.4; tmux 3.7b passes the byte through untouched, which is why it went
+# unnoticed. TAB survives 3.4 too, but session-bar-refresh.sh cannot use it
+# (@clux_bar_tpl holds a TAB), so both scripts use U+E001 and stay identical.
+#
+# Written as octal UTF-8 rather than the \u dollar-quote form: bash 3.2 on
+# macOS mis-parses $'\ue001' into six literal characters. Same reason
+# session-bar-refresh.sh writes its SENTINEL that way.
+SEP=$'\356\200\201'
 opts=$(tmux display-message -p \
   "#{@clux-bar-name-length}${SEP}#{@clux-bar-name-attached-style}${SEP}#{@clux-bar-name-detached-style}${SEP}#{@clux-bar-window-active-style}${SEP}#{@clux-bar-window-inactive-style}${SEP}#{@clux-bar-bracket-style}${SEP}#{@clux-bar-separator-style}${SEP}#{@clux-bar-window-open}${SEP}#{@clux-bar-window-close}${SEP}#{@clux-bar-separator}${SEP}#{@clux-agent-glyph-busy}${SEP}#{@clux-agent-glyph-needs}${SEP}#{@clux-agent-glyph-done}${SEP}#{@clux-agent-busy-color}${SEP}#{@clux-agent-needs-color}${SEP}#{@clux-agent-done-color}" \
   2>/dev/null)
