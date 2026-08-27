@@ -284,6 +284,102 @@ get_agent_busy_color()      { get_tmux_option "@clux-agent-busy-color"  "cyan"; 
 get_agent_needs_color()     { get_tmux_option "@clux-agent-needs-color" "yellow"; }
 get_agent_done_color()      { get_tmux_option "@clux-agent-done-color"  "green"; }
 
+# --- Popup styling ----------------------------------------------------------
+#
+# The prefix + A popup reuses the SAME style options the session bar draws
+# with, so its chip matches the session chip on the bar without the user
+# setting anything twice. Defaults are copied from session-list.sh, which
+# states them as literals for its hot path; if one moves, both move.
+get_bar_name_attached_style() { get_tmux_option "@clux-bar-name-attached-style" "bg=magenta,fg=black,bold"; }
+get_bar_bracket_style()       { get_tmux_option "@clux-bar-bracket-style"       "fg=magenta"; }
+get_bar_separator_style()     { get_tmux_option "@clux-bar-separator-style"     "fg=brightblack"; }
+
+# clux_ansi <tmux-style> — translate one tmux style string into an ANSI escape
+# sequence, so a popup (a real terminal, not a tmux format string) can draw in
+# the colours the bar was configured with. tmux expands `#[...]` itself; a
+# popup runs a shell, and a shell must emit the escapes.
+#
+# Accepts what a tmux style accepts and this needs: `fg=` and `bg=` prefixes,
+# `#RRGGBB`, `colourN` / `colorN` / a bare number, the eight base names and
+# their `bright` variants, `default`, and the attributes bold / dim / italics /
+# underscore / reverse. A term it does not understand is SKIPPED rather than
+# guessed at — a wrong colour is noise, but a stray escape fragment printed
+# into the popup is a broken screen.
+#
+# Prints nothing for an empty style, so `$(clux_ansi "")` is a safe no-op.
+clux_ansi() {
+    local spec="$1" part key val out=""
+    [ -n "$spec" ] || return 0
+    local IFS=,
+    # `$spec` is split on commas UNQUOTED, which also exposes it to pathname
+    # expansion: a style value holding `*` would otherwise be replaced by
+    # whatever happens to sit in the popup's working directory. Globbing is off
+    # for the loop and restored right after it.
+    local _reset_glob=""
+    case "$-" in *f*) ;; *) _reset_glob=1; set -f ;; esac
+    for part in $spec; do
+        # Trim surrounding whitespace without spawning anything.
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        [ -n "$part" ] || continue
+        case "$part" in
+            bold)                 out="${out};1" ; continue ;;
+            dim)                  out="${out};2" ; continue ;;
+            italics|italic)       out="${out};3" ; continue ;;
+            underscore|underline) out="${out};4" ; continue ;;
+            reverse)              out="${out};7" ; continue ;;
+        esac
+        case "$part" in
+            fg=*) key='fg'; val="${part#fg=}" ;;
+            bg=*) key='bg'; val="${part#bg=}" ;;
+            *)    key='fg'; val="$part" ;;
+        esac
+        out="${out}$(_clux_ansi_color "$key" "$val")"
+    done
+    [ -n "$_reset_glob" ] && set +f
+    [ -n "$out" ] || return 0
+    printf '\033[%sm' "${out#;}"
+}
+
+# Colour half of clux_ansi. Prints a leading ";" on every value it emits, and
+# nothing at all for a term it does not recognise.
+_clux_ansi_color() {
+    local key="$1" val="$2" base idx r g b
+    [ "$key" = "bg" ] && base=40 || base=30
+    case "$val" in
+        default) printf ';%s' "$((base + 9))" ; return 0 ;;
+        # Six HEX digits, not six of anything: `\#??????` also matched
+        # `#GGHHII`, and `$((16#GG))` then printed a bash arithmetic error on
+        # stderr — straight onto the popup screen, which is the one failure
+        # this whole function is written to avoid.
+        \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+            r=$((16#${val:1:2})); g=$((16#${val:3:2})); b=$((16#${val:5:2}))
+            printf ';%s;2;%s;%s;%s' "$((base + 8))" "$r" "$g" "$b" ; return 0 ;;
+    esac
+    # `colourN`, `colorN` and a bare `N` are one case: strip the prefix tmux
+    # allows, then let the single numeric test below emit the 256-colour form.
+    case "$val" in
+        colour*) val="${val#colour}" ;;
+        color*)  val="${val#color}"  ;;
+    esac
+    case "$val" in
+        ''|*[!0-9]*) ;;
+        *) printf ';%s;5;%s' "$((base + 8))" "$val" ; return 0 ;;
+    esac
+    case "$val" in
+        black)   idx=0 ;; red)     idx=1 ;; green)  idx=2 ;; yellow)  idx=3 ;;
+        blue)    idx=4 ;; magenta) idx=5 ;; cyan)   idx=6 ;; white)   idx=7 ;;
+        brightblack)   idx=60 ;; brightred)     idx=61 ;;
+        brightgreen)   idx=62 ;; brightyellow)  idx=63 ;;
+        brightblue)    idx=64 ;; brightmagenta) idx=65 ;;
+        brightcyan)    idx=66 ;; brightwhite)   idx=67 ;;
+        *) return 0 ;;
+    esac
+    # The bright names carry idx 60-67 on purpose: base+60 is exactly where the
+    # bright range starts for both foreground (90) and background (100).
+    printf ';%s' "$((base + idx))"
+}
+
 # Resolve the agent session's display name — the name shown in the `claude agents`
 # view. Source of truth: the latest "custom-title" entry in the session
 # transcript, which is keyed by the hook's session_id for BOTH interactive

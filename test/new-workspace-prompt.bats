@@ -31,6 +31,11 @@ _stage() {
     STAGE="$BATS_TEST_TMPDIR/staged"
     mkdir -p "$STAGE"
     cp "$PROMPT_SCRIPT" "$STAGE/new-workspace-prompt.sh"
+    # The prompt sources helpers.sh for its colours, and helpers.sh sources
+    # path.sh. Both resolve through $CURRENT_DIR, so both belong beside the
+    # staged copy — without them the styles come out empty and every run
+    # prints "get_tmux_option: command not found" into the popup.
+    cp "$SCRIPTS_DIR/helpers.sh" "$SCRIPTS_DIR/path.sh" "$STAGE/"
     cat > "$STAGE/new-workspace.sh" <<'STUB'
 #!/usr/bin/env bash
 # Records what the prompt handed over, then exits so the popup would close.
@@ -40,6 +45,10 @@ STUB
     chmod +x "$STAGE/new-workspace-prompt.sh" "$STAGE/new-workspace.sh"
     RECORD="$BATS_TEST_TMPDIR/record"
     : > "$RECORD"
+    # Written by the pane AFTER the script returns, so a cancel can be proved
+    # by the script stopping rather than guessed at from what is on screen.
+    DONE="$BATS_TEST_TMPDIR/done"
+    rm -f "$DONE"
 }
 
 # Run the staged prompt in a real pane on a throwaway server, type $@ as
@@ -67,6 +76,57 @@ _run_in_pty() {
     OPT_AFTER="$("$REAL_TMUX" -L "$SOCKET" show-option -gqv @clux-new-workspace-name 2>/dev/null)"
     "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" >/dev/null 2>&1 || true
+}
+
+# Polls the pane instead of sleeping a flat worst case. How long tmux needs to
+# start a pane, and the script to draw into it, is the machine's business — a
+# fixed sleep is either slower than it has to be or shorter than it can afford.
+# Prints the last screen it read either way, so a failing caller can show it.
+_wait_for_screen() {
+    local sock="$1" needle="$2" tries="${3:-40}" screen=""
+    while [ "$tries" -gt 0 ]; do
+        screen="$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)"
+        case "$screen" in *"$needle"*) printf '%s' "$screen"; return 0 ;; esac
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    printf '%s' "$screen"
+    return 1
+}
+
+# The mirror of the above: waits for the pane to stop showing something, and
+# treats a server that has exited as success — a cancelled prompt takes the
+# whole pane with it, so "gone" is the expected end state either way.
+_wait_for_gone() {
+    local sock="$1" needle="$2" tries="${3:-40}"
+    while [ "$tries" -gt 0 ]; do
+        "$REAL_TMUX" -L "$sock" has-session >/dev/null 2>&1 || return 0
+        case "$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)" in
+            *"$needle"*) ;;
+            *) return 0 ;;
+        esac
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
+# A cancelled prompt has to STOP. Which way it stops depends on the signal:
+# SIGINT reaches the whole foreground process group and takes the pane with it,
+# while SIGQUIT leaves the pane's trailing command to run, so the script's own
+# exit is what shows. Either is a cancel; a prompt still waiting is not. The
+# screen cannot answer this — the last frame stays drawn after the script ends.
+_assert_cancelled() {
+    local sock="$1" tries=40
+    while [ "$tries" -gt 0 ]; do
+        [ -e "$DONE" ] && return 0
+        "$REAL_TMUX" -L "$sock" has-session >/dev/null 2>&1 || return 0
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    echo "the prompt was still waiting:"
+    "$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null
+    return 1
 }
 
 @test "new-workspace-prompt: with no tty it refuses to run and says to re-run setup" {
@@ -145,4 +205,128 @@ _run_in_pty() {
     _stage
     _run_in_pty "bad:name"
     [ ! -s "$RECORD" ] || { echo "colon accepted: $(cat "$RECORD")"; false; }
+}
+
+@test "new-workspace-prompt: no printf carries a \u escape bash 3.2 cannot expand" {
+    # bash 3.2 is what macOS ships, and its printf has no \u — it prints the
+    # six characters verbatim, so the popup showed "\u25b8 name". Literal UTF-8
+    # is the only form every supported bash renders.
+    run grep -n '\\u[0-9a-fA-F]\{4\}' "$PROMPT_SCRIPT"
+    [ "$status" -ne 0 ] \
+        || { echo "a \\u escape survives, and bash 3.2 will print it literally:"; echo "$output"; false; }
+}
+
+@test "new-workspace-prompt: the popup draws its markers, not escape text" {
+    # Drives the real script through a pty the way the popup does, and reads
+    # back what landed on screen. This is the check that would have caught the
+    # \u regression from the user's side rather than from the source's.
+    _stage
+    local sock="clux-test-$$-draw"
+    "$REAL_TMUX" -L "$sock" -f /dev/null new-session -d -x 62 -y 7 \
+        "$STAGE/new-workspace-prompt.sh" 2>/dev/null
+    local screen
+    screen="$(_wait_for_screen "$sock" "New workspace")" || true
+    "$REAL_TMUX" -L "$sock" kill-server 2>/dev/null || true
+
+    [[ "$screen" != *'\u'* ]] \
+        || { echo "an unexpanded escape reached the screen:"; echo "$screen"; false; }
+    [[ "$screen" == *"New workspace"* ]] \
+        || { echo "the header never drew:"; echo "$screen"; false; }
+    [[ "$screen" == *"name"* ]] \
+        || { echo "the name prompt never drew:"; echo "$screen"; false; }
+}
+
+@test "new-workspace-prompt: Esc cancels the prompt instead of typing ^[" {
+    # Esc used to be an ordinary character in the line: it echoed "^[" and the
+    # prompt kept waiting, so the only way out of the popup was Ctrl-C. The
+    # terminal now carries Esc as its interrupt character, so Esc takes the
+    # same path Ctrl-C did.
+    _stage
+    local sock="clux-test-$$-esc-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
+    _wait_for_screen "$sock" "New workspace" >/dev/null \
+        || { echo "the prompt never drew, so Esc was never the thing under test"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys -l "partial"
+    _wait_for_screen "$sock" "partial" >/dev/null \
+        || { echo "the typed text never echoed, so nothing was waiting for Esc"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys Escape
+
+    local cancelled=0
+    _assert_cancelled "$sock" && cancelled=1
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+
+    # And nothing was created or stored on the way out.
+    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "new-workspace-prompt: Ctrl-C still cancels after Esc took the interrupt key" {
+    # `stty intr` names ONE character. Handing it to Esc TAKES it from Ctrl-C,
+    # which then stops raising SIGINT and lands in the line as a literal \003 —
+    # the prompt keeps waiting, and the name it hands on carries a control
+    # character the reject list does not name. Ctrl-C is moved onto `quit` so
+    # both keys still cancel.
+    _stage
+    local sock="clux-test-$$-ctrlc-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
+    _wait_for_screen "$sock" "New workspace" >/dev/null \
+        || { echo "the prompt never drew, so Ctrl-C was never the thing under test"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys -l "partial"
+    _wait_for_screen "$sock" "partial" >/dev/null \
+        || { echo "the typed text never echoed, so nothing was waiting for Ctrl-C"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys C-c
+
+    local cancelled=0
+    _assert_cancelled "$sock" && cancelled=1
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "new-workspace-prompt: the folder prompt states the default it falls back to" {
+    # Enter alone reuses the session name. bash 3.2 has no `read -i`, so the
+    # default cannot be prefilled — stating it is the only way a user can know
+    # the empty answer does anything.
+    _stage
+    local sock="clux-test-$$-default-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
+    _wait_for_screen "$sock" "New workspace" >/dev/null || { echo "the prompt never drew"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys -l "myws"
+    "$REAL_TMUX" -L "$sock" send-keys Enter
+    local screen
+    screen="$(_wait_for_screen "$sock" "folder")" || true
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+
+    [[ "$screen" == *"[myws]"* ]] \
+        || { echo "the folder prompt never states its default:"; echo "$screen"; false; }
+}
+
+@test "new-workspace-prompt: the rejection fits the popup without scrolling the header away" {
+    # The popup is `-w 62 -h 7`; tmux draws a single-line border by default, so
+    # the script really gets 60x5. The reject path has to fit in that: header,
+    # blank, name, reason, pause. It did not — the reason ran to 67 columns,
+    # wrapped, and pushed the header off the top. The pane here is sized to the
+    # popup's INNER size on purpose; at 62x7 this test cannot see the fault.
+    _stage
+    local sock="clux-test-$$-fit-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$sock" new-session -d -x 60 -y 5 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
+    _wait_for_screen "$sock" "New workspace" >/dev/null || { echo "the prompt never drew"; false; }
+    "$REAL_TMUX" -L "$sock" send-keys -l "bad:name"
+    "$REAL_TMUX" -L "$sock" send-keys Enter
+    local screen
+    screen="$(_wait_for_screen "$sock" "press any key")" || true
+    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
+
+    [[ "$screen" == *"press any key"* ]] \
+        || { echo "the reject path never finished drawing:"; echo "$screen"; false; }
+    [[ "$screen" == *"New workspace"* ]] \
+        || { echo "the reason scrolled the header off the popup:"; echo "$screen"; false; }
 }
