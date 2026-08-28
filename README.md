@@ -61,9 +61,13 @@ Add the following to `~/.claude/settings.json` under `"hooks"`:
 ```json
 {
   "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }],
-  "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }]
+  "StopFailure": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }],
+  "Notification": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }],
+  "TeammateIdle": [{ "matcher": "", "hooks": [{ "type": "command", "command": "~/.tmux/plugins/clux/hooks/notify-tmux.sh", "timeout": 5 }] }]
 }
 ```
+
+The plugin's own `hooks/hooks.json` is the complete list — it also registers `agent-state.sh` on the same events, plus `SessionStart` and `SessionEnd`, for the agent-state column. Copy it rather than the excerpt above if you want the bar's state glyphs too.
 
 Add to your status bar:
 
@@ -80,7 +84,23 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 | `@claude-notify-dismiss` | `` ` `` | Dismiss top notification |
 | `@claude-notify-bg` | `yellow` | Background color |
 | `@claude-notify-fg` | `black` | Foreground color |
-| `@claude-notify-sound` | `on` | `on`, `off`, or custom command |
+| `@claude-notify-sound` | `on` | `on`, `off`, or custom command (the global fallback for every type below) |
+| `@claude-notify-<type>-visual` | see below | Status-bar badge (and, for an agents workspace, the desktop banner and jump entry) for one type |
+| `@claude-notify-<type>-sound` | see below | `on`, `off`, or a custom command, for one type |
+| `@claude-notify-<type>-sound-file` | OS default | Sound file for one type |
+
+`<type>` names what Claude Code told clux, and each one is a question in `/clux:setup`:
+
+| Type | Claude Code event | Visual / sound default |
+|------|-------------------|------------------------|
+| `notification` | `Notification` — Claude needs you (permission, idle, `agent_needs_input`, an MCP elicitation dialog) | on / on |
+| `stop` | `Stop`, and `Notification: agent_completed` — Claude finished | off / off |
+| `failure` | `StopFailure` — the turn ended on an API error (rate limit, overloaded, billing, auth) | on / on |
+| `quota` | `Notification: quota_auto_resume_*` — Claude paused on a usage quota | on / on |
+| `prompt` | `UserPromptSubmit` | off / off |
+| `teammate` | `TeammateIdle` — an agent-team teammate went idle | off / off |
+
+Sound defaults to `off` on a machine with no audio player.
 
 Example overrides:
 
@@ -118,11 +138,13 @@ Claude Code ≥ v2.1.139 supports background agent sessions. You can inspect the
 
 ### How it works
 
-When a background agent session needs attention (permission prompt, idle), Claude Code fires a `Notification` hook. clux:
+When a background agent session needs attention (permission prompt, idle, an MCP dialog), Claude Code fires a `Notification` hook; when it finishes, `Stop`; when its turn dies on an API error, `StopFailure`. For each one whose `@claude-notify-<type>-visual` is on, clux:
 
-1. Appends a `⚡ <label>` entry to the notification queue so the status bar lights up.
+1. Appends a `<marker> agents / <label>` entry to the notification queue so the status bar lights up — `⚡` needs you, `✓` finished, `✗` failed (with the error type), `⏳` paused on quota.
 2. Fires a direct desktop notification (macOS banner via `osascript`; falls back to `terminal-notifier` if available).
-3. Removes the entry automatically when the session is attended to (`UserPromptSubmit`) or ends (`Stop` / `SessionEnd`).
+3. Keeps the entry until you jump to it (`prefix m`) or dismiss it. A newer event for the same session replaces the older entry, so a session that finishes after asking shows `✓`, not both.
+
+The agent-state column in the bar (`*` busy, `!` needs you, `v` finished, `x` failed) is written by the same hooks and needs no option — see `/clux:setup`.
 
 ### Navigation
 

@@ -35,8 +35,8 @@ order=$("$CURRENT_DIR/session-order.sh" | tr '\n' ',')
 
 # Bar theming plus the (pre-existing) agent glyph/colour options, all
 # @clux-*. This is the hot path — session-list.sh runs on every window
-# switch — so all sixteen fields come back on ONE `tmux display-message -p`
-# call instead of sixteen get_tmux_option forks. Reusing the exact
+# switch — so all eighteen fields come back on ONE `tmux display-message -p`
+# call instead of eighteen get_tmux_option forks. Reusing the exact
 # @clux-agent-glyph-*/@clux-agent-*-color names agent-bar.sh already reads
 # keeps the two renderers from ever disagreeing about a glyph.
 #
@@ -60,14 +60,18 @@ order=$("$CURRENT_DIR/session-order.sh" | tr '\n' ',')
 # session-bar-refresh.sh writes its SENTINEL that way.
 SEP=$'\356\200\201'
 opts=$(tmux display-message -p \
-  "#{@clux-bar-name-length}${SEP}#{@clux-bar-name-attached-style}${SEP}#{@clux-bar-name-detached-style}${SEP}#{@clux-bar-window-active-style}${SEP}#{@clux-bar-window-inactive-style}${SEP}#{@clux-bar-bracket-style}${SEP}#{@clux-bar-separator-style}${SEP}#{@clux-bar-window-open}${SEP}#{@clux-bar-window-close}${SEP}#{@clux-bar-separator}${SEP}#{@clux-agent-glyph-busy}${SEP}#{@clux-agent-glyph-needs}${SEP}#{@clux-agent-glyph-done}${SEP}#{@clux-agent-busy-color}${SEP}#{@clux-agent-needs-color}${SEP}#{@clux-agent-done-color}" \
+  "#{@clux-bar-name-length}${SEP}#{@clux-bar-name-attached-style}${SEP}#{@clux-bar-name-detached-style}${SEP}#{@clux-bar-window-active-style}${SEP}#{@clux-bar-window-inactive-style}${SEP}#{@clux-bar-bracket-style}${SEP}#{@clux-bar-separator-style}${SEP}#{@clux-bar-window-open}${SEP}#{@clux-bar-window-close}${SEP}#{@clux-bar-separator}${SEP}#{@clux-agent-glyph-busy}${SEP}#{@clux-agent-glyph-needs}${SEP}#{@clux-agent-glyph-done}${SEP}#{@clux-agent-busy-color}${SEP}#{@clux-agent-needs-color}${SEP}#{@clux-agent-done-color}${SEP}#{@clux-agent-glyph-fail}${SEP}#{@clux-agent-fail-color}" \
   2>/dev/null)
+# The two `failed` fields (3.8.0) are LAST on purpose: a test or a stub built
+# for the sixteen-field read still splits the first sixteen exactly as before
+# and the new two fall through to their defaults.
 IFS="$SEP" read -r \
   name_length name_attached_style name_detached_style \
   window_active_style window_inactive_style bracket_style separator_style \
   window_open window_close separator \
   glyph_busy glyph_needs glyph_done \
   busy_color needs_color done_color \
+  glyph_fail fail_color \
   <<EOF
 $opts
 EOF
@@ -100,9 +104,11 @@ separator="${separator:-│}"
 glyph_busy="${CLUX_AGENT_GLYPH_BUSY:-${glyph_busy:-*}}"
 glyph_needs="${glyph_needs:-!}"
 glyph_done="${glyph_done:-v}"
+glyph_fail="${glyph_fail:-x}"
 busy_color="${busy_color:-cyan}"
 needs_color="${needs_color:-yellow}"
 done_color="${done_color:-green}"
+fail_color="${fail_color:-red}"
 
 sess=$(tmux list-sessions -F "#{session_name}${TAB}#{session_attached}${TAB}#{=${name_length}:session_name}")
 wins=$(tmux list-windows -a -F "#{session_name}${TAB}#{window_active}${TAB}#{window_index}${TAB}#{=${name_length}:window_name}" \
@@ -142,9 +148,11 @@ awk -v order="$order" -v agents="$agents" \
     -v glyph_busy="$glyph_busy" \
     -v glyph_needs="$glyph_needs" \
     -v glyph_done="$glyph_done" \
+    -v glyph_fail="$glyph_fail" \
     -v busy_color="$busy_color" \
     -v needs_color="$needs_color" \
     -v done_color="$done_color" \
+    -v fail_color="$fail_color" \
     -F '\t' '
   # @clux_session_bar is rendered through #{@clux_session_bar}, and the status
   # line interprets #[...] sequences — that is how the styling below works. So
@@ -160,6 +168,7 @@ awk -v order="$order" -v agents="$agents" \
     if (st == "needs-you") return "#[fg=" needs_color "]" glyph_needs "#[default]"
     if (st == "busy")      return "#[fg=" busy_color  "]" glyph_busy  "#[default]"
     if (st == "finished")  return "#[fg=" done_color  "]" glyph_done  "#[default]"
+    if (st == "failed")    return "#[fg=" fail_color  "]" glyph_fail  "#[default]"
     return " "
   }
 

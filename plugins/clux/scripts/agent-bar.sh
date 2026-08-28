@@ -18,7 +18,7 @@
 #                                  a single space. Empty when all idle.
 #
 # --frame N renders frame N of @clux-agent-glyph-busy-frames for the busy
-# glyph only; needs-you/finished are unaffected, they never animate. Without
+# glyph only; needs-you/finished/failed are unaffected, they never animate. Without
 # --frame, output is byte-identical to before this option existed — that is
 # what keeps SKILL.md §3.7's standalone-glyph installs looking the same on
 # upgrade. This script never reads @clux_frame_idx itself (that counter is
@@ -53,6 +53,7 @@ _render() {
             fi
             ;;
         finished)  printf '#[fg=%s]%s#[default]' "$(get_agent_done_color)"  "$(get_agent_glyph_done)" ;;
+        failed)    printf '#[fg=%s]%s#[default]' "$(get_agent_fail_color)"  "$(get_agent_glyph_fail)" ;;
     esac
 }
 

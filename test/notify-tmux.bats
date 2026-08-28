@@ -362,3 +362,211 @@ EOF
     # afplay must NOT have been called (sessionend sound defaults to off)
     ! grep -qF "afplay" "$stub_log" 2>/dev/null
 }
+
+# ===========================================================================
+# 3.8.0 — more hook events reach the queue (Stop, StopFailure, TeammateIdle,
+# and the Notification sub-types the agents dashboard emits). Every new
+# entry is gated on the SAME @claude-notify-<type>-visual option the
+# interactive path reads, so one answer in /clux:setup governs both paths.
+# ===========================================================================
+
+# A tmux stub that answers show-option for the per-type visual options from
+# the NOTIFY_VISUAL env var ("stop=on failure=off ..."); everything else
+# comes back empty, exactly like the committed stub.
+_write_visual_tmux_stub() {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    *"show-option -gqv @claude-notify-"*-visual)
+        # Copy $* first: ${*##pat} strips each positional parameter on its
+        # own, so applied directly it would leave "show-option -gqv stop".
+        _all="$*"; _opt="${_all##*@claude-notify-}"; _type="${_opt%-visual}"
+        for pair in ${NOTIFY_VISUAL:-}; do
+            [ "${pair%%=*}" = "$_type" ] && printf '%s\n' "${pair#*=}"
+        done
+        ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+}
+
+@test "agent path: Stop with @claude-notify-stop-visual on writes a finished entry" {
+    _write_visual_tmux_stub
+    local JSON='{"hook_event_name":"Stop","session_id":"s-fin-001","cwd":"/fake/proj"}'
+    run bash -c "
+        export NOTIFY_VISUAL='stop=on'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:s-fin-001" "$QUEUE_FILE" || false
+    # A finished entry carries the ✓ marker, never the needs-you ⚡.
+    grep -qF "✓ agents / proj|||agent:s-fin-001" "$QUEUE_FILE" || false
+    [[ "$output" == *'"terminalSequence"'* ]] || false
+}
+
+@test "agent path: Stop with the option unset (default off) writes nothing — 3.7.0 behaviour kept" {
+    _write_visual_tmux_stub
+    local JSON='{"hook_event_name":"Stop","session_id":"s-fin-002","cwd":"/fake/proj"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    ! grep -qF "|||agent:s-fin-002" "$QUEUE_FILE" 2>/dev/null
+    [ -z "$output" ]
+}
+
+@test "agent path: Stop replaces an older needs-you entry for the same session — one line" {
+    _write_visual_tmux_stub
+    printf '⚡ agents / proj|||agent:s-fin-003@@@@/fake/proj\n' > "$QUEUE_FILE"
+    local JSON='{"hook_event_name":"Stop","session_id":"s-fin-003","cwd":"/fake/proj"}'
+    run bash -c "
+        export NOTIFY_VISUAL='stop=on'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    [ "$(grep -cF '|||agent:s-fin-003' "$QUEUE_FILE")" -eq 1 ]
+    grep -qF "✓ agents / proj" "$QUEUE_FILE" || false
+    ! grep -qF "⚡" "$QUEUE_FILE"
+}
+
+@test "agent path: StopFailure writes an entry naming the error type (failure defaults to on)" {
+    local JSON='{"hook_event_name":"StopFailure","session_id":"s-fail-001","cwd":"/fake/proj","error_type":"rate_limit","error_message":"429"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:s-fail-001" "$QUEUE_FILE" || false
+    grep -qF "rate_limit" "$QUEUE_FILE" || false
+    [[ "$output" == *'"terminalSequence"'* ]] || false
+}
+
+@test "agent path: StopFailure with @claude-notify-failure-visual off writes nothing" {
+    _write_visual_tmux_stub
+    local JSON='{"hook_event_name":"StopFailure","session_id":"s-fail-002","cwd":"/fake/proj","error_type":"overloaded"}'
+    run bash -c "
+        export NOTIFY_VISUAL='failure=off'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    ! grep -qF "|||agent:s-fail-002" "$QUEUE_FILE" 2>/dev/null
+}
+
+@test "agent path: TeammateIdle is off by default and on when asked" {
+    _write_visual_tmux_stub
+    local JSON='{"hook_event_name":"TeammateIdle","session_id":"s-team-001","cwd":"/fake/proj","teammate_name":"reviewer"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    ! grep -qF "|||agent:s-team-001" "$QUEUE_FILE" 2>/dev/null
+    run bash -c "
+        export NOTIFY_VISUAL='teammate=on'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:s-team-001" "$QUEUE_FILE" || false
+    grep -qF "reviewer" "$QUEUE_FILE" || false
+}
+
+@test "agent path: Notification agent_needs_input and elicitation_dialog are eligible (needs-you)" {
+    local t
+    for t in agent_needs_input elicitation_dialog elicitation_url_dialog; do
+        local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"$t\",\"session_id\":\"s-$t\",\"message\":\"m\"}"
+        run bash -c "
+            export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+            export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+            printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+        "
+        [ "$status" -eq 0 ]
+        grep -qF "|||agent:s-$t" "$QUEUE_FILE" || { echo "$t not queued"; false; }
+    done
+}
+
+@test "agent path: Notification agent_completed follows the stop preference" {
+    _write_visual_tmux_stub
+    local JSON='{"hook_event_name":"Notification","notification_type":"agent_completed","session_id":"s-done-001","cwd":"/fake/proj","message":"agent finished"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    ! grep -qF "|||agent:s-done-001" "$QUEUE_FILE" 2>/dev/null
+    run bash -c "
+        export NOTIFY_VISUAL='stop=on'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:s-done-001" "$QUEUE_FILE" || false
+}
+
+@test "agent path: Notification quota_auto_resume_disabled is queued under the quota type (default on)" {
+    local JSON='{"hook_event_name":"Notification","notification_type":"quota_auto_resume_disabled","session_id":"s-quota-001","cwd":"/fake/proj"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:s-quota-001" "$QUEUE_FILE" || false
+    grep -qiF "quota" "$QUEUE_FILE" || false
+}
+
+@test "agent path: Notification auth_success plays no sound and queues nothing" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    local JSON='{"hook_event_name":"Notification","notification_type":"auth_success","session_id":"s-auth-001","message":"auth done"}'
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    ! grep -qF "|||agent:s-auth-001" "$QUEUE_FILE" 2>/dev/null
+    # 3.7.0 played the notification sound on every Notification before the
+    # eligibility check; an ineligible type must now be silent.
+    ! grep -qE "afplay|paplay|pw-play|aplay|ffplay" "$stub_log" 2>/dev/null
+}
+
+@test "interactive path: StopFailure with TMUX set writes a window entry naming the error" {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<EOF
+#!/usr/bin/env bash
+echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
+case "\$*" in
+  *@clux_muted*) echo "" ;;
+  *display-message*) echo "main|||editor|||\$1|||@win1" ;;
+  *@claude-notify-file*) echo "$QUEUE_FILE" ;;
+esac
+exit 0
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    local JSON='{"hook_event_name":"StopFailure","session_id":"s-int-fail","error_type":"billing_error"}'
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export TMUX='/dev/null,1234,0'
+        export TMUX_PANE='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF "main:editor" "$QUEUE_FILE" || false
+    grep -qF "billing_error" "$QUEUE_FILE" || false
+}

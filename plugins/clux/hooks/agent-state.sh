@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # Claude hook bridge — writes per-agent state to the state store.
-# Called by Claude Code hooks on UserPromptSubmit, Notification, Stop, and
-# SessionEnd.
+# Called by Claude Code hooks on UserPromptSubmit, Notification, Stop,
+# StopFailure, SessionStart and SessionEnd.
 #
 # GOVERNING PRINCIPLE: STATE LIVES IN FILES. HOOKS WRITE THOSE FILES. THE BAR
 # ONLY READS. This script is the only writer on the Claude Code side.
@@ -25,8 +25,15 @@
 # Nothing is ever written to stdout or stderr: a non-zero exit or stray stdout
 # is visible to the user inside Claude Code.
 #
-# Usage: agent-state.sh <busy|needs-you|finished|remove>
+# Usage: agent-state.sh <busy|needs-you|finished|failed|remove>
 # `end` is accepted as an alias of `remove` (hooks.json registers `remove`).
+#
+# `remove` runs on SessionEnd AND on SessionStart (matcher startup|resume|
+# clear, never compact): a Claude restarted in a pane whose last session
+# died without its SessionEnd would otherwise keep that session's stale
+# glyph until the first prompt. `compact` is excluded on purpose — it fires
+# mid-turn, and dropping the file there would blank a busy glyph while
+# Claude is still working.
 
 STATE="${1:-}"
 
@@ -46,26 +53,50 @@ case "$STATE" in
     finished)
         WORD="finished"
         ;;
+    failed)
+        # StopFailure: the turn ended on an API error. The bar shows it in
+        # its own colour so a stalled agent is not mistaken for a finished
+        # one. Cleared the same way as `finished` — on view, or on the next
+        # prompt.
+        WORD="failed"
+        ;;
     remove|end)
         WORD=""
         ;;
     needs-you)
         # The ONE payload-dependent branch — the only place the payload's
-        # notification type is inspected in this script. Matches
-        # notify-tmux.sh's eligibility rule (permission_prompt, idle_prompt,
-        # or no notification_type field at all) so the two hooks stay
-        # consistent for the same event.
-        # Matched with bash's own pattern matching rather than `printf | grep`:
-        # identical semantics, and it spawns nothing on a path that fires on
-        # every notification.
+        # notification type is inspected in this script. The word follows
+        # the sub-type, and the table matches map_event_to_type() in
+        # helpers.sh so the two hooks stay consistent for the same event:
+        #   needs-you  permission_prompt, idle_prompt, agent_needs_input,
+        #              elicitation_dialog, elicitation_url_dialog, a quota
+        #              pause that will NOT resume by itself, or no
+        #              notification_type field at all (grep-fallback parity)
+        #   finished   agent_completed — the dashboard's own notice that a
+        #              background agent is done
+        #   no-op      quota_auto_resume_fired (Claude resumed on its own,
+        #              its next event states the real state), auth_success,
+        #              elicitation_complete/_response, anything unknown
+        # Matched on the exact `"notification_type":"<value>"` field with
+        # bash's own pattern matching rather than `printf | grep`: the hook
+        # payload is compact JSON, and this spawns nothing on a path that
+        # fires on every notification.
         case "$INPUT" in
-            *permission_prompt*|*idle_prompt*)
+            *'"notification_type":"agent_completed"'*)
+                WORD="finished"
+                ;;
+            *'"notification_type":"permission_prompt"'*|\
+            *'"notification_type":"idle_prompt"'*|\
+            *'"notification_type":"agent_needs_input"'*|\
+            *'"notification_type":"elicitation_dialog"'*|\
+            *'"notification_type":"elicitation_url_dialog"'*|\
+            *'"notification_type":"quota_auto_resume_stale"'*|\
+            *'"notification_type":"quota_auto_resume_disabled"'*)
                 WORD="needs-you"
                 ;;
             *'"notification_type"'*)
-                # A type is present but is not one of the two eligible kinds
-                # (auth_success and friends) — true no-op, leave any existing
-                # state file exactly as it was.
+                # A type is present but is none of the kinds above — true
+                # no-op, leave any existing state file exactly as it was.
                 exit 0
                 ;;
             *)

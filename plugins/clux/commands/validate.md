@@ -192,7 +192,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    ```
 6. **Per-notification preferences** — show current effective values:
    ```bash
-   for TYPE in notification stop prompt; do
+   for TYPE in notification stop failure quota prompt teammate; do
        VIS=$(tmux show-option -gqv "@claude-notify-${TYPE}-visual")
        SND=$(tmux show-option -gqv "@claude-notify-${TYPE}-sound")
        echo "INFO ${TYPE}: visual=${VIS:-default} sound=${SND:-default}"
@@ -265,17 +265,17 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
        echo "FAIL plugin hooks.json not found"
    else
        echo "OK  hooks.json found ($HOOKS_FILE)"
-       for EVENT in Stop Notification UserPromptSubmit SessionEnd; do
+       for EVENT in Stop StopFailure Notification TeammateIdle UserPromptSubmit SessionEnd; do
            if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "notify-tmux" "$HOOKS_FILE"; then
                echo "OK  hook: $EVENT → notify-tmux.sh"
            else
                echo "FAIL hook: $EVENT not configured in hooks.json"
            fi
        done
-       # Agent-state second command, registered beside notify-tmux.sh on the SAME
-       # four events — no new event name (see CHANGELOG 3.1.0). Each pair below
-       # must appear verbatim in hooks.json.
-       for PAIR in "UserPromptSubmit:busy" "Notification:needs-you" "Stop:finished" "SessionEnd:remove"; do
+       # Agent-state second command, registered beside notify-tmux.sh (see
+       # CHANGELOG 3.1.0), plus SessionStart, which carries only agent-state.sh
+       # (3.8.0). Each pair below must appear verbatim in hooks.json.
+       for PAIR in "UserPromptSubmit:busy" "Notification:needs-you" "Stop:finished" "StopFailure:failed" "SessionStart:remove" "SessionEnd:remove"; do
            EVENT="${PAIR%%:*}"
            ARG="${PAIR#*:}"
            if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "agent-state.sh $ARG" "$HOOKS_FILE"; then
@@ -564,8 +564,9 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 8. **Agent state options and state dir** — shared with the notification surface, one source of truth for both:
    ```bash
    for OPT in @clux-agent-glyph-busy:'*' @clux-agent-glyph-busy-frames:'- \ | /' \
-              @clux-agent-glyph-needs:'!' @clux-agent-glyph-done:v \
+              @clux-agent-glyph-needs:'!' @clux-agent-glyph-done:v @clux-agent-glyph-fail:x \
               @clux-agent-busy-color:cyan @clux-agent-needs-color:yellow @clux-agent-done-color:green \
+              @clux-agent-fail-color:red \
               @clux-agent-state-dir:"\${XDG_STATE_HOME:-\$HOME/.local/state}/clux/agents"; do
        NAME="${OPT%%:*}"
        DEFAULT="${OPT#*:}"
@@ -693,16 +694,21 @@ clux validate — health check results
     ~ @clux-agent-glyph-busy-frames (using default: - \ | /)
     ~ @clux-agent-glyph-needs (using default: !)
     ~ @clux-agent-glyph-done (using default: v)
+    ~ @clux-agent-glyph-fail (using default: x)
     ~ @clux-agent-busy-color (using default: cyan)
     ~ @clux-agent-needs-color (using default: yellow)
     ~ @clux-agent-done-color (using default: green)
+    ~ @clux-agent-fail-color (using default: red)
     ~ @clux-agent-state-dir (using default: ~/.local/state/clux/agents)
     ✓ agent state dir exists (~/.local/state/clux/agents)
 
   Per-notification preferences:
     notification:  visual=on   sound=on
-    stop:          visual=off  sound=off
+    stop:          visual=on   sound=off
+    failure:       visual=on   sound=on
+    quota:         visual=on   sound=on
     prompt:        visual=off  sound=off
+    teammate:      visual=off  sound=off
 
   Audio playback:
     ✓ audio player (paplay)
@@ -718,8 +724,8 @@ clux validate — health check results
     ✓ prefix M       → notification picker
 
   Hooks:
-    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd → notify-tmux.sh
-    ✓ hooks.json: Stop, Notification, UserPromptSubmit, SessionEnd → agent-state.sh
+    ✓ hooks.json: Stop, StopFailure, Notification, TeammateIdle, UserPromptSubmit, SessionEnd → notify-tmux.sh
+    ✓ hooks.json: UserPromptSubmit, Notification, Stop, StopFailure, SessionStart, SessionEnd → agent-state.sh
     ✓ notify-tmux.sh executable
     ✓ agent-state.sh executable
     ✓ notify-sound.sh executable

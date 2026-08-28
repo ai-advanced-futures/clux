@@ -2,6 +2,27 @@
 
 All notable changes to clux are documented here.
 
+## [3.8.0]
+
+### Added
+
+- **A finished agent now reaches the bar.** The `Stop` hook was registered but dropped on the way: in a `claude agents` workspace `notify-tmux.sh` handled only `Notification`, so `agent-state.sh` painted the green `v` while no notification was ever queued; in a tmux pane the entry was written but `@claude-notify-stop-visual` defaults to `off`. The agents branch now queues `Stop` (marker `✓`, replacing any older `⚡` entry for that session), gated on the same `@claude-notify-stop-visual` option the pane path reads — one answer governs both. The default stays `off`, so nothing changes until `/clux:setup` asks
+- **`StopFailure` → a fourth agent state, `failed`.** The turn ended on an API error (`rate_limit`, `overloaded`, `billing_error`, `authentication_failed`, `max_output_tokens`, …) and Claude is stopped — the one case where the user was completely blind: the bar kept showing the busy glyph forever. `agent-state.sh failed` writes it, `agent-query.sh` ranks it above needs-you, `agent-bar.sh` and `session-list.sh` draw it with `@clux-agent-glyph-fail` (`x`) in `@clux-agent-fail-color` (`red`), and `agent-clear.sh` clears it on view like `finished`. `notify-tmux.sh` queues `✗ agents / <name> — Stopped: <error_type>` under a new `failure` notification type, visual and sound **on** by default
+- **`Notification` sub-types the agents dashboard emits are handled.** `agent_needs_input`, `elicitation_dialog` and `elicitation_url_dialog` are needs-you (both hooks silently dropped them before); `agent_completed` is finished and follows the `stop` preference; `quota_auto_resume_stale` / `_disabled` are needs-you under a new `quota` type (on by default) and `quota_auto_resume_fired` queues a "Resumed after quota" entry without touching the state
+- **`TeammateIdle`** queues an entry under a new `teammate` type, off by default
+- **`SessionStart`** (matcher `startup|resume|clear`, never `compact`) runs `agent-state.sh remove`: a Claude restarted in a pane whose last session died without its `SessionEnd` no longer keeps that session's stale glyph until the first prompt. `compact` is excluded on purpose — it fires mid-turn and would blank a busy glyph while Claude is still working
+- **`/clux:setup` §3.6 asks about all six types** — notification, stop, failure, quota, prompt, teammate — one AskUserQuestion each, a live value offered back as the first option on a re-run, and only an answer that differs from the shipped default written. `render-clux-conf.sh` gains repeatable `--notify-visual TYPE on|off` / `--notify-sound TYPE on|off` (a type outside the closed set, or a value other than on/off, is refused before anything is written), `--notify-bg` / `--notify-fg`, `--agent-fail-color` and `--agent-glyph-fail`. The preferences therefore land in `clux.tmux.conf`, the one file clux owns — the previous text told setup to write them "inside the user's clux markers", a second file the one-file rule forbids
+- `/clux:validate` checks the two new events in `hooks.json`, the `StopFailure:failed` and `SessionStart:remove` pairs, and reports all six preference types
+
+### Fixed
+
+- **A `Notification` clux ignores no longer plays the notification sound.** `notify-tmux.sh` played the sound before it checked the sub-type, so `auth_success` (and now `elicitation_complete` / `_response`) rang the bell. `map_event_to_type()` now takes the sub-type and returns an empty type for one clux ignores; the hook exits before the sound on an empty type
+
+### Internal
+
+- `session-list.sh`'s batched read grows from sixteen fields to eighteen; the two new ones are last so a sixteen-field stub still splits exactly as before
+- Every test file gains cases for the new events and the fourth state; `render-clux-conf.bats` covers the new flags and parses a conf carrying them on a real throwaway server. Not covered, because it needs a live `claude agents` dashboard: which session (the dashboard or the agent) actually fires `agent_completed`. Both are handled — the interactive path writes the dashboard pane's own file, the detached path writes the agent's — but the shape of the real payload has not been observed
+
 ## [3.7.0]
 
 ### Fixed
