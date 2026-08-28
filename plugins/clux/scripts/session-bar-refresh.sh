@@ -111,7 +111,13 @@ set -u
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TAB=$'\t'
-SEP=$'\037'
+# U+E001, private use. NOT a control byte: tmux 3.4's `display-message -p`
+# escapes those on the way out (a literal 0x1F returns as the four characters
+# \037), so the batched read below never split and the escaped text leaked
+# into the bar. TAB survives 3.4, but it cannot be the separator here —
+# @clux_bar_tpl holds "<epoch><TAB><template>" and is field 1 of that read.
+# Octal UTF-8 form for the same bash-3.2 reason as SENTINEL below.
+SEP=$'\356\200\201'
 # U+E000, private use. Bash 3.2 on macOS mis-parses the dollar-quote
 # \u escape form of this code point into six literal backslash-u-e000
 # characters instead of the code point itself -- do not use that form.

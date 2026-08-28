@@ -34,15 +34,32 @@ STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
 }
 
+# _make_nofzf_bin — a PATH entry holding the real tools session-picker.sh needs
+# before it reaches the fallback, and nothing named fzf.
+#
+# The fallback case used to run with PATH='<stubs>:/usr/bin:/bin', which hides
+# fzf only where fzf is NOT in /usr/bin. Debian and Ubuntu ship it there via
+# apt, so on those machines have_fzf() kept succeeding, the fallback never ran,
+# and this case failed for a reason that had nothing to do with the code.
+_make_nofzf_bin() {
+    local dir="$BATS_TEST_TMPDIR/nofzf-bin" t src
+    mkdir -p "$dir"
+    for t in env bash sh dirname basename cat sed grep awk cut tr head mktemp rm; do
+        src="$(command -v "$t" 2>/dev/null)" && [ -n "$src" ] && ln -sf "$src" "$dir/$t"
+    done
+    printf '%s' "$dir"
+}
+
 @test "session-picker: falls back to choose-tree when neither fzf nor fzf-tmux is on PATH" {
     _write_picker_tmux_stub
     local log="$BATS_TEST_TMPDIR/stub.log"
-    # Remove the committed fzf/fzf-tmux stubs and use a PATH that excludes
-    # wherever the real binaries live on this machine (Homebrew et al.), so
+    # Remove the committed fzf/fzf-tmux stubs and use a PATH that carries no
+    # fzf at all — wherever the real binary lives on this machine — so
     # "have_fzf_tmux"/"have_fzf" both genuinely fail.
     rm -f "$BATS_TEST_TMPDIR/stubs/fzf" "$BATS_TEST_TMPDIR/stubs/fzf-tmux"
+    local nofzf; nofzf="$(_make_nofzf_bin)"
     run bash -c "
-        export PATH='$BATS_TEST_TMPDIR/stubs:/usr/bin:/bin'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$nofzf'
         export STUB_LOG='$log'
         export FAKE_CURRENT='current'
         export FAKE_PICKER='fzf'

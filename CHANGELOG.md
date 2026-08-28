@@ -2,6 +2,28 @@
 
 All notable changes to clux are documented here.
 
+## [3.7.0]
+
+### Fixed
+
+- **On tmux 3.4 the session bar ignored every `@clux-bar-*` colour and printed the literal text `\037` on the status line.** `session-list.sh` and `session-bar-refresh.sh` each read their options in ONE `tmux display-message -p` call, joining the fields on `\037` so the hot path does not fork `get_tmux_option` sixteen times. tmux 3.4 **escapes control bytes out of that command's output**: a literal `0x1F` comes back as the four characters `\037`. The `IFS` read therefore never split — field 1 swallowed the whole string, every other field came back empty and fell through to its hardcoded default, and the escaped separator leaked onto the bar. Both scripts now join on `U+E001`, a private-use code point that tmux 3.4 passes through byte for byte. tmux 3.7b never escaped it, which is why this went unnoticed
+- Not TAB, which also survives 3.4: `session-bar-refresh.sh` cannot use it, because `@clux_bar_tpl` holds `"<epoch><TAB><template>"` and is field 1 of that same read. One separator for both scripts keeps them identical
+- The separator is written as octal UTF-8 (`$'\356\200\201'`), never the `\u` dollar-quote form, for the reason already documented for `SENTINEL`: bash 3.2 on macOS mis-parses `$'\ue001'` into six literal characters
+
+### Added
+
+- **`render-clux-conf.sh` takes six new flags: `--agent-busy-color`, `--agent-needs-color`, `--agent-done-color`, `--agent-glyph-busy`, `--agent-glyph-needs`, `--agent-glyph-done`.** They follow the same rule as every `--bar-*` flag: a line is written only for a value the caller actually passed. Before this, a migrated hand-written bar could keep its `@clux-bar-*` palette but not its agent-glyph colours — those had no flag, so they survived only as live server state and reverted to `cyan`/`yellow`/`green` on the next tmux server restart, long after `/clux:setup` ran
+- `@clux-agent-glyph-busy-frames` still has no flag, on purpose: its default holds a backslash that needs single-quoting, and an animation cadence is not something detection reads off an old bar
+
+### Changed
+
+- The `configuring-tmux` skill now reads the bar the user **already has** as a colour source, not only the config's `status-style` and `message-style`. It greps a hand-written `session-list.sh` for its `#[fg=…]` / `#[bg=…]` values and reads the live `@clux-agent-*` options, then passes what it found to the new flags. The live options matter most: for the agent colours they are frequently the only copy anywhere
+
+### Internal
+
+- `test/session-list.bats` gains a real-server case asserting that configured `@clux-bar-*` values actually reach the rendered bar. Every other case in that file feeds the batched read through a tmux **stub**, which hands the fields back verbatim — so no stub can catch a tmux build that mangles the separator. Verified to fail on the old `\037` separator and pass on the new one
+- `test/session-picker.bats`: the choose-tree fallback case ran with `PATH='<stubs>:/usr/bin:/bin'`, which hides `fzf` only where `fzf` is not in `/usr/bin`. Debian and Ubuntu ship it there via apt, so on those machines `have_fzf()` kept succeeding and the case failed for a reason unrelated to the code. It now builds a PATH holding only the tools the script needs and nothing named `fzf`
+
 ## [3.6.0]
 
 ### Changed
