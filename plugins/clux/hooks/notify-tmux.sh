@@ -63,7 +63,9 @@ else
         CWD=$(_grep_field cwd)
         TRANSCRIPT_PATH=$(_grep_field transcript_path)
         ERROR_TYPE=$(_grep_field error_type)
+        # jq reads .teammate_name OR .teammate_id — the fallback must try both.
         TEAMMATE=$(_grep_field teammate_name)
+        [ -n "$TEAMMATE" ] || TEAMMATE=$(_grep_field teammate_id)
     fi
 fi
 
