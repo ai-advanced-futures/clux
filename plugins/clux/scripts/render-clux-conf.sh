@@ -75,8 +75,8 @@ AGENT_GLYPH_DONE=""
 AGENT_GLYPH_FAIL=""
 
 # Notification preferences (§3.6) and colours. Bash 3.2 has no associative
-# arrays, so the preferences accumulate as "<type>-<visual|sound>=<value>"
-# lines and are emitted in the order they were given.
+# arrays, so the preferences accumulate as finished `set -g` lines and are
+# emitted verbatim, in the order they were given.
 NOTIFY_BG=""
 NOTIFY_FG=""
 NOTIFY_PREFS=""
@@ -180,7 +180,7 @@ while [ $# -gt 0 ]; do
                     exit 1
                     ;;
             esac
-            NOTIFY_PREFS="${NOTIFY_PREFS}${_type}-${_kind}=${_val}
+            NOTIFY_PREFS="${NOTIFY_PREFS}set -g \"@claude-notify-${_type}-${_kind}\" \"${_val}\"
 "
             shift 3
             ;;
@@ -321,10 +321,7 @@ PAIRS
     if [ -n "$NOTIFY_PREFS" ]; then
         echo
         echo "# --- Notifications: per-event preferences (only answers that differ from the defaults) ---"
-        printf '%s' "$NOTIFY_PREFS" | while IFS='=' read -r optname val; do
-            [ -n "$optname" ] || continue
-            printf 'set -g "@claude-notify-%s" "%s"\n' "$optname" "$val"
-        done
+        printf '%s' "$NOTIFY_PREFS"
     fi
 
     echo

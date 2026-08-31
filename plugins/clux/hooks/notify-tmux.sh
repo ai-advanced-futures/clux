@@ -30,20 +30,33 @@ else
     _grep_field() {
         echo "$INPUT" | grep -o "\"$1\":\"[^\"]*\"" | sed "s/\"$1\":\"\\(.*\\)\"/\\1/" 2>/dev/null
     }
-    _JQ_EVENT=""
+    EVENT=""
     if command -v jq &>/dev/null; then
-        _JQ_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null)
+        # One jq pass for every field except the free-text message, which may
+        # carry newlines — the eight forks of 3.8.0 become two. jq prints one
+        # field per line (`,` at top level); reading with `IFS=` keeps empty
+        # fields as empty lines, which a tab-separated read would collapse.
+        # An empty EVENT means jq could not parse the payload (raw control
+        # bytes); the grep fallback below then re-reads every field.
+        _i=0
+        while IFS= read -r _f; do
+            case $_i in
+                0) EVENT="$_f" ;;
+                1) SESSION_ID="$_f" ;;
+                2) NOTIFICATION_TYPE="$_f" ;;
+                3) CWD="$_f" ;;
+                4) TRANSCRIPT_PATH="$_f" ;;
+                5) ERROR_TYPE="$_f" ;;
+                6) TEAMMATE="$_f" ;;
+            esac
+            _i=$((_i + 1))
+        done < <(echo "$INPUT" | jq -r '
+            .hook_event_name // "", .session_id // "", .notification_type // "",
+            .cwd // "", .transcript_path // "", .error_type // "",
+            (.teammate_name // .teammate_id // "")' 2>/dev/null)
     fi
-    if [ -n "$_JQ_EVENT" ]; then
-        # jq succeeded — use its output for all fields
+    if [ -n "$EVENT" ]; then
         MESSAGE=$(echo "$INPUT" | jq -r '.message // empty' 2>/dev/null)
-        EVENT="$_JQ_EVENT"
-        SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-        NOTIFICATION_TYPE=$(echo "$INPUT" | jq -r '.notification_type // empty' 2>/dev/null)
-        CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
-        TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
-        ERROR_TYPE=$(echo "$INPUT" | jq -r '.error_type // empty' 2>/dev/null)
-        TEAMMATE=$(echo "$INPUT" | jq -r '.teammate_name // .teammate_id // empty' 2>/dev/null)
     else
         MESSAGE=$(_grep_field message)
         EVENT=$(_grep_field hook_event_name)
@@ -62,11 +75,16 @@ TYPE=$(map_event_to_type "$EVENT" "$NOTIFICATION_TYPE")
 [ -n "$TYPE" ] || exit 0
 
 # Default message based on event / type. The payload's own message wins when
-# it has one, except for the two that would otherwise be opaque.
-if [ -z "$MESSAGE" ]; then
+# it has one, except for a failure — which always names its error type.
+if [ "$TYPE" = "failure" ]; then
+    # With an error_type the message states it; with none, the payload's own
+    # message stands, falling back to a generic word when that is empty too.
+    if [ -n "$ERROR_TYPE" ] || [ -z "$MESSAGE" ]; then
+        MESSAGE="Stopped: ${ERROR_TYPE:-error}"
+    fi
+elif [ -z "$MESSAGE" ]; then
     case "$TYPE" in
         stop)     MESSAGE="Task complete" ;;
-        failure)  MESSAGE="Stopped: ${ERROR_TYPE:-error}" ;;
         teammate) MESSAGE="Teammate idle${TEAMMATE:+: $TEAMMATE}" ;;
         quota)
             case "$NOTIFICATION_TYPE" in
@@ -78,8 +96,6 @@ if [ -z "$MESSAGE" ]; then
         prompt)           MESSAGE="Prompt submitted" ;;
         *)                MESSAGE="Notification" ;;
     esac
-elif [ "$TYPE" = "failure" ] && [ -n "$ERROR_TYPE" ]; then
-    MESSAGE="Stopped: $ERROR_TYPE"
 fi
 
 # Play sound (independent of visual and tmux session — handled by notify-sound.sh)
