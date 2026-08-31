@@ -34,23 +34,21 @@ else
     if command -v jq &>/dev/null; then
         # One jq pass for every field except the free-text message, which may
         # carry newlines — the eight forks of 3.8.0 become two. jq prints one
-        # field per line (`,` at top level); reading with `IFS=` keeps empty
-        # fields as empty lines, which a tab-separated read would collapse.
-        # An empty EVENT means jq could not parse the payload (raw control
-        # bytes); the grep fallback below then re-reads every field.
-        _i=0
-        while IFS= read -r _f; do
-            case $_i in
-                0) EVENT="$_f" ;;
-                1) SESSION_ID="$_f" ;;
-                2) NOTIFICATION_TYPE="$_f" ;;
-                3) CWD="$_f" ;;
-                4) TRANSCRIPT_PATH="$_f" ;;
-                5) ERROR_TYPE="$_f" ;;
-                6) TEAMMATE="$_f" ;;
-            esac
-            _i=$((_i + 1))
-        done < <(echo "$INPUT" | jq -r '
+        # field per line (`,` at top level), read in that same order below. A
+        # per-line `IFS= read` keeps an empty field as an empty line; a
+        # separator-joined read would either collapse empties (whitespace IFS)
+        # or mis-split a UTF-8 cwd (byte IFS). An empty EVENT means jq could
+        # not parse the payload (raw control bytes); the grep fallback then
+        # re-reads every field.
+        {
+            IFS= read -r EVENT
+            IFS= read -r SESSION_ID
+            IFS= read -r NOTIFICATION_TYPE
+            IFS= read -r CWD
+            IFS= read -r TRANSCRIPT_PATH
+            IFS= read -r ERROR_TYPE
+            IFS= read -r TEAMMATE
+        } < <(echo "$INPUT" | jq -r '
             .hook_event_name // "", .session_id // "", .notification_type // "",
             .cwd // "", .transcript_path // "", .error_type // "",
             (.teammate_name // .teammate_id // "")' 2>/dev/null)
