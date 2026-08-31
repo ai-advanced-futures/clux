@@ -22,13 +22,45 @@ NOTIFY_JUMP_KEY=$(get_tmux_option "@claude-notify-jump" "m")
 NOTIFY_DISMISS_KEY=$(get_tmux_option "@claude-notify-dismiss" '`')
 
 
-# Map Claude hook event names to notification types
+# Map a Claude hook event (and, for Notification, its notification_type) to
+# the clux notification TYPE that names its @claude-notify-<type>-* options.
+#
+#   map_event_to_type <hook_event_name> [<notification_type>]
+#
+# One type per thing the user is asked about in /clux:setup §3.6:
+#   notification  Claude needs you — permission_prompt, idle_prompt,
+#                 agent_needs_input, an MCP elicitation dialog, or a
+#                 Notification whose payload carries no type at all (the
+#                 grep fallback in notify-tmux.sh cannot read one)
+#   stop          Claude finished — the Stop event, and the dashboard's own
+#                 agent_completed notification for a background agent
+#   failure       the turn ended on an API error (StopFailure)
+#   quota         Claude paused on, or resumed from, a usage quota
+#   teammate      an agent-team teammate went idle (TeammateIdle)
+#   prompt        the user submitted a prompt
+#   sessionend    the session ended
+#
+# Prints NOTHING for a Notification sub-type clux ignores (auth_success,
+# elicitation_complete, elicitation_response, …). A caller must treat an empty
+# type as "do nothing at all" — 3.7.0 played the notification sound on every
+# Notification before it checked the sub-type, which is the fault this empty
+# return exists to end.
 map_event_to_type() {
     case "$1" in
         Stop) echo "stop" ;;
-        Notification) echo "notification" ;;
+        StopFailure) echo "failure" ;;
+        TeammateIdle) echo "teammate" ;;
         UserPromptSubmit) echo "prompt" ;;
         SessionEnd) echo "sessionend" ;;
+        Notification)
+            case "${2:-}" in
+                ''|permission_prompt|idle_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog)
+                    echo "notification" ;;
+                agent_completed) echo "stop" ;;
+                quota_auto_resume_*) echo "quota" ;;
+                *) echo "" ;;
+            esac
+            ;;
         *) echo "$1" ;;
     esac
 }
@@ -56,14 +88,19 @@ _get_notification_default_sound() {
         return
     fi
     case "$1" in
-        notification) echo "on" ;;
+        notification|failure|quota) echo "on" ;;
         *) echo "off" ;;
     esac
 }
 
+# Visual defaults: ON for the three events the user is otherwise blind to —
+# Claude needs you, Claude stopped on an API error, Claude paused on quota.
+# OFF for the ones that fire every turn (stop, prompt) or rarely matter
+# (teammate, sessionend). /clux:setup §3.6 asks about every one of them and
+# writes only an answer that differs from these.
 _get_notification_default_visual() {
     case "$1" in
-        notification) echo "on" ;;
+        notification|failure|quota) echo "on" ;;
         *) echo "off" ;;
     esac
 }
@@ -210,6 +247,9 @@ get_agent_glyph_busy() {
 }
 get_agent_glyph_needs()     { get_tmux_option "@clux-agent-glyph-needs" "!"; }
 get_agent_glyph_done()      { get_tmux_option "@clux-agent-glyph-done"  "v"; }
+# `failed` (3.8.0): the turn ended on an API error (StopFailure) — rate limit,
+# overloaded, billing, auth. Same one-column rule as the three above.
+get_agent_glyph_fail()      { get_tmux_option "@clux-agent-glyph-fail"  "x"; }
 
 # get_agent_glyph_busy_frames() — the frames the busy glyph cycles through,
 # one per status-interval (animated busy glyph, 2026-08-23 design). Read
@@ -283,6 +323,7 @@ get_agent_frame() {
 get_agent_busy_color()      { get_tmux_option "@clux-agent-busy-color"  "cyan"; }
 get_agent_needs_color()     { get_tmux_option "@clux-agent-needs-color" "yellow"; }
 get_agent_done_color()      { get_tmux_option "@clux-agent-done-color"  "green"; }
+get_agent_fail_color()      { get_tmux_option "@clux-agent-fail-color"  "red"; }
 
 # --- Popup styling ----------------------------------------------------------
 #

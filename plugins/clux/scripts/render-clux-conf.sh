@@ -16,7 +16,9 @@
 #      @clux-picker, and the optional @clux-agent-refresh-command escape hatch
 #   3. Part 4 theming: @clux-bar-* options, emitted only for a value the
 #      caller actually passed (unset ones fall through to each reader's own
-#      default, so this file stays honest about what it inferred)
+#      default, so this file stays honest about what it inferred), followed
+#      by the §3.6 notification preferences — @claude-notify-<type>-visual /
+#      -sound — again only the answers the caller passed
 #   4. Key bindings: N P { } g A, plus the existing m ` DC M
 #   5. Hooks, hook index band 90-99 (clux's reserved band)
 #   6. A drop of the animation runtime state a previous load left behind
@@ -66,9 +68,21 @@ BAR_NAME_LENGTH=""
 AGENT_BUSY_COLOR=""
 AGENT_NEEDS_COLOR=""
 AGENT_DONE_COLOR=""
+AGENT_FAIL_COLOR=""
 AGENT_GLYPH_BUSY=""
 AGENT_GLYPH_NEEDS=""
 AGENT_GLYPH_DONE=""
+AGENT_GLYPH_FAIL=""
+
+# Notification preferences (§3.6) and colours. Bash 3.2 has no associative
+# arrays, so the preferences accumulate as finished `set -g` lines and are
+# emitted verbatim, in the order they were given.
+NOTIFY_BG=""
+NOTIFY_FG=""
+NOTIFY_PREFS=""
+# The closed set of clux notification types — one per @claude-notify-<type>-*
+# family. Must match map_event_to_type() in helpers.sh.
+NOTIFY_TYPES="notification stop failure quota prompt teammate sessionend"
 
 usage() {
     cat <<'USAGE'
@@ -97,13 +111,23 @@ Optional:
   --agent-busy-color VALUE        colour of the busy glyph in the bar's
   --agent-needs-color VALUE        per-session agent column, and of the
   --agent-done-color VALUE         glyph agent-bar.sh draws
+  --agent-fail-color VALUE
   --agent-glyph-busy VALUE        one column each — a two-column glyph
   --agent-glyph-needs VALUE        (emoji, nerd-font icon) reflows the bar,
   --agent-glyph-done VALUE         and the caller owns that reflow
+  --agent-glyph-fail VALUE
                                 (@clux-agent-glyph-busy-frames is deliberately
                                  NOT a flag: it needs single-quoting for its
                                  backslash frame, and an animation choice is
                                  not something detection reads off an old bar)
+  --notify-visual TYPE on|off     one @claude-notify-TYPE-visual line; repeat
+  --notify-sound TYPE on|off       per type. TYPE is one of: notification stop
+                                   failure quota prompt teammate sessionend.
+                                   Pass only an answer that differs from the
+                                   default in helpers.sh — a line restating a
+                                   default only makes the file longer
+  --notify-bg VALUE               @claude-notify-bg / -fg, the colours of the
+  --notify-fg VALUE                notification token (only when detected)
   --scripts-dir PATH            default: ~/.config/clux/scripts (the deployed
                                  location bind-key/hook lines point at)
   --out PATH                    default: ~/.config/clux/clux.tmux.conf
@@ -135,6 +159,31 @@ while [ $# -gt 0 ]; do
         --agent-glyph-busy) AGENT_GLYPH_BUSY="${2:-}"; shift 2 ;;
         --agent-glyph-needs) AGENT_GLYPH_NEEDS="${2:-}"; shift 2 ;;
         --agent-glyph-done) AGENT_GLYPH_DONE="${2:-}"; shift 2 ;;
+        --agent-fail-color) AGENT_FAIL_COLOR="${2:-}"; shift 2 ;;
+        --agent-glyph-fail) AGENT_GLYPH_FAIL="${2:-}"; shift 2 ;;
+        --notify-bg) NOTIFY_BG="${2:-}"; shift 2 ;;
+        --notify-fg) NOTIFY_FG="${2:-}"; shift 2 ;;
+        --notify-visual|--notify-sound)
+            _kind="${1#--notify-}"
+            _type="${2:-}"; _val="${3:-}"
+            case " $NOTIFY_TYPES " in
+                *" $_type "*) ;;
+                *)
+                    echo "render-clux-conf.sh: $1: unknown notification type '$_type' (one of: $NOTIFY_TYPES)" >&2
+                    exit 1
+                    ;;
+            esac
+            case "$_val" in
+                on|off) ;;
+                *)
+                    echo "render-clux-conf.sh: $1 $_type: value must be on or off, got '$_val'" >&2
+                    exit 1
+                    ;;
+            esac
+            NOTIFY_PREFS="${NOTIFY_PREFS}set -g \"@claude-notify-${_type}-${_kind}\" \"${_val}\"
+"
+            shift 3
+            ;;
         --scripts-dir) SCRIPTS_DIR="${2:-}"; shift 2 ;;
         --out) OUT="${2:-}"; shift 2 ;;
         --version) VERSION="${2:-}"; shift 2 ;;
@@ -241,9 +290,13 @@ BAR_NAME_LENGTH:@clux-bar-name-length
 AGENT_BUSY_COLOR:@clux-agent-busy-color
 AGENT_NEEDS_COLOR:@clux-agent-needs-color
 AGENT_DONE_COLOR:@clux-agent-done-color
+AGENT_FAIL_COLOR:@clux-agent-fail-color
 AGENT_GLYPH_BUSY:@clux-agent-glyph-busy
 AGENT_GLYPH_NEEDS:@clux-agent-glyph-needs
-AGENT_GLYPH_DONE:@clux-agent-glyph-done"
+AGENT_GLYPH_DONE:@clux-agent-glyph-done
+AGENT_GLYPH_FAIL:@clux-agent-glyph-fail
+NOTIFY_BG:@claude-notify-bg
+NOTIFY_FG:@claude-notify-fg"
 
     local any_theme=0 varname optname val
     while IFS=: read -r varname optname; do
@@ -260,6 +313,16 @@ AGENT_GLYPH_DONE:@clux-agent-glyph-done"
     done <<PAIRS
 $bar_pairs
 PAIRS
+
+    # §3.6 answers. Only what the caller passed, which the skill limits to
+    # answers that differ from helpers.sh's defaults. The option names are
+    # @claude-notify-<type>-<visual|sound>, read by notify-tmux.sh (both the
+    # pane path and the agents path) and notify-sound.sh.
+    if [ -n "$NOTIFY_PREFS" ]; then
+        echo
+        echo "# --- Notifications: per-event preferences (only answers that differ from the defaults) ---"
+        printf '%s' "$NOTIFY_PREFS"
+    fi
 
     echo
     echo "# --- Key bindings ---"

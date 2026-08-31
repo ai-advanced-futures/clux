@@ -241,6 +241,40 @@ STUBEOF
     [[ "$output" == *"#[fg=white]~#[default]"* ]]
 }
 
+@test "session-list: failed (3.8.0) draws the fail glyph — fields 17/18 of the batched read, defaults x / red" {
+    _write_list_tmux_stub
+    _write_agent_query_stub 'alpha	failed'
+    # Same sixteen fields as above, then glyph_fail and fail_color LAST, so a
+    # sixteen-field stub keeps splitting exactly as before.
+    local opts
+    opts="30${SEP}bg=red,fg=white${SEP}fg=red${SEP}bg=green,fg=black${SEP}bg=black,fg=green${SEP}fg=red${SEP}fg=white${SEP}<${SEP}>${SEP}~${SEP}B${SEP}N${SEP}D${SEP}orange${SEP}pink${SEP}teal${SEP}F${SEP}purple"
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        export FAKE_OPTS='$opts'
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=purple]F#[default]"* ]]
+    # Unset: the defaults.
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\teditor'
+        export FAKE_OPTS=''
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"#[fg=red]x#[default]"* ]]
+}
+
 @test "session-list: default colours apply when the options are unset" {
     _write_list_tmux_stub
     _write_agent_query_stub 'alpha	needs-you'

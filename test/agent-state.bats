@@ -896,3 +896,135 @@ STUBEOF
     # The agents/ directory entry itself never trips the flat loop.
     [ -d "$dir/$SRV/agents" ]
 }
+
+# ===========================================================================
+# 3.8.0 — the fourth state `failed` (StopFailure), the Notification
+# sub-types the agents dashboard emits, and SessionStart housekeeping.
+# ===========================================================================
+
+@test "writer: failed writes 'failed' to <state-dir>/<pane-id>" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"StopFailure","session_id":"s1","error_type":"rate_limit"}'
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%1 '$AGENT_HOOK' failed
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(cat "$dir/$SRV/%1")" = "failed" ]
+}
+
+@test "writer: Notification agent_completed writes finished under the needs-you argument" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    local JSON='{"hook_event_name":"Notification","notification_type":"agent_completed","session_id":"s1"}'
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%2 '$AGENT_HOOK' needs-you
+    "
+    [ "$status" -eq 0 ]
+    [ "$(cat "$dir/$SRV/%2")" = "finished" ]
+}
+
+@test "writer: Notification agent_needs_input, elicitation_dialog, elicitation_url_dialog, quota stale/disabled write needs-you" {
+    local dir="$BATS_TEST_TMPDIR/agents" t
+    _write_agent_tmux_stub
+    for t in agent_needs_input elicitation_dialog elicitation_url_dialog quota_auto_resume_stale quota_auto_resume_disabled; do
+        rm -f "$dir/$SRV/%2"
+        local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"$t\",\"session_id\":\"s1\"}"
+        run bash -c "
+            export CLUX_AGENT_STATE_DIR='$dir'
+            export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+            printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%2 '$AGENT_HOOK' needs-you
+        "
+        [ "$status" -eq 0 ]
+        [ "$(cat "$dir/$SRV/%2")" = "needs-you" ] || { echo "$t did not write needs-you"; false; }
+    done
+}
+
+@test "writer: Notification quota_auto_resume_fired is a no-op (Claude resumed on its own)" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/$SRV"
+    printf 'busy\n' > "$dir/$SRV/%3"
+    local JSON='{"hook_event_name":"Notification","notification_type":"quota_auto_resume_fired","session_id":"s1"}'
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%3 '$AGENT_HOOK' needs-you
+    "
+    [ "$status" -eq 0 ]
+    [ "$(cat "$dir/$SRV/%3")" = "busy" ]
+}
+
+@test "writer: SessionStart remove drops the pane's stale file (a restart in the same pane)" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/$SRV"
+    printf 'finished\n' > "$dir/$SRV/%4"
+    local JSON='{"hook_event_name":"SessionStart","source":"startup","session_id":"s9"}'
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANE_IDS='%4'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX=dummy TMUX_PANE=%4 '$AGENT_HOOK' remove
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$dir/$SRV/%4" ]
+}
+
+@test "reader: failed ranks above needs-you in the roll-up" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/$SRV"
+    printf 'needs-you\n' > "$dir/$SRV/%1"
+    printf 'failed\n' > "$dir/$SRV/%2"
+    printf 'busy\n' > "$dir/$SRV/%3"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL=\$'%1|alpha\n%2|beta\n%3|gamma'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'beta\tfailed\nalpha\tneeds-you\ngamma\tbusy')" ]
+}
+
+@test "reader: a dashboard with one failed agent and one busy agent shows failed" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'busy\n'   > "$dir/$SRV/agents/%47~aa11"
+    printf 'failed\n' > "$dir/$SRV/agents/%47~bb22"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_PANES_FULL='%47|config'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_QUERY'
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'config\tfailed')" ]
+}
+
+@test "clear: removes failed files on view, exactly like finished; busy survives" {
+    local dir="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$dir/$SRV/agents"
+    printf 'failed\n' > "$dir/$SRV/%1"
+    printf 'busy\n'   > "$dir/$SRV/%2"
+    printf 'failed\n' > "$dir/$SRV/agents/%1~aa11"
+    _write_agent_tmux_stub
+    run bash -c "
+        export CLUX_AGENT_STATE_DIR='$dir'
+        export FAKE_WINDOW_PANES=\$'%1\n%2'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$AGENT_CLEAR' '@1'
+    "
+    [ "$status" -eq 0 ]
+    [ ! -f "$dir/$SRV/%1" ]
+    [ -f "$dir/$SRV/%2" ]
+    [ ! -f "$dir/$SRV/agents/%1~aa11" ]
+}

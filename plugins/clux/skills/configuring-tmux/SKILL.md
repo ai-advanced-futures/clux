@@ -225,15 +225,25 @@ Prompt the agent to:
      # Live options win over anything inferred: they are what renders NOW, and
      # for the agent colours they are frequently the ONLY copy — nothing wrote
      # them to a file, so they die with the server unless setup carries them.
-     for o in @clux-agent-busy-color @clux-agent-needs-color @clux-agent-done-color \
-              @clux-agent-glyph-busy @clux-agent-glyph-needs @clux-agent-glyph-done; do
+     for o in @clux-agent-busy-color @clux-agent-needs-color @clux-agent-done-color @clux-agent-fail-color \
+              @clux-agent-glyph-busy @clux-agent-glyph-needs @clux-agent-glyph-done @clux-agent-glyph-fail \
+              @claude-notify-bg @claude-notify-fg; do
          v=$(tmux show-option -gqv "$o" 2>/dev/null)
          [ -n "$v" ] && echo "live-option: $o = $v"
      done
+     # The §3.6 answers already in force, so a re-run offers them back as
+     # the first option instead of the shipped default.
+     for t in notification stop failure quota prompt teammate; do
+         for k in visual sound; do
+             v=$(tmux show-option -gqv "@claude-notify-$t-$k" 2>/dev/null)
+             [ -n "$v" ] && echo "live-notify: $t $k = $v"
+         done
+     done
      ```
      Add to the color map, when found:
-     - `agent_busy` / `agent_needs` / `agent_done`: the three glyph colours
-     - `glyph_busy` / `glyph_needs` / `glyph_done`: the three glyphs
+     - `agent_busy` / `agent_needs` / `agent_done` / `agent_fail`: the four glyph colours
+     - `glyph_busy` / `glyph_needs` / `glyph_done` / `glyph_fail`: the four glyphs
+     - `bg_attention` / `fg_on_attention`: a live `@claude-notify-bg` / `-fg` wins over the value inferred from `message-style`
 6. **Detect a hand-written session surface** — the migration case (Part 5 of the design):
    ```bash
    OLD_DIR="$HOME/.config/tmux/scripts"
@@ -273,11 +283,11 @@ Prompt the agent to:
    [ -f "$HOOKS_FILE" ] || HOOKS_FILE=""
    echo "HOOKS_FILE=$HOOKS_FILE"
    ```
-2. Check if hooks.json contains `notify-tmux.sh` entries for `Stop`, `Notification`, and `UserPromptSubmit` events. Note: clux's hooks.json registers a SECOND command on those same events (plus `SessionEnd`) — `agent-state.sh <state>`, which writes the per-pane agent-state file the tmux status bar reads. Both commands run in parallel from the same event; this is not a new event and needs no settings.json handling
+2. Check if hooks.json contains `notify-tmux.sh` entries for the `Stop`, `StopFailure`, `Notification`, `TeammateIdle`, `UserPromptSubmit` and `SessionEnd` events. Note: clux's hooks.json registers a SECOND command on most of those events (plus `SessionStart`) — `agent-state.sh <state>`, which writes the per-pane agent-state file the tmux status bar reads (`busy`, `needs-you`, `finished`, `failed`, or `remove`). Both commands run in parallel from the same event; this is not a new event and needs no settings.json handling
 3. Read `~/.claude/settings.json` and check for existing system hooks:
    - Look for `hooks.Stop`, `hooks.Notification`, `hooks.UserPromptSubmit` entries
    - These are **conflicting** — the plugin's `hooks.json` handles all notification events via `notify-tmux.sh` → `notify-sound.sh`. System-level hooks for these events cause double-firing (e.g., double sounds)
-   - Note any `hooks.SessionEnd` entries — clux adds its own `SessionEnd → notify-tmux.sh` entry; any **additional** user `SessionEnd` commands are preserved alongside it
+   - Note any `hooks.SessionEnd`, `hooks.StopFailure` or `hooks.TeammateIdle` entries — clux adds its own `notify-tmux.sh` entry on each; any **additional** user commands on them are preserved alongside it. A user's `StopFailure` or `TeammateIdle` hook is usually doing real work (a retry, keeping a teammate busy), never just a sound, so it is reported, not removed
    - Report each conflicting hook found with its current command
 4. Check existing tmux keybindings and hooks for conflicts:
    ```bash
@@ -344,8 +354,11 @@ clux setup — analysis results:
     @session_order (live): work,notes,scratch  → copies to @clux-session-order
     Bindings on a clux key pointing elsewhere: none
 
+  Notification preferences in force (3.6 offers each back as the first option):
+    stop: visual=on   (everything else: shipped default)
+
   Hooks & keybindings:
-    hooks.json: OK (Stop, Notification, UserPromptSubmit, SessionEnd)
+    hooks.json: OK (Stop, StopFailure, Notification, TeammateIdle, UserPromptSubmit, SessionStart, SessionEnd)
     Hook band 90-99: [90] agent-clear.sh (already installed) — [91] free
     Keybinding conflicts: none outside the migration above
 
@@ -476,48 +489,62 @@ Use AskUserQuestion:
   Write `$HOME` **expanded to the real absolute path, with no `~`**: tmux expands this option's value unquoted and splits it on spaces to build the command, so no argument may contain a space and nothing downstream expands a tilde.
 - **No** → insert only `#{@clux_status}`, and write **no** `@clux-agent-refresh-command` line, leaving whatever the user already has. Then offer section 3.7 (the standalone agent glyph) instead.
 
-### 3.6 — Per-notification preferences (interactive — one hook at a time)
+### 3.6 — Per-notification preferences (interactive — one event at a time)
 
-Walk the user through each Claude Code hook event, asking whether they want **visual** (status bar badge) and **sound** enabled. Present one event at a time using AskUserQuestion.
+Walk the user through each thing Claude Code can tell clux about, asking whether they want **visual** (a status-bar badge — and, for a `claude agents` workspace, a desktop banner and a queue entry `prefix + m` jumps to) and **sound**. Present one event at a time using AskUserQuestion. One answer governs both a Claude in a tmux pane and a detached agent in the `claude agents` view: `notify-tmux.sh` reads the same option on both paths.
 
-The three event types and their defaults (from `helpers.sh`):
+The six types and their defaults (from `helpers.sh`, `_get_notification_default_visual` / `_sound`; sound is always `off` on a machine with no audio player):
 
-| Event | When it fires | Visual default | Sound default |
-|-------|---------------|----------------|---------------|
-| **Notification** | Claude sends a notification (e.g., tool permission request) | `on` | `on` |
-| **Stop** | Claude finishes a task | `off` | `off` |
-| **Prompt** | User submits a prompt (UserPromptSubmit hook) | `off` | `off` |
+| Type | Claude Code event(s) | What happened | Visual default | Sound default |
+|------|----------------------|---------------|----------------|---------------|
+| **notification** | `Notification` — `permission_prompt`, `idle_prompt`, `agent_needs_input`, `elicitation_dialog`, `elicitation_url_dialog` | Claude needs you: a permission, an answer, an MCP dialog | `on` | `on` |
+| **stop** | `Stop`; `Notification` — `agent_completed` | Claude finished (the green `v` in the bar) | `off` | `off` |
+| **failure** | `StopFailure` | the turn ended on an API error — rate limit, overloaded, billing, auth, max output tokens. The bar shows the red `x`; without a notification nobody notices a stalled agent | `on` | `on` |
+| **quota** | `Notification` — `quota_auto_resume_stale`, `_disabled`, `_fired` | Claude paused on a usage quota (or resumed from one) | `on` | `on` |
+| **prompt** | `UserPromptSubmit` | the user submitted a prompt | `off` | `off` |
+| **teammate** | `TeammateIdle` | an agent-team teammate went idle | `off` | `off` |
 
-**Step 1:** Ask about **Notification** events:
+Ask in that order. When Agent B reported a `live-notify:` line for a type, its **current value is the first option** and the description says `(currently: on — your setting)`; otherwise the description says `(currently: on — the default)`.
+
+**Step 1:** Ask about **notification**:
 ```
 Use AskUserQuestion:
-  question: "Notification events (Claude needs attention, e.g., tool permission).
-             What should happen?"
-  header: "Notification"
+  question: "When Claude needs you — a permission, an answer, an MCP dialog —
+             what should happen?"
+  header: "Needs you"
   multiSelect: true
   options:
     - label: "Visual (status bar badge)"
-      description: "Show a notification badge in the tmux status bar (currently: on)"
+      description: "Badge in the tmux bar; a desktop banner and a jump entry for an agents workspace (currently: on — the default)"
     - label: "Sound"
-      description: "Play a sound alert (currently: on)"
+      description: "Play a sound alert (currently: on — the default)"
 ```
 
-**Step 2:** Ask about **Stop** events (same shape, currently: off / off).
+**Step 2:** Ask about **stop** — "When Claude finishes a task (the green v)…" (same shape, currently: off / off).
 
-**Step 3:** Ask about **Prompt** events (same shape, currently: off / off).
+**Step 3:** Ask about **failure** — "When Claude's turn ends on an API error (rate limit, overloaded, billing, auth)…" (currently: on / on).
+
+**Step 4:** Ask about **quota** — "When Claude pauses on a usage quota…" (currently: on / on).
+
+**Step 5:** Ask about **prompt** — "When you submit a prompt…" (currently: off / off).
+
+**Step 6:** Ask about **teammate** — "When an agent-team teammate goes idle…" (currently: off / off). Skip this question, and say so, when Agent C found no agent-team use (no `TeammateIdle` hook of the user's own and no `CLAUDE_CODE_AGENT_TEAMS`-style setting) — the default is off, and a question about a feature the user does not use is noise.
 
 After collecting all preferences, present a summary table:
 
 ```
 Per-notification preferences:
-  Notification:  visual=on   sound=on
-  Stop:          visual=off  sound=off
-  Prompt:        visual=off  sound=off
+  notification:  visual=on   sound=on
+  stop:          visual=on   sound=off   (differs from default — will be written)
+  failure:       visual=on   sound=on
+  quota:         visual=on   sound=off   (differs from default — will be written)
+  prompt:        visual=off  sound=off
+  teammate:      visual=off  sound=off
 ```
 
-These map to `@claude-notify-{type}-{visual|sound}` options. **Only write variables that differ from the built-in defaults** — the defaults live in `helpers.sh`, and a line that restates one only makes the file longer.
+These map to `@claude-notify-{type}-{visual|sound}` options, written into `clux.tmux.conf` by `render-clux-conf.sh --notify-visual <type> on|off` / `--notify-sound <type> on|off` (Phase 6, step 3). **Pass only an answer that differs from the built-in default** — the defaults live in `helpers.sh`, and a line that restates one only makes the file longer. An answer that matches the default writes nothing, and a re-run that keeps every answer leaves the file unchanged.
 
-These options belong to the notification feature, which predates clux's own file and lives inside the user's clux markers. Keep writing them there, next to `@claude-notify-bg` / `@claude-notify-fg`.
+A user who set a **custom sound command** (`@claude-notify-<type>-sound "afplay …"`) in their own file keeps it: the renderer accepts only `on` / `off`, so setup never overwrites a command with a word. Report it and pass no `--notify-sound` for that type.
 
 ### 3.7 — Agent state glyph without clux's bar (only when 3.5 was "No")
 
@@ -530,9 +557,11 @@ When clux renders the session list, the per-session agent column is already part
 | `@clux-agent-glyph-busy-frames` | `- \ \| /` | frames the busy glyph cycles through in clux's own session bar, one per `status-interval`. Set `@clux-agent-glyph-busy` alone and leave this unset to keep a static glyph — see the note below the table |
 | `@clux-agent-glyph-needs` | `!` | glyph shown when Claude needs your input |
 | `@clux-agent-glyph-done` | `v` | glyph shown when Claude finished |
+| `@clux-agent-glyph-fail` | `x` | glyph shown when Claude's turn ended on an API error (`StopFailure`) |
 | `@clux-agent-busy-color` | `cyan` | foreground color for the busy glyph |
 | `@clux-agent-needs-color` | `yellow` | foreground color for the needs-you glyph |
 | `@clux-agent-done-color` | `green` | foreground color for the finished glyph |
+| `@clux-agent-fail-color` | `red` | foreground color for the failed glyph |
 | `@clux-agent-refresh-command` | `refresh-client -S` | tmux command run after each state write |
 
 Glyph defaults are plain ASCII on purpose: the bar reserves exactly ONE column per session, and a two-column glyph (an emoji, a nerd-font icon) would reflow it. A user who sets a wide glyph owns the reflow. There is no `@clux-agent-glyph-idle` — `get_tmux_option` collapses a single-space value to its default, so idle is a literal space the renderer emits. `@clux-agent-glyph-busy-frames` does not change this: the shipped default (`- \ | /`) stays one plain-ASCII column, same as every other glyph default here.
@@ -575,7 +604,7 @@ Neither snippet above moves: `@clux-agent-glyph-busy-frames` is read by clux's o
 
 Ask explicitly — this is opt-in, default off:
 ```
-question: "Show a per-agent state glyph (busy/needs-you/finished) on your own status bar?"
+question: "Show a per-agent state glyph (busy/needs-you/finished/failed) on your own status bar?"
 header: "Agent bar"
 options:
   - label: "Skip (default)"
@@ -607,11 +636,13 @@ Only when 3.5 was "Yes". Map the palette Agent B extracted onto the `@clux-bar-*
 | `@clux-agent-busy-color` | `cyan` | `<agent_busy>` |
 | `@clux-agent-needs-color` | `yellow` | `<agent_needs>` |
 | `@clux-agent-done-color` | `green` | `<agent_done>` |
+| `@clux-agent-fail-color` | `red` | `<agent_fail>` |
 | `@clux-agent-glyph-busy` | `*` | `<glyph_busy>` |
 | `@clux-agent-glyph-needs` | `!` | `<glyph_needs>` |
 | `@clux-agent-glyph-done` | `v` | `<glyph_done>` |
+| `@clux-agent-glyph-fail` | `x` | `<glyph_fail>` |
 
-The six agent rows matter most on a **migration**. The `@clux-bar-*` palette can
+The eight agent rows matter most on a **migration**. The `@clux-bar-*` palette can
 be inferred from the user's styles, but the agent glyph colours usually exist
 only as live server state — a hand-written bar hardcoded them in its own
 `session-list.sh`, and nothing wrote them to a file. Carry them or the bar
@@ -624,11 +655,11 @@ detection reads off an old bar. A user who wants it sets it in their own file.
 
 The defaults are tmux **named** colours on purpose, so an 8-colour terminal and an unthemed machine both render readably. `@clux-bar-name-length` must be numeric — `render-clux-conf.sh` refuses a non-numeric value, because a bad `N` corrupts the whole tmux format string `session-list.sh` builds from it.
 
-Also carry the notification colors forward, when a palette was found — these use the **attention** colors, which are designed for high-visibility transient messages:
+Also carry the notification colors forward, when a palette was found — these use the **attention** colors, which are designed for high-visibility transient messages. They are two more theming flags, `--notify-bg "<bg_attention>"` / `--notify-fg "<fg_on_attention>"`, and land in `clux.tmux.conf` as:
 
 ```tmux
-set -g @claude-notify-bg "<bg_attention>"     # e.g. #EBCB8B
-set -g @claude-notify-fg "<fg_on_attention>"  # e.g. #2E3440
+set -g "@claude-notify-bg" "#EBCB8B"
+set -g "@claude-notify-fg" "#2E3440"
 ```
 
 Show the user what was chosen: `Notification style: bg=#EBCB8B fg=#2E3440 (matches your message-style)`.
@@ -769,11 +800,15 @@ Call the renderer — never write `clux.tmux.conf` by hand. It emits the six sec
     --bar-name-attached-style "<only when detection found it>" \
     --bar-name-length "<only when detection found it>" \
     --agent-needs-color "<only when detection found it>" \
-    --agent-busy-color "<only when detection found it>"
+    --agent-busy-color "<only when detection found it>" \
+    --notify-bg "<only when detection found it>" \
+    --notify-visual stop on \
+    --notify-sound quota off
 ```
 
 - Pass `--agent-refresh-command` **only** when 3.5 was "Yes".
-- Pass a `--bar-*` or `--agent-*` flag **only** for a value detection actually found.
+- Pass a `--bar-*`, `--agent-*` or `--notify-bg/-fg` flag **only** for a value detection actually found.
+- Pass a `--notify-visual` / `--notify-sound` pair **only** for a 3.6 answer that differs from its default. The renderer refuses a type outside `notification stop failure quota prompt teammate sessionend` and a value other than `on` / `off`, and writes nothing on a refusal.
 - `$PWD` inside the agents command must reach the option **unexpanded**; the renderer single-quotes the value for exactly that reason, so pass it through verbatim and do not pre-expand it.
 - The renderer writes no `@clux-session-order`, `@clux_session_bar` or `@clux_status` line. Those three are live server state, and a `set -g` for any of them would reset it on every reload — which for `@clux-session-order` is exactly the failure the reorder keys exist to prevent.
 
@@ -796,10 +831,10 @@ Run the live-server read-and-set from Phase 4, step 4. Report what happened.
 
 ### 6. Update system hooks in `~/.claude/settings.json`
 
-The plugin's `hooks.json` registers `notify-tmux.sh` for Stop, Notification, UserPromptSubmit and SessionEnd. Any system-level hook in `settings.json` for those same events is redundant and causes double-firing (double sounds, sounds when the user disabled them).
+The plugin's `hooks.json` registers `notify-tmux.sh` for Stop, StopFailure, Notification, TeammateIdle, UserPromptSubmit and SessionEnd. A system-level hook in `settings.json` that only plays a sound on Stop, Notification or UserPromptSubmit is redundant and causes double-firing (double sounds, sounds when the user disabled them).
 
 1. Remove `hooks.Stop`, `hooks.Notification` and `hooks.UserPromptSubmit` entries.
-2. Remove a `hooks.SessionEnd` entry that points at `notify-tmux.sh` (a duplicate of hooks.json); **keep** every other user `SessionEnd` command.
+2. Remove a `hooks.SessionEnd`, `hooks.StopFailure` or `hooks.TeammateIdle` entry that points at `notify-tmux.sh` (a duplicate of hooks.json); **keep** every other user command on those three events — they usually do real work, not a sound.
 3. Preserve all other hook entries and all non-hook settings, and the file's existing 2-space indent.
 4. If the hooks object ends up empty, keep it as `"hooks": {}`.
 5. Use the **Edit** tool, not Write — this file changes concurrently.
@@ -950,6 +985,7 @@ Show the user:
   @clux-editor          nvim
   @clux-agents-command  claude agents --cwd "$PWD"
   @clux-picker          fzf
+  notifications         stop: visual=on · quota: sound=off · everything else: default
   ```
   Changing a choice later means re-running `/clux:setup` or setting the option — never editing a script.
 - **Scripts deployed**: the count from the manifest, at `~/.config/clux/scripts/`

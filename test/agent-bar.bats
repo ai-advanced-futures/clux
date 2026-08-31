@@ -149,3 +149,21 @@ _stage() {
     run grep -qF '@clux_frame_idx' "$log"
     [ "$status" -ne 0 ]
 }
+
+@test "agent-bar: failed renders the fail glyph in the fail colour (defaults x / red), in both modes" {
+    _stage $'alpha\tfailed'
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        '$STAGED_DIR/agent-bar.sh' alpha
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = '#[fg=red]x#[default]' ]
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        '$STAGED_DIR/agent-bar.sh' --frame 3
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = '#[fg=red]x#[default]alpha' ]
+}

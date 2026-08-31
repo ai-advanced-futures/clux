@@ -381,3 +381,91 @@ _make_fake_scripts_dir() {
     PATH="$(dirname "$REAL_TMUX"):$PATH" run "$VERIFY_SCRIPT" "$out"
     [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# 3.8.0: the §3.6 notification preferences, the notification colours, and
+# the fourth agent state's colour/glyph all reach clux.tmux.conf through
+# flags. Before this the skill was told to write @claude-notify-* "inside the
+# user's clux markers" — a second file clux does not own, contradicting the
+# one-file rule.
+# ---------------------------------------------------------------------------
+@test "render-clux-conf: --notify-visual / --notify-sound write one @claude-notify line each, in order" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --notify-visual stop on --notify-sound stop on \
+            --notify-visual failure off --notify-sound teammate on \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'set -g "@claude-notify-stop-visual" "on"' "$out" || false
+    grep -qF 'set -g "@claude-notify-stop-sound" "on"' "$out" || false
+    grep -qF 'set -g "@claude-notify-failure-visual" "off"' "$out" || false
+    grep -qF 'set -g "@claude-notify-teammate-sound" "on"' "$out" || false
+    # Nothing was said about notification / quota / prompt: no line for them.
+    run grep -c '@claude-notify-notification-\|@claude-notify-quota-\|@claude-notify-prompt-' "$out"
+    [ "$output" = "0" ]
+    # Exactly four preference lines — no duplicates, none invented.
+    [ "$(grep -c '^set -g "@claude-notify-.*-\(visual\|sound\)"' "$out")" -eq 4 ]
+}
+
+@test "render-clux-conf: no --notify flag at all means no notification section" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    "$RENDER_SCRIPT" --dir-resolver path --editor none \
+        --agents-command 'claude agents --cwd "$PWD"' --picker fzf \
+        --scripts-dir "$scripts_dir" --out "$out" >/dev/null
+    run grep -c '@claude-notify' "$out"
+    [ "$output" = "0" ]
+}
+
+@test "render-clux-conf: an unknown notification type or a value other than on/off is refused, nothing written" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --notify-visual bogus on --out '$out'
+    "
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown notification type"* ]]
+    [ ! -f "$out" ]
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --notify-sound stop maybe --out '$out'
+    "
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"on or off"* ]]
+    [ ! -f "$out" ]
+}
+
+@test "render-clux-conf: --notify-bg/-fg and the fail colour/glyph are theming lines like the others" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --notify-bg '#EBCB8B' --notify-fg '#2E3440' \
+            --agent-fail-color '#BF616A' --agent-glyph-fail '!' \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'set -g "@claude-notify-bg" "#EBCB8B"' "$out" || false
+    grep -qF 'set -g "@claude-notify-fg" "#2E3440"' "$out" || false
+    grep -qF 'set -g "@clux-agent-fail-color" "#BF616A"' "$out" || false
+    grep -qF 'set -g "@clux-agent-glyph-fail" "!"' "$out" || false
+}
+
+@test "render-clux-conf: a conf carrying notification preferences parses on a throwaway real tmux server" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    "$RENDER_SCRIPT" --dir-resolver path --editor none \
+        --agents-command 'claude agents --cwd "$PWD"' --picker fzf \
+        --notify-visual stop on --notify-sound failure off \
+        --notify-bg '#EBCB8B' --agent-fail-color red \
+        --scripts-dir "$scripts_dir" --out "$out" >/dev/null
+    PATH="$(dirname "$REAL_TMUX"):$PATH" run "$VERIFY_SCRIPT" "$out"
+    [ "$status" -eq 0 ]
+}

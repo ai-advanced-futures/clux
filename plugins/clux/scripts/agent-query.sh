@@ -8,9 +8,13 @@
 # directory. Reaping is a writer's job (hooks/agent-state.sh, agent-clear.sh).
 #
 # Output contract: one line per NON-IDLE session, `<session_name><TAB><state>`
-# where state is needs-you|busy|finished. Nothing at all when every session is
-# idle. Lines are sorted by precedence rank DESC, then session name ASC, in
-# byte order (LC_ALL=C). Idle sessions are never printed.
+# where state is failed|needs-you|busy|finished. Nothing at all when every
+# session is idle. Lines are sorted by precedence rank DESC, then session name
+# ASC, in byte order (LC_ALL=C). Idle sessions are never printed.
+#
+# `failed` (3.8.0, StopFailure) ranks ABOVE needs-you: both want the user, but
+# a needs-you is met the moment the user goes to the session, while a failed
+# agent is one the user does not know has stopped at all.
 #
 # A pane is included whenever a state file exists for its pane id and the
 # pane is still in the listing. The state file is the authoritative signal —
@@ -69,6 +73,7 @@ while IFS= read -r line; do
     st="${st//[[:space:]]/}"
 
     case "$st" in
+        failed)    rank=4 ;;
         needs-you) rank=3 ;;
         busy)      rank=2 ;;
         finished)  rank=1 ;;
@@ -97,6 +102,7 @@ for f in "$STORE"/agents/*; do
     IFS= read -r st 2>/dev/null < "$f" || continue
     st="${st//[[:space:]]/}"
     case "$st" in
+        failed)    rank=4 ;;
         needs-you) rank=3 ;;
         busy)      rank=2 ;;
         finished)  rank=1 ;;
@@ -129,7 +135,7 @@ printf '%s' "$ROWS" \
     | awk -F'\t' '{ if ($2+0 > r[$1]+0) r[$1]=$2 } END { for (s in r) printf "%s\t%s\n", s, r[s] }' \
     | LC_ALL=C sort -t"$(printf '\t')" -k2,2nr -k1,1 \
     | awk -F'\t' '{
-        state = ($2 == 3) ? "needs-you" : ($2 == 2) ? "busy" : "finished";
+        state = ($2 == 4) ? "failed" : ($2 == 3) ? "needs-you" : ($2 == 2) ? "busy" : "finished";
         printf "%s\t%s\n", $1, state
     }'
 

@@ -2,13 +2,15 @@
 
 # agent-clear.sh — looks like a reader but is a WRITER, driven by tmux hooks
 # (after-select-window, client-session-changed) and by claude-notify.tmux at
-# load time. Clears `finished` marks for a window when the user looks at it;
-# never touches `busy` or `needs-you`.
+# load time. Clears `finished` and `failed` marks for a window when the user
+# looks at it; never touches `busy` or `needs-you`. Both cleared marks are
+# terminal states — looking at the pane IS the acknowledgement — whereas
+# busy and needs-you describe something still going on.
 #
 # Two modes:
 #   agent-clear.sh '<window_id>'   default. Deletes only state files whose
-#                                   content is exactly `finished`, for panes in
-#                                   that window.
+#                                   content is exactly `finished` or `failed`,
+#                                   for panes in that window.
 #   agent-clear.sh --reap          called once at config load. Runs the shared
 #                                   reaper (path.sh): dead panes of this
 #                                   server, directories of servers that have
@@ -66,20 +68,22 @@ while IFS= read -r pane; do
         st=""
         IFS= read -r st < "$f" 2>/dev/null || true
         st="${st//[[:space:]]/}"
-        if [ "$st" = "finished" ]; then
-            rm -f "$f" 2>/dev/null && CLEARED=1
-        fi
+        case "$st" in
+            finished|failed) rm -f "$f" 2>/dev/null && CLEARED=1 ;;
+        esac
     fi
     # Detached-agent files owned by this pane (a `claude agents` dashboard):
-    # looking at the dashboard's window clears its finished marks, same as for
-    # an interactive pane. busy / needs-you survive, exactly as above.
+    # looking at the dashboard's window clears its finished and failed marks,
+    # same as for an interactive pane. busy / needs-you survive, exactly as
+    # above.
     for af in "$STORE/agents/$pane"~*; do
         [ -f "$af" ] || continue
         st=""
         IFS= read -r st < "$af" 2>/dev/null || true
         st="${st//[[:space:]]/}"
-        [ "$st" = "finished" ] || continue
-        rm -f "$af" 2>/dev/null && CLEARED=1
+        case "$st" in
+            finished|failed) rm -f "$af" 2>/dev/null && CLEARED=1 ;;
+        esac
     done
 done <<EOF
 $PANES
