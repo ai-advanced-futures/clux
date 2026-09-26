@@ -15,12 +15,14 @@
 #      because it cannot change inside one invocation.
 #   2. The state file is read ONCE into S_MODE/S_PANE/S_SOCKET/S_SEQ
 #      (state_load). Every tmux call needs mode and socket, so reading them per
-#      call cost a sed pipeline each time.
+#      call cost a sed pipeline each time. state_load is the ONLY reader and
+#      write_state the ONLY writer, so the file format lives in two places.
 #
 # Prefer parameter expansion over sed/cut/basename throughout — path.sh made the
 # same move for the same reason and documents it at length.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[ "$SCRIPT_DIR" != "${BASH_SOURCE[0]}" ] || SCRIPT_DIR=.
 SHIPPED_PATTERNS="$SCRIPT_DIR/../config/credential-patterns.txt"
 source "$SCRIPT_DIR/path.sh"
 
@@ -81,6 +83,8 @@ _load_patterns() {
     done
 }
 
+# The empty-ERE guard is load-bearing: an empty alternative matches every line,
+# and a user pattern file with no ! lines leaves the exclude ERE empty.
 _pattern_matches() {
     [ -n "$1" ] || return 1
     grep -E -i -q -- "$1" <<<"$2"
@@ -99,6 +103,12 @@ _load_user_patterns() {
 # unanchored, so that suffix gate is load-bearing. It is stated in the header of
 # config/credential-patterns.txt because it is part of that file's contract.
 # Any exclusion wins over any inclusion, whichever file it came from.
+#
+# The include ERE is tested FIRST even though exclusions win: on the poll path
+# almost every line is ordinary output, and an include that fails settles the
+# answer with ONE grep. Testing excludes first made every ordinary line pay two.
+# _load_patterns skips an unreadable file, so the unset user file needs no
+# branch of its own.
 line_is_credential() {
     local line="$1" override="${2:-}" trimmed
     rtrim "$line"
@@ -108,21 +118,18 @@ line_is_credential() {
         *) return 1 ;;
     esac
     if [ -n "$override" ]; then
-        _load_patterns "$override"
+        set -- "$override"
     else
         _load_user_patterns
-        if [ -n "$_CLUX_USER_PATTERNS" ]; then
-            _load_patterns "$SHIPPED_PATTERNS" "$_CLUX_USER_PATTERNS"
-        else
-            _load_patterns "$SHIPPED_PATTERNS"
-        fi
+        set -- "$SHIPPED_PATTERNS" "$_CLUX_USER_PATTERNS"
     fi
-    _pattern_matches "$_CLUX_PAT_EXC" "$trimmed" && return 1
-    _pattern_matches "$_CLUX_PAT_INC" "$trimmed"
+    _load_patterns "$@"
+    _pattern_matches "$_CLUX_PAT_INC" "$trimmed" || return 1
+    ! _pattern_matches "$_CLUX_PAT_EXC" "$trimmed"
 }
 
 check_line_command() {
-    local patterns="" line=""
+    local patterns="$SHIPPED_PATTERNS" line=
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --patterns) [ "$#" -ge 2 ] || usage; patterns="$2"; shift 2 ;;
@@ -130,8 +137,14 @@ check_line_command() {
             *) usage ;;
         esac
     done
-    [ -n "$patterns" ] || patterns="$SHIPPED_PATTERNS"
     line_is_credential "$line" "$patterns"
+}
+
+# The one place that reports a credential prompt, so the wording and the exit
+# code cannot drift between the three verbs that refuse one.
+refuse_credential() {
+    printf '%s\n' 'credential prompt in the companion pane: the user must answer it there' >&2
+    return 3
 }
 
 resolve_root() {
@@ -148,20 +161,23 @@ terminal_init() {
     D="$ROOT/$SERVER_KEY-$OWNER_PANE"
 }
 
-state_get_from() { sed -n "s/^$2=//p" "$1/state" 2>/dev/null | head -n 1; }
-state_get() { state_get_from "$D" "$1"; }
-
 S_MODE=
 S_PANE=
 S_SOCKET=
 S_SEQ=
 
-# Read the current companion's state file once into globals. Fails when there
-# is no state file, which is the same question "is a companion open" asks.
+# The ONE state-file reader. $1 defaults to the current companion's directory;
+# reap_companions and list_command pass a foreign one. Fails when there is no
+# state file, which is the same question "is a companion open" asks.
+#
+# Clearing the globals first is load-bearing, not defensive: the two loops call
+# this once per directory, so a field missing from the second file would
+# otherwise keep the first file's value. Both loops run before any S_* is used
+# for tmux, so the clobber is safe.
 state_load() {
-    local key value
+    local dir="${1:-$D}" key value
     S_MODE=''; S_PANE=''; S_SOCKET=''; S_SEQ=''
-    [ -f "$D/state" ] || return 1
+    [ -f "$dir/state" ] || return 1
     while IFS='=' read -r key value || [ -n "$key" ]; do
         case "$key" in
             mode) S_MODE="$value" ;;
@@ -169,14 +185,14 @@ state_load() {
             socket) S_SOCKET="$value" ;;
             seq) S_SEQ="$value" ;;
         esac
-    done < "$D/state"
+    done < "$dir/state"
     return 0
 }
 
-# Whole-row substring test against a listing already in memory: the newline
-# delimiters are what keep %1 from matching %10, exactly as grep -qxF did.
+# Whole-row test against a listing already in memory: the newline delimiters are
+# what keep %1 from matching %10, exactly as grep -qxF did.
 listing_has_pane() {
-    case $'\n'"$1"$'\n' in *$'\n'*" $2"$'\n'*) return 0 ;; esac
+    case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
     return 1
 }
 
@@ -193,16 +209,18 @@ kill_companion() {
 
 remove_companion_dir() {
     local dir="$1" kill_split="${2:-0}"
-    kill_companion "$(state_get_from "$dir" mode)" "$(state_get_from "$dir" pane)" \
-        "$(state_get_from "$dir" socket)" "$kill_split"
+    state_load "$dir" || { rm -rf "$dir"; return; }
+    kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" "$kill_split"
     rm -rf "$dir"
 }
 
 # ONE listing answers the liveness question for every directory. The flat
 # <server-key>-<pane> name has to be split before the store's own validator
-# will accept the server part.
+# will accept the server part. The server key is NOT asked for here the way
+# path.sh's reaper does: these rows are matched against a pane id alone, and
+# terminal_init already holds the key.
 companion_listing() {
-    tmux list-panes -a -F '#{pid}-#{start_time} #{pane_id}' 2>/dev/null
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null
 }
 
 reap_companions() {
@@ -228,23 +246,21 @@ reap_companions() {
 }
 
 list_command() {
-    local listing dir base server mode pane state
+    local listing dir base server state
     terminal_init
     listing=$(companion_listing)
     for dir in "$ROOT"/*; do
-        [ -f "$dir/state" ] || continue
+        state_load "$dir" || continue
         base="${dir##*/}"
         server="${base%-*}"
-        mode=$(state_get_from "$dir" mode)
-        pane=$(state_get_from "$dir" pane)
         if [ "$server" != "$SERVER_KEY" ]; then
             state=foreign
-        elif listing_has_pane "$listing" "$pane"; then
+        elif listing_has_pane "$listing" "$S_PANE"; then
             state=alive
         else
             state=gone
         fi
-        printf 'owner=%s mode=%s pane=%s state=%s\n' "$base" "$mode" "$pane" "$state"
+        printf 'owner=%s mode=%s pane=%s state=%s\n' "$base" "$S_MODE" "$S_PANE" "$state"
     done
 }
 
@@ -254,13 +270,13 @@ unset HISTFILE
 set +o history
 PS1='clux$ '
 PROMPT_COMMAND=
-exit() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
-exec() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
-logout() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
-__clux_clear() { printf '\033[2J\033[H'; }
+__clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
+exit() { __clux_refuse; }
+exec() { __clux_refuse; }
+logout() { __clux_refuse; }
 __clux_run() {
   local __clux_n="$1" __clux_d="$CLUX_TERMINAL_D" __clux_cmd __clux_rc __clux_i
-  __clux_cmd=$(cat "$__clux_d/$__clux_n.cmd")
+  __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
   printf '$ %s\n' "$__clux_cmd"
   { eval "$__clux_cmd"; } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
@@ -271,18 +287,16 @@ __clux_run() {
 EOF
 }
 
+# The ONE state-file writer. seq is the only mutable field, and every caller
+# that bumps it already holds the other three in memory (state_load put them
+# there), so rewriting the whole file costs one printf — no re-read, no sed, no
+# temp file, and only one place that knows the format.
 write_state() {
     S_MODE="$1"
     S_PANE="$2"
     S_SOCKET="$3"
-    S_SEQ=0
-    printf 'mode=%s\npane=%s\nsocket=%s\nseq=0\n' "$1" "$2" "$3" > "$D/state"
-}
-
-# seq is the one mutable field, so the rewrite keeps the other three as they are.
-write_seq() {
-    S_SEQ="$1"
-    sed "s/^seq=.*/seq=$1/" "$D/state" > "$D/state.tmp" && mv "$D/state.tmp" "$D/state"
+    S_SEQ="${4:-0}"
+    printf 'mode=%s\npane=%s\nsocket=%s\nseq=%s\n' "$1" "$2" "$3" "$S_SEQ" > "$D/state"
 }
 
 tmux_state() {
@@ -325,10 +339,13 @@ wait_for_prompt() {
     return 1
 }
 
+# Asking about ONE pane needs no listing and no grep: list-panes exits non-zero
+# when the target does not resolve. (display-message -p is not a substitute — it
+# exits 0 with empty output for a missing pane.)
 current_companion_alive() {
     state_load || return 1
     [ -n "$S_PANE" ] || return 1
-    tmux_state list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qxF "$S_PANE"
+    tmux_state list-panes -t "$S_PANE" >/dev/null 2>&1
 }
 
 check_tmux_version() {
@@ -359,7 +376,7 @@ open_command() {
     terminal_init
     check_tmux_version
     mkdir -p "$ROOT"; chmod 700 "$ROOT"; reap_companions
-    current_companion_alive && { echo "pane=$S_PANE"; echo "mode=$S_MODE"; return; }
+    current_companion_alive && { report_open; return; }
     rm -rf "$D"; umask 077; mkdir -p "$D"; write_rc_file
     printf -v shell '%q --noprofile --rcfile %q -i' "$(command -v bash)" "$D/rc.bash"
     if [ "$mode" = socket ]; then
@@ -373,9 +390,16 @@ open_command() {
     fi
     tmux_state select-pane -t "$pane" -T clux-terminal
     wait_for_prompt 5 || fail 'the companion shell did not reach its prompt' 1
-    echo "pane=$pane"
-    echo "mode=$mode"
-    [ "$mode" != socket ] || echo "attach=tmux -S $socket attach"
+    report_open
+}
+
+# ONE report for both the create and the reattach path, read from the state
+# globals that write_state and state_load both fill. Printing it twice let the
+# reattach path forget the attach= line a --socket caller needs.
+report_open() {
+    echo "pane=$S_PANE"
+    echo "mode=$S_MODE"
+    [ "$S_MODE" != socket ] || echo "attach=tmux -S $S_SOCKET attach"
 }
 
 ensure_open() {
@@ -399,19 +423,27 @@ report_run() {
     release_busy
 }
 
+# The credential probe costs a tmux round trip plus a grep, while the normal
+# exit is the .rc test above it — so probe every fifth tick, not every tick. A
+# credential prompt waits on a human, so one second of detection latency is
+# free, and the loop's common case drops to a single file test.
 wait_for_run_files() {
-    local n="$1" deadline
+    local n="$1" deadline tick=0
     deadline=$((SECONDS + $2))
     while [ "$SECONDS" -lt "$deadline" ]; do
         [ -f "$D/$n.rc" ] && return 0
-        credential_on_cursor && { : > "$D/$n.secret"; return 3; }
+        tick=$(( (tick + 1) % 5 ))
+        if [ "$tick" -eq 1 ] && credential_on_cursor; then
+            : > "$D/$n.secret"
+            return 3
+        fi
         sleep .2
     done
     return 1
 }
 
 run_command() {
-    local timeout=100 secret=0 command first n wait_status
+    local timeout=100 secret=0 command first n
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -430,18 +462,17 @@ run_command() {
     mkdir "$D/busy" 2>/dev/null || fail 'the companion is busy' 5
     at_prompt || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
     n=$(( S_SEQ + 1 ))
-    write_seq "$n"
+    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     umask 077; printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
     printf 'run=%s\n' "$n"
     send_literal "__clux_run $n"; send_key Enter
     wait_for_run_files "$n" "$timeout"
-    wait_status=$?
-    if [ "$wait_status" -ne 0 ]; then
-        [ "$wait_status" -ne 3 ] || { echo 'credential prompt in the companion pane: the user must answer it there' >&2; return 3; }
-        return 1
-    fi
-    report_run "$n"
+    case $? in
+        0) report_run "$n" ;;
+        3) refuse_credential ;;
+        *) return 1 ;;
+    esac
 }
 
 send_command() {
@@ -455,7 +486,7 @@ send_command() {
         esac
     done
     ensure_open
-    credential_on_cursor && { echo 'credential prompt in the companion pane: the user must answer it there' >&2; return 3; }
+    credential_on_cursor && { refuse_credential; return; }
     if [ -n "$key" ]; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
         send_key "$key"
@@ -476,12 +507,12 @@ read_command() {
     done
     positive_integer "$lines" || usage
     ensure_open
-    credential_on_cursor && { echo 'credential prompt in the companion pane: the user must answer it there' >&2; return 3; }
+    credential_on_cursor && { refuse_credential; return; }
     tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines"
 }
 
 wait_command() {
-    local timeout=60 mode="" value="" deadline
+    local timeout=60 mode="" value=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -492,27 +523,23 @@ wait_command() {
         esac
     done
     positive_integer "$timeout" || usage
+    [ -n "$mode" ] || usage
+    [ "$mode" != run ] || positive_integer "$value" || usage
+    ensure_open
     case "$mode" in
         run)
-            positive_integer "$value" || usage
-            ensure_open
             wait_for_run_files "$value" "$timeout" || return 1
             report_run "$value"
             ;;
-        idle)
-            ensure_open
-            wait_for_prompt "$timeout"
-            ;;
+        idle) wait_for_prompt "$timeout" ;;
         pattern)
-            ensure_open
-            deadline=$((SECONDS + timeout))
+            local deadline=$((SECONDS + timeout))
             while [ "$SECONDS" -lt "$deadline" ]; do
                 tmux_state capture-pane -p -J -t "$S_PANE" -S -50 | grep -Eq -- "$value" && return 0
                 sleep .2
             done
             return 1
             ;;
-        *) usage ;;
     esac
 }
 
@@ -530,7 +557,8 @@ close_command() {
         while read -r _; do :; done
         [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
     fi
-    require_tmux
+    # No require_tmux here: main already ran it on the verb path, and the --hook
+    # arm above makes the same two tests its own way.
     # $ROOT needs no tmux, so an absent root answers the whole question before
     # paying for a server-key round trip.
     resolve_root

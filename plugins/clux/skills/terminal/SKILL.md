@@ -7,19 +7,16 @@ description: Use when visible persistent shell state or an interactive TTY is ne
 
 Use one companion for the current Claude Code session. It keeps its directory and exported variables.
 
-## Snippet S1: resolve the plugin source root
+## Resolve the script
 
 ```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-[ -n "$PLUGIN_ROOT" ] || PLUGIN_ROOT="$(cd "$(dirname "$BASH_SOURCE")/../.." && pwd)"
-PLUGIN_SCRIPTS_DIR="$PLUGIN_ROOT/scripts"
-MANIFEST="$PLUGIN_ROOT/config/deploy-manifest.txt"
-echo "PLUGIN_ROOT=$PLUGIN_ROOT"
-echo "PLUGIN_SCRIPTS_DIR=$PLUGIN_SCRIPTS_DIR"
-echo "MANIFEST=$MANIFEST"
+TERMINAL="${CLAUDE_PLUGIN_ROOT:-}/scripts/terminal.sh"
+[ -x "$TERMINAL" ] && echo "TERMINAL=$TERMINAL"
 ```
 
-Set `TERMINAL="$PLUGIN_ROOT/scripts/terminal.sh"`.
+When `CLAUDE_PLUGIN_ROOT` is not set, resolve the plugin root with Snippet S1 in
+`skills/configuring-tmux/SKILL.md` — that snippet is the only home for the rule.
+Refuse when the root stays empty. Do not write a second resolver here.
 
 ## Use
 

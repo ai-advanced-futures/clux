@@ -72,8 +72,12 @@ EOF
 
 @test "malformed verb arguments exit 2" {
     local args
-    for args in 'open --size wrong' 'run --timeout x -- true' 'send --key' 'read --lines 0' 'wait --timeout x --idle' 'close --owner' \
-        'run --timeout' 'run --max-lines' 'read --lines'; do
+    # --bogus stands for any unknown flag: it is the *) usage arm of that verb's
+    # own parser. Naming a plausible-but-absent flag here read as if the flag
+    # existed and was handled.
+    for args in 'open --size wrong' 'open --size' 'run --timeout x -- true' 'run --timeout' 'run --bogus' \
+        'send --key' 'read --lines 0' 'read --lines' 'wait --timeout x --idle' 'wait' 'wait --idle --pattern x' \
+        'close --bogus' 'bogus'; do
         run env TMUX=fake TMUX_PANE=%0 bash -c "'$TERMINAL' $args"
         [ "$status" -eq 2 ] || { echo "$args returned $status"; false; }
     done
