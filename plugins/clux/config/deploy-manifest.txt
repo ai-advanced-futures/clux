@@ -12,9 +12,9 @@
 #
 #   grep -v '^[[:space:]]*#' deploy-manifest.txt | grep -v '^[[:space:]]*$'
 #
-# Left out on purpose: render-clux-conf.sh and verify-tmux-conf.sh run at SETUP
-# time only, from the plugin tree. No key binding, hook or status line ever
-# calls them, so deploying them would only put a dead copy on disk.
+# Left out on purpose: render-clux-conf.sh, verify-tmux-conf.sh and terminal.sh.
+# Each runs from the plugin tree, never from ~/.config/clux/scripts. The first
+# two run during setup; terminal.sh runs at Claude time through clux:terminal.
 
 # Libraries. Every script below sources one or both.
 helpers.sh

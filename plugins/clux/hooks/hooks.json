@@ -24,7 +24,8 @@
     ] }],
     "SessionEnd": [{ "matcher": "", "hooks": [
       { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 },
-      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/agent-state.sh remove", "timeout": 5 }
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/agent-state.sh remove", "timeout": 5 },
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/terminal.sh close --hook", "timeout": 5 }
     ] }]
   }
 }

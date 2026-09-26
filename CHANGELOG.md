@@ -2,6 +2,13 @@
 
 All notable changes to clux are documented here.
 
+## [3.9.0]
+
+### Added
+
+- **`clux:terminal` opens a visible persistent companion shell.** It supports split panes, private sockets, file-backed plain commands, and interactive pane controls.
+- Credential prompts and explicit secret runs keep sensitive output out of Claude responses. Session end cleanup removes the companion and its private state.
+
 ## [3.8.0]
 
 ### Added

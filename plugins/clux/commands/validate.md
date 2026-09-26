@@ -284,6 +284,11 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
                echo "FAIL hook: $EVENT not wired to agent-state.sh $ARG in hooks.json"
            fi
        done
+       if grep -qF 'terminal.sh close --hook' "$HOOKS_FILE"; then
+           echo "OK  hook: SessionEnd → terminal.sh close --hook"
+       else
+           echo "FAIL hook: SessionEnd not wired to terminal.sh close --hook"
+       fi
    fi
    ```
 2. **Hook scripts executable**:
