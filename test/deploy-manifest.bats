@@ -22,7 +22,7 @@ _manifest_entries() {
     grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$'
 }
 
-# Runs at setup time only, from the plugin tree, and deliberately not deployed
+# Never deployed: each runs from the plugin tree only.
 # — the manifest header explains why. Keep this list in step with that note.
 NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh terminal.sh"
 
@@ -115,13 +115,13 @@ EOF
     [ -z "$missing" ] || { echo "sourced but not deployed:$missing"; false; }
 }
 
-@test "deploy-manifest: the setup-only scripts are deliberately absent from it" {
+@test "deploy-manifest: the never-deployed scripts are deliberately absent from it" {
     local listed
     listed="$(_manifest_entries)"
     for base in $NOT_DEPLOYED; do
         [ -f "$SCRIPTS_DIR/$base" ] || { echo "$base no longer exists — update NOT_DEPLOYED"; false; }
         printf '%s\n' "$listed" | grep -qxF "$base" && {
-            echo "$base is setup-only and must not be deployed, but the manifest lists it"
+            echo "$base must not be deployed, but the manifest lists it"
             false
         }
     done
