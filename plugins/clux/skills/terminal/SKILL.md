@@ -57,6 +57,10 @@ When `PLUGIN_ROOT` is empty, stop and tell the user that clux is not installed. 
 - `open` re-uses the companion when it is open. It is safe to call `open` again.
 - The script refuses to operate outside tmux (exit code 2). Tell the user to start Claude Code in tmux.
 
+## Time limits
+
+`run` and `wait` take `--timeout S`. Each time you give `--timeout S` with S more than 100, set the Bash tool `timeout` parameter to more than S seconds. If you do not, the Bash tool stops the call first.
+
 ## Run a plain command
 
 ```bash
@@ -67,7 +71,7 @@ terminal.sh run -- 'git status --short'
 - The first output line is `run=<n>`. Keep `<n>`. You need it for `wait --run <n>`.
 - The last output line is `exit=<rc>`. This is the exit code of the command.
 - The output has a limit of 200 lines. `--max-lines N` changes the limit. When the script cuts lines, it prints a note first.
-- The default time limit is 100 seconds. `--timeout S` changes it. When S is more than 100, set the Bash tool `timeout` parameter to more than S seconds.
+- The default time limit is 100 seconds. `--timeout S` changes it.
 - For `run`, the output is not a TTY. For a command that needs a TTY (ssh, vim, a password prompt), use `send`.
 - For a command that starts a background process, use `send`. With `run`, you get the note `output may be incomplete`.
 - Do not start a command with `exit`, `exec`, `logout` or `return`. The script refuses it.
@@ -98,7 +102,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. | Correct the call, or tell the user. |
 | 3 | A credential prompt is in the pane, or the last run was secret. | Tell the user to answer in the pane. Then use `wait --run <n>`. |
 | 4 | No companion is open for this session. | Use `open`. |
-| 5 | Busy: a run is not complete, or the pane is not at its prompt. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. |
+| 5 | Busy: a run is not complete, or the pane is not at its prompt. No run started. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. |
 
 ## Close the companion
 

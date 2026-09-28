@@ -120,12 +120,13 @@ file_mode() {
 # 6
 @test "run stops at its time limit and wait --run gets the result" {
     "$TERMINAL" open >/dev/null
-    run "$TERMINAL" run --timeout 1 -- 'sleep 3; echo late'
+    run "$TERMINAL" run --timeout 1 -- 'echo early; sleep 3; echo late'
     [ "$status" -eq 1 ]
     [[ "$output" == 'run=1'* ]] || false
-    run "$TERMINAL" wait --timeout 10 --run 1
+    [ "$(file_mode "$(companion_dir)/1.out")" = 600 ]
+    run "$TERMINAL" wait --timeout 10 --max-lines 1 --run 1
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'late\nexit=0' ]] || false
+    [[ "$output" == $'output cut: the last 1 of 2 lines\nlate\nexit=0' ]] || false
     [ ! -d "$(companion_dir)/busy" ]
 }
 

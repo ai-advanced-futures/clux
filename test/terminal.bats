@@ -107,11 +107,15 @@ STUB
     local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log"
     mkdir -p "$root/1234-1700000000-0" "$root/1234-1700000000-9"
     printf 'mode=socket\npane=%%0\nsocket=\nseq=0\n' > "$root/1234-1700000000-9/state"
+    # A foreign server that is gone: its split pane id means nothing here.
+    mkdir -p "$root/999999999-1-4"
+    printf 'mode=split\npane=%%0\nsocket=\nseq=0\n' > "$root/999999999-1-4/state"
     run env STUB_LOG="$log" CLUX_TERMINAL_DIR="$root" TMUX=fake TMUX_PANE=%0 bash -c \
         "source '$TERMINAL'; terminal_init; reap_companions"
     [ "$status" -eq 0 ]
     [ -d "$root/1234-1700000000-0" ]
     [ ! -e "$root/1234-1700000000-9" ]
+    [ ! -e "$root/999999999-1-4" ]
     ! grep -q 'kill-pane' "$log" || false
 }
 

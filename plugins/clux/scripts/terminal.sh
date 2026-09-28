@@ -335,10 +335,6 @@ line_at_prompt() {
     return 1
 }
 
-at_prompt() {
-    capture_cursor_line && line_at_prompt
-}
-
 credential_on_cursor() {
     capture_cursor_line || return 1
     line_is_credential "$CURSOR_LINE"
@@ -358,15 +354,19 @@ wait_for_prompt() {
     return 1
 }
 
-# After __clux_clear the prompt is on row 0. Before it, the __clux_run line
-# of the secret run is above the prompt, so row 0 cannot hold the prompt.
-# A plain prompt test is not enough: it can pass before the pane shell reads
-# the clear line, and clear-history then runs before the screen is clear.
+# After __clux_clear the whole visible screen is the prompt line and nothing
+# else. A prompt test on the cursor line is not enough: it can pass before
+# the pane shell reads the clear line, and clear-history then runs before the
+# screen is clear. A cursor_y test is not enough either: a secret command can
+# move the cursor to row 0 itself.
 wait_for_clear() {
-    local deadline
+    local deadline text
     deadline=$((SECONDS + $1))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        capture_cursor_line && [ "$CURSOR_Y" -eq 0 ] && line_at_prompt && return 0
+        if text=$(tmux_state capture-pane -p -t "$S_PANE"); then
+            rtrim "$text"
+            [ "$RTRIM" = 'clux$' ] && return 0
+        fi
         sleep .2
     done
     return 1
@@ -561,7 +561,8 @@ run_command() {
     remove_stale_output
     if last_run_secret; then
         send_literal __clux_clear; send_key Enter
-        wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run' 1; }
+        # Exit 5, not 1: no run started, so there is no <n> for wait --run.
+        wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run: use wait --idle, then run again' 5; }
         tmux_state clear-history -t "$S_PANE"
     fi
     n=$(( S_SEQ + 1 ))
