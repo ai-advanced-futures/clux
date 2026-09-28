@@ -120,6 +120,18 @@ def shipped_lines(name):
     return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
 
 
+def url_is_loopback(url):
+    """http, a loopback host and no user part. terminal.sh uses this check
+    too (check-url), so the two cannot disagree."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return (parts.scheme == "http" and host in LOOPBACK
+            and not parts.username and not parts.password)
+
+
 class Remote:
     """The runner that laya.structured.decide calls: one POST to laya-serve.
 
@@ -129,12 +141,7 @@ class Remote:
     """
 
     def __init__(self, url, key, deadline):
-        try:
-            parts = urllib.parse.urlsplit(url)
-            host = parts.hostname
-        except ValueError:
-            raise Fail(1)
-        if parts.scheme != "http" or host not in LOOPBACK or parts.username or parts.password:
+        if not url_is_loopback(url):
             raise Fail(1)
         self.url = url.rstrip("/")
         self.key = key
@@ -300,12 +307,15 @@ def cmd_command(args):
         state = command
     if not command.strip():
         raise Fail(2)
+    # safe_list is its own field: terminal.sh writes the .safe marker from
+    # it, not from the reason text.
     if "--no-safe-list" not in args and on_safe_list(command):
-        level, reason = "safe", "safe list"
+        level, reason, listed = "safe", "safe list", True
     else:
         pol = policy("command")
         level, reason = level_of(ask(remote(GATE_LIMIT), pol, state), pol)
-    print(json.dumps({"level": level, "reason": reason}))
+        listed = False
+    print(json.dumps({"level": level, "reason": reason, "safe_list": listed}))
 
 
 PANE_STATES = ("credential", "yes_no", "menu", "pager", "shell_prompt", "other")
@@ -329,7 +339,10 @@ def cmd_pane(args):
 BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
 CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens for each row
 ROW_MARGIN = 16            # measured: the two output-block rows differ by 9 tokens
-MAX_PARALLEL = 12          # under LAYA_MAX_CONCURRENT (16), so a pane probe gets a slot
+# laya-serve 0.3.21 runs one model request at a time (one worker thread), and
+# REQUEST_LIMIT counts the time in its queue. Two requests at one time keep
+# the server busy, and a request waits at most for one other request.
+MAX_PARALLEL = 2
 DEFAULT_OUTPUT_LIMIT = 15.0
 
 
@@ -634,6 +647,36 @@ def cmd_port(args):
         print(sock.getsockname()[1])
 
 
+def cmd_check_url(args):
+    """Exit 0 when the URL is http on a loopback host with no user part."""
+    if len(args) != 1:
+        raise Fail(2)
+    if not url_is_loopback(args[0]):
+        raise Exit(1)
+
+
+def cells(text):
+    """The screen cells of text: 2 for a wide character, 0 for a
+    combining character, else 1."""
+    import unicodedata
+    count = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        count += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+    return count
+
+
+def cmd_after_cursor(args):
+    """after-cursor X < ROW: exit 0 when the row has text that is not a
+    space at cell X or after it, else 1. tmux gives cursor_x in cells."""
+    if len(args) != 1 or not args[0].isdigit():
+        raise Fail(2)
+    row = read_stdin().rstrip("\n").rstrip()
+    if cells(row) <= int(args[0]):
+        raise Exit(1)
+
+
 def cmd_version(args):
     """The installed laya version (laya status, laya install)."""
     if args:
@@ -684,6 +727,8 @@ SUBCOMMANDS = {
     "output": cmd_output,
     "checkpoint": cmd_checkpoint,
     "port": cmd_port,
+    "check-url": cmd_check_url,
+    "after-cursor": cmd_after_cursor,
     "version": cmd_version,
     "pip-install": cmd_pip_install,
     "scrub": cmd_scrub,

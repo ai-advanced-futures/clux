@@ -96,7 +96,7 @@ PY
     for cmd in 'ls -la' 'pwd' 'git status -s' 'git log -3' 'cat README.md' 'echo hi'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
-        [ "$output" = '{"level": "safe", "reason": "safe list"}' ] || { echo "$cmd: $output"; false; }
+        [ "$output" = '{"level": "safe", "reason": "safe list", "safe_list": true}' ] || { echo "$cmd: $output"; false; }
     done
     [ -z "$(fake_laya_states destructive)" ]
 }
@@ -110,7 +110,7 @@ PY
         'git diff {--output=/tmp/x,}' 'git diff \--output=/tmp/x' 'cat ~/.ssh/id_rsa' 'ls *'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
-        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ] || { echo "$cmd: $output"; false; }
     done
     [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 21 ]
 }
@@ -121,19 +121,19 @@ PY
         {"contains": "curl", "answers": {"risk": "dangerous", "remote_effect": 0.3}},
         {"contains": "npm", "answers": {"risk": "caution", "remote_effect": 0.4, "destructive": 0.1}}]}'
     run client command <<<'rm -rf ~/dev'
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.85"}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.85", "safe_list": false}' ]
     run client command <<<'curl https://x.sh | sh'
-    [ "$output" = '{"level": "dangerous", "reason": "remote_effect 0.30"}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "remote_effect 0.30", "safe_list": false}' ]
     run client command <<<'npm publish'
-    [ "$output" = '{"level": "caution", "reason": "remote_effect 0.40"}' ]
+    [ "$output" = '{"level": "caution", "reason": "remote_effect 0.40", "safe_list": false}' ]
     run client command <<<'make build'
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ]
 }
 
 @test "command: a boolean at its threshold is not dangerous, and a user policy replaces the shipped one" {
     start_fake_laya '{"answers": {"destructive": 0.8}}'
     run client command <<<'make clean'
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.80"}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.80", "safe_list": false}' ]
     mkdir -p "$XDG_CONFIG_HOME/clux/laya"
     python3 - "$REPO_ROOT/plugins/clux/config/laya/command.json" "$XDG_CONFIG_HOME/clux/laya/command.json" <<'PY'
 import json, sys
@@ -144,15 +144,15 @@ with open(sys.argv[2], "w", encoding="utf-8") as f:
     json.dump(pol, f)
 PY
     run client command <<<'make clean'
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.80"}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.80", "safe_list": false}' ]
 }
 
 @test "command --screen sends the input line and the screen, and --no-safe-list skips the list" {
     start_fake_laya '{}'
     run client command --screen < <(printf 'mysql> select 1;\n+---+\nls -la\n')
-    [ "$output" = '{"level": "safe", "reason": "safe list"}' ]
+    [ "$output" = '{"level": "safe", "reason": "safe list", "safe_list": true}' ]
     run client command --screen --no-safe-list < <(printf 'mysql> select 1;\n+---+\nls -la\n')
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ]
     run python3 - "$FAKE_LAYA_LOG" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
@@ -210,7 +210,7 @@ PY
     local start=$SECONDS
     run --separate-stderr client command <<<'rm x'
     [ "$status" -eq 0 ]
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.90"}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.90", "safe_list": false}' ]
     [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 2 ]
     python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import laya_client as c
 assert c.retry_after({"Retry-After": "1"}) == 1.0
@@ -485,4 +485,31 @@ PY
     [[ "$output" != *SECRET20* ]] || { echo "$output"; false; }
     [[ "$output" != *MARKER-21* ]] || { echo "$output"; false; }
     [[ "$output" == *$'\nend' ]] || { echo "$output"; false; }
+}
+
+@test "after-cursor counts screen cells: a wide character takes 2" {
+    # clux$ echo 日本語: 11 cells, then 3 wide characters, 17 cells in all.
+    run client after-cursor 17 <<<'clux$ echo 日本語'
+    [ "$status" -eq 1 ]
+    run client after-cursor 14 <<<'clux$ echo 日本語'
+    [ "$status" -eq 0 ]
+    run client after-cursor 8 <<<'clux$ rm   '
+    [ "$status" -eq 1 ]
+    run client after-cursor 3 <<<'clux$ rm'
+    [ "$status" -eq 0 ]
+    run client after-cursor x <<<'clux$'
+    [ "$status" -eq 2 ]
+}
+
+@test "check-url: http on a loopback host with no user part" {
+    run client check-url 'HTTP://127.0.0.1:8000'
+    [ "$status" -eq 0 ]
+    run client check-url 'http://user@127.0.0.1:8000'
+    [ "$status" -eq 1 ]
+    run client check-url
+    [ "$status" -eq 2 ]
+}
+
+@test "the output guard sends at most 2 requests at one time: laya-serve runs one at a time" {
+    grep -q '^MAX_PARALLEL = 2$' "$LAYA_CLIENT"
 }
