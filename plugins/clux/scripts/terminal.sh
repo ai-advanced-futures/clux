@@ -47,7 +47,7 @@ positive_integer() {
 }
 
 # Strip trailing whitespace into $RTRIM. Sets a global rather than printing,
-# because a command substitution would fork a subshell and both callers sit on
+# because a command substitution would fork a subshell and the callers sit on
 # the 0.2 s poll path.
 RTRIM=
 rtrim() { RTRIM="${1%"${1##*[![:space:]]}"}"; }
@@ -321,9 +321,9 @@ tmux_state() {
 # command substitution would fork a subshell each time. -S 0 keeps -J joining
 # wrapped rows, so a long prompt arrives as one logical line.
 capture_cursor_line() {
-    local text
-    CURSOR_Y=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
-    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$CURSOR_Y") || return 1
+    local cy text
+    cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
+    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy") || return 1
     CURSOR_LINE="${text##*$'\n'}"
 }
 
