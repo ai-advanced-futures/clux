@@ -62,7 +62,7 @@ EOF
     for args in 'open' 'run -- true' 'send -- x' 'read' 'wait --idle' 'close' 'list'; do
         run env -u TMUX -u TMUX_PANE bash -c "'$TERMINAL' $args"
         [ "$status" -eq 2 ] || { echo "$args returned $status"; false; }
-        [[ "$output" == *'inside tmux'* ]]
+        [[ "$output" == *'inside tmux'* ]] || false
     done
 
     run env -u TMUX -u TMUX_PANE bash -c "printf hook-input | '$TERMINAL' close --hook"
@@ -81,4 +81,50 @@ EOF
         run env TMUX=fake TMUX_PANE=%0 bash -c "'$TERMINAL' $args"
         [ "$status" -eq 2 ] || { echo "$args returned $status"; false; }
     done
+}
+
+@test "the wrapper sets umask 077 only inside the process substitution" {
+    grep -q '> >(umask 077; tee ' "$TERMINAL"
+    run sed -n '/^write_rc_file()/,/^EOF/p' "$TERMINAL"
+    [[ "$output" == *'__clux_run()'* ]] || false
+    ! printf '%s\n' "$output" | grep -q '^umask' || false
+}
+
+# The reaper splits <pid>-<start>-<pane>: only the first two fields go to the
+# server-key validator. A socket-mode state with no socket must never turn
+# into a kill-pane on the user's server.
+@test "the reaper reads the server key from the first two fields" {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUB'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$1" in
+    display-message) echo 1234-1700000000 ;;
+    list-panes) echo %0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log"
+    mkdir -p "$root/1234-1700000000-0" "$root/1234-1700000000-9"
+    printf 'mode=socket\npane=%%0\nsocket=\nseq=0\n' > "$root/1234-1700000000-9/state"
+    run env STUB_LOG="$log" CLUX_TERMINAL_DIR="$root" TMUX=fake TMUX_PANE=%0 bash -c \
+        "source '$TERMINAL'; terminal_init; reap_companions"
+    [ "$status" -eq 0 ]
+    [ -d "$root/1234-1700000000-0" ]
+    [ ! -e "$root/1234-1700000000-9" ]
+    ! grep -q 'kill-pane' "$log" || false
+}
+
+@test "close --owner is parsed" {
+    run env -u TMUX -u TMUX_PANE "$TERMINAL" close --owner
+    [ "$status" -eq 2 ]
+    run env TMUX=fake TMUX_PANE=%0 CLUX_TERMINAL_DIR="$BATS_TEST_TMPDIR/none" "$TERMINAL" close --owner %5
+    [ "$status" -eq 0 ]
+}
+
+@test "run --max-lines needs a positive integer" {
+    run env TMUX=fake TMUX_PANE=%0 "$TERMINAL" run --max-lines 0 -- true
+    [ "$status" -eq 2 ]
+    run env TMUX=fake TMUX_PANE=%0 "$TERMINAL" wait --max-lines x --run 1
+    [ "$status" -eq 2 ]
 }
