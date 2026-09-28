@@ -153,6 +153,9 @@ resolve_root() {
 }
 
 terminal_init() {
+    # Every file and directory this process makes ($D, state, busy, <n>.cmd)
+    # is private. The pane shell keeps the user's own umask.
+    umask 077
     resolve_root
     SERVER_KEY=$(resolve_agent_server_key)
     _clux_valid_server_key "$SERVER_KEY" || fail 'cannot identify the tmux server' 2
@@ -198,13 +201,18 @@ listing_has_pane() {
 
 # The one place that decides how a companion is torn down. A private server
 # goes as a whole; a split pane goes only when the caller owns it.
+#
+# A case, not if/elif: a socket-mode state with an empty socket field must do
+# nothing. Its pane id names a pane on the PRIVATE server, and an elif that
+# fell through would kill the pane with that id on the user's own server.
 kill_companion() {
     local mode="$1" pane="$2" socket="$3" kill_split="${4:-0}"
-    if [ "$mode" = socket ] && [ -n "$socket" ]; then
-        tmux -S "$socket" kill-server >/dev/null 2>&1 || true
-    elif [ "$kill_split" -eq 1 ] && [ -n "$pane" ]; then
-        tmux kill-pane -t "$pane" >/dev/null 2>&1 || true
-    fi
+    case "$mode" in
+        socket)
+            [ -z "$socket" ] || tmux -S "$socket" kill-server >/dev/null 2>&1 || true ;;
+        split)
+            [ "$kill_split" -ne 1 ] || [ -z "$pane" ] || tmux kill-pane -t "$pane" >/dev/null 2>&1 || true ;;
+    esac
 }
 
 remove_companion_dir() {
@@ -274,6 +282,7 @@ __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; retur
 exit() { __clux_refuse; }
 exec() { __clux_refuse; }
 logout() { __clux_refuse; }
+__clux_clear() { printf '\033[2J\033[H'; }
 __clux_run() {
   local __clux_n="$1" __clux_d="$CLUX_TERMINAL_D" __clux_cmd __clux_rc __clux_i
   __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
@@ -282,7 +291,8 @@ __clux_run() {
   __clux_rc=$?
   __clux_i=0
   while [ ! -e "$__clux_d/$__clux_n.done" ] && [ "$__clux_i" -lt 20 ]; do sleep .05; __clux_i=$((__clux_i + 1)); done
-  printf '%s\n' "$__clux_rc" > "$__clux_d/$__clux_n.rc"
+  (umask 077; printf '%s\n' "$__clux_rc" > "$__clux_d/$__clux_n.rc.tmp") \
+    && command mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
 }
 EOF
 }
@@ -311,17 +321,22 @@ tmux_state() {
 # command substitution would fork a subshell each time. -S 0 keeps -J joining
 # wrapped rows, so a long prompt arrives as one logical line.
 capture_cursor_line() {
-    local cy text
-    cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
-    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy") || return 1
+    local text
+    CURSOR_Y=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
+    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$CURSOR_Y") || return 1
     CURSOR_LINE="${text##*$'\n'}"
 }
 
-at_prompt() {
-    capture_cursor_line || return 1
+# A suffix test on the line capture_cursor_line already holds, so one poll
+# step can ask both "at the prompt" and "credential prompt" for one capture.
+line_at_prompt() {
     rtrim "$CURSOR_LINE"
     case "$RTRIM" in *'clux$') return 0 ;; esac
     return 1
+}
+
+at_prompt() {
+    capture_cursor_line && line_at_prompt
 }
 
 credential_on_cursor() {
@@ -329,11 +344,29 @@ credential_on_cursor() {
     line_is_credential "$CURSOR_LINE"
 }
 
+# $2=1 adds the credential probe: a credential prompt ends the wait with 3.
 wait_for_prompt() {
+    local deadline probe="${2:-0}"
+    deadline=$((SECONDS + $1))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if capture_cursor_line; then
+            line_at_prompt && return 0
+            [ "$probe" -eq 0 ] || ! line_is_credential "$CURSOR_LINE" || return 3
+        fi
+        sleep .2
+    done
+    return 1
+}
+
+# After __clux_clear the prompt is on row 0. Before it, the __clux_run line
+# of the secret run is above the prompt, so row 0 cannot hold the prompt.
+# A plain prompt test is not enough: it can pass before the pane shell reads
+# the clear line, and clear-history then runs before the screen is clear.
+wait_for_clear() {
     local deadline
     deadline=$((SECONDS + $1))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        at_prompt && return 0
+        capture_cursor_line && [ "$CURSOR_Y" -eq 0 ] && line_at_prompt && return 0
         sleep .2
     done
     return 1
@@ -382,14 +415,22 @@ open_command() {
     if [ "$mode" = socket ]; then
         socket="$D/sock"
         [ "${#socket}" -le 100 ] || fail 'the private tmux socket path is longer than 100 bytes' 2
-        pane=$(tmux -S "$socket" -f /dev/null new-session -d -P -F '#{pane_id}' -s clux-terminal -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) || fail 'cannot open private companion' 1
+        pane=$(tmux -S "$socket" -f /dev/null new-session -d -P -F '#{pane_id}' -s clux-terminal \
+            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) \
+            || { rm -rf "$D"; fail 'cannot open private companion' 1; }
         write_state socket "$pane" "$socket"
     else
-        pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" -v -l "$size" -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) || fail 'cannot open companion' 1
+        pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" -v -l "$size" \
+            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) \
+            || { rm -rf "$D"; fail 'cannot open companion' 1; }
         write_state split "$pane" ""
     fi
     tmux_state select-pane -t "$pane" -T clux-terminal
-    wait_for_prompt 5 || fail 'the companion shell did not reach its prompt' 1
+    wait_for_prompt 5 || {
+        kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
+        rm -rf "$D"
+        fail 'the companion shell did not reach its prompt' 1
+    }
     report_open
 }
 
@@ -412,11 +453,48 @@ send_key() { tmux_state send-keys -t "$S_PANE" "$1"; }
 
 release_busy() { rmdir "$D/busy" 2>/dev/null || true; }
 
+# The last run was secret. Its text can still be on the screen, so read and
+# wait --pattern refuse until the next run clears the screen and the history.
+last_run_secret() {
+    [ "${S_SEQ:-0}" -gt 0 ] && [ -e "$D/$S_SEQ.secret" ]
+}
+
+refuse_secret() {
+    printf '%s\n' 'the last run was secret: do a plain run first, it clears the screen' >&2
+    return 3
+}
+
+# A run that ended on its time limit keeps the lock. The first reader that
+# finds its <n>.rc removes it.
+release_if_done() {
+    [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && release_busy
+    return 0
+}
+
 # The single place a finished run is reported, so --secret cannot be honoured on
 # one path and forgotten on the other.
+#
+# <n>.rc can come before <n>.done: a background process of the command keeps
+# the tee pipe open. The grace here is one second, then the output that is
+# present is reported with a note. A last line with no newline gets one, so
+# exit=<rc> always starts its own line.
 report_run() {
-    local n="$1" rc
-    [ -e "$D/$n.secret" ] || cat "$D/$n.out"
+    local n="$1" max="$2" rc i=0 lines last
+    while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
+    if [ ! -e "$D/$n.secret" ] && [ -s "$D/$n.out" ]; then
+        last=$(tail -c 1 "$D/$n.out")
+        lines=$(wc -l < "$D/$n.out")
+        lines=$((lines + 0))
+        [ -z "$last" ] || lines=$((lines + 1))
+        if [ "$lines" -gt "$max" ]; then
+            printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
+            tail -n "$max" "$D/$n.out"
+        else
+            cat "$D/$n.out"
+        fi
+        [ -z "$last" ] || printf '\n'
+    fi
+    [ -e "$D/$n.done" ] || printf '%s\n' 'output may be incomplete: a process still holds the output'
     read -r rc < "$D/$n.rc"
     printf 'exit=%s\n' "$rc"
     rm -f "$D/$n.out"
@@ -427,13 +505,14 @@ report_run() {
 # exit is the .rc test above it — so probe every fifth tick, not every tick. A
 # credential prompt waits on a human, so one second of detection latency is
 # free, and the loop's common case drops to a single file test.
+# $3=0 skips the probe: wait --run on a secret run waits for the user.
 wait_for_run_files() {
-    local n="$1" deadline tick=0
+    local n="$1" probe="${3:-1}" deadline tick=0
     deadline=$((SECONDS + $2))
     while [ "$SECONDS" -lt "$deadline" ]; do
         [ -f "$D/$n.rc" ] && return 0
         tick=$(( (tick + 1) % 5 ))
-        if [ "$tick" -eq 1 ] && credential_on_cursor; then
+        if [ "$probe" -eq 1 ] && [ "$tick" -eq 1 ] && credential_on_cursor; then
             : > "$D/$n.secret"
             return 3
         fi
@@ -442,11 +521,23 @@ wait_for_run_files() {
     return 1
 }
 
+# Delete the output file of each completed run that no reader took.
+remove_stale_output() {
+    local out k
+    for out in "$D"/*.out; do
+        [ -e "$out" ] || continue
+        k="${out##*/}"
+        k="${k%.out}"
+        [ ! -f "$D/$k.rc" ] || rm -f "$out"
+    done
+}
+
 run_command() {
-    local timeout=100 secret=0 command first n
+    local timeout=100 secret=0 max=200 command first n
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
+            --max-lines) [ "$#" -ge 2 ] || usage; max="$2"; shift 2 ;;
             --secret) secret=1; shift ;;
             --) shift; command="$*"; break ;;
             *) usage ;;
@@ -454,24 +545,39 @@ run_command() {
     done
     [ -n "${command:-}" ] || usage
     positive_integer "$timeout" || usage
+    positive_integer "$max" || usage
     first="${command#"${command%%[![:space:]]*}"}"
     case "${first%%[[:space:]]*}" in
         exit|exec|logout|return) fail 'refused command first word' 2 ;;
     esac
     ensure_open
-    mkdir "$D/busy" 2>/dev/null || fail 'the companion is busy' 5
-    at_prompt || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
+    if ! mkdir "$D/busy" 2>/dev/null; then
+        # The lock of a completed run that no reader took is free.
+        [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
+    fi
+    # Two seconds, not one test: after a large output the pane shell draws its
+    # prompt a moment after the last run reports.
+    wait_for_prompt 2 || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
+    remove_stale_output
+    if last_run_secret; then
+        send_literal __clux_clear; send_key Enter
+        wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run' 1; }
+        tmux_state clear-history -t "$S_PANE"
+    fi
     n=$(( S_SEQ + 1 ))
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
-    umask 077; printf '%s' "$command" > "$D/$n.cmd"
+    printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
     printf 'run=%s\n' "$n"
     send_literal "__clux_run $n"; send_key Enter
-    wait_for_run_files "$n" "$timeout"
+    wait_for_run_files "$n" "$timeout" 1
     case $? in
-        0) report_run "$n" ;;
+        0) report_run "$n" "$max" ;;
         3) refuse_credential ;;
-        *) return 1 ;;
+        *)
+            printf 'time limit: run %s continues in the pane; use wait --run %s\n' "$n" "$n" >&2
+            return 1
+            ;;
     esac
 }
 
@@ -507,15 +613,18 @@ read_command() {
     done
     positive_integer "$lines" || usage
     ensure_open
+    release_if_done
+    last_run_secret && { refuse_secret; return; }
     credential_on_cursor && { refuse_credential; return; }
     tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines"
 }
 
 wait_command() {
-    local timeout=60 mode="" value=""
+    local timeout=60 max=200 mode="" value="" probe deadline
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
+            --max-lines) [ "$#" -ge 2 ] || usage; max="$2"; shift 2 ;;
             --idle) [ -z "$mode" ] || usage; mode=idle; shift ;;
             --pattern) [ -z "$mode" ] && [ "$#" -ge 2 ] || usage; mode=pattern; value="$2"; shift 2 ;;
             --run) [ -z "$mode" ] && [ "$#" -ge 2 ] || usage; mode=run; value="$2"; shift 2 ;;
@@ -523,19 +632,37 @@ wait_command() {
         esac
     done
     positive_integer "$timeout" || usage
+    positive_integer "$max" || usage
     [ -n "$mode" ] || usage
     [ "$mode" != run ] || positive_integer "$value" || usage
     ensure_open
     case "$mode" in
         run)
-            wait_for_run_files "$value" "$timeout" || return 1
-            report_run "$value"
+            # A secret run waits for the user at a credential prompt, so the
+            # probe would stop this wait at once.
+            probe=1
+            [ ! -e "$D/$value.secret" ] || probe=0
+            wait_for_run_files "$value" "$timeout" "$probe"
+            case $? in
+                0) report_run "$value" "$max" ;;
+                3) refuse_credential ;;
+                *) return 1 ;;
+            esac
             ;;
-        idle) wait_for_prompt "$timeout" ;;
+        idle)
+            wait_for_prompt "$timeout" 1
+            case $? in
+                0) return 0 ;;
+                3) refuse_credential ;;
+                *) return 1 ;;
+            esac
+            ;;
         pattern)
-            local deadline=$((SECONDS + timeout))
+            last_run_secret && { refuse_secret; return; }
+            deadline=$((SECONDS + timeout))
             while [ "$SECONDS" -lt "$deadline" ]; do
-                tmux_state capture-pane -p -J -t "$S_PANE" -S -50 | grep -Eq -- "$value" && return 0
+                credential_on_cursor && { refuse_credential; return; }
+                tmux_state capture-pane -p -J -t "$S_PANE" | grep -Eq -- "$value" && return 0
                 sleep .2
             done
             return 1
@@ -544,10 +671,11 @@ wait_command() {
 }
 
 close_command() {
-    local hook=0
+    local hook=0 owner=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --hook) hook=1; shift ;;
+            --owner) [ "$#" -ge 2 ] || usage; owner="$2"; shift 2 ;;
             *) usage ;;
         esac
     done
@@ -563,6 +691,7 @@ close_command() {
     # paying for a server-key round trip.
     resolve_root
     [ -d "$ROOT" ] || return 0
+    [ -z "$owner" ] || TMUX_PANE="%${owner#%}"
     terminal_init
     state_load || return 0
     tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
