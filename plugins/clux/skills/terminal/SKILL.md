@@ -112,11 +112,13 @@ terminal.sh run -- 'git status --short'
 3. `terminal.sh read` prints the last 50 lines of the screen. `--lines N` changes the number.
 4. `terminal.sh send --key C-c` sends one key. Other key names are, for example, `Up`, `Down` and `Enter`. `C-c`, `C-d`, `C-z`, `C-\` and `Escape` also work when Laya is not available, so you can always stop a command.
 
-Laya examines each line before Enter: `send --enter`, and `send --key` with `Enter`, `C-m` or `C-j`. The line is the text on the cursor line and your text. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
+Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
+
+- Text that you send with no `--enter` must show on the cursor line. When the pane does not show it (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 
 - The text of `send` must not contain a control character, for example a newline, a carriage return or a tab (exit code 2). [inferred] Send one line at a time with `--enter` or `--key` (for example `--key Tab`). [inferred]
 - When Laya finds a risk, `send` prints `laya: caution (<reason>)` and sends the line.
-- When Laya finds the line dangerous, `send` does not send it. You get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`. At the shell prompt, use `run`: it asks the user. In another program, tell the user.
+- When Laya finds the line dangerous, `send` does not send the text or the key. You get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`. At the shell prompt, use `run`: it asks the user. In another program, tell the user.
 
 Answer plain prompts yourself, for example `[y/N]` or a menu.
 

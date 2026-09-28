@@ -182,9 +182,11 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 
 ## 7. Command gate
 
-The gate applies to `run`, and to each `send` that ends a line: `send --enter` and `send --key Enter` (also `C-m` and `C-j`). This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
+The gate applies to `run` and to each `send`: text with or without `--enter`, and each `--key` except the interrupt keys below. A key goes to the gate because `bind` can make any key end a line. The line is the cursor line plus the new text, so text sent in pieces is examined as one line. This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
 
 An interrupt key (`send --key C-c`, `C-d`, `C-z`, `C-\` or `Escape`) does not end a line and cannot type a value. It does not go through the Laya pane check, so Claude can stop a command in the pane when Laya is not available. A Laya confirmation in the pane still refuses it with exit code 3.
+
+Text that `send` types with no `--enter` must show on the cursor line within 1 s. When it does not (for example after `stty -echo`), the next gate cannot examine it. Then `send` writes the marker `hidden` and exits 3 with `text that the pane does not show is on the line: send --key C-c first`. While the marker exists, each `send` and `run` refuses with exit code 3. Only `send --key C-c` removes it, because C-c discards the line. [inferred] A `bind` that makes a key type hidden text is outside this check; the gate examines the `bind` command itself.
 
 For `send`, the state that goes to Laya is:
 

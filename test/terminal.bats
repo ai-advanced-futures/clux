@@ -250,13 +250,13 @@ STUB
     [ ! -s "$log" ]
 }
 
-@test "key_ends_line finds each key that ends a line" {
+@test "interrupt_key finds only the keys that skip the Laya pane check" {
     run bash -c "source '$TERMINAL'
-        for k in Enter enter KPEnter M-Enter C-m C-J c-m M-C-m C-M-m '^M' '^j' C-o 0xd; do
-            key_ends_line \"\$k\" || echo \"missed \$k\"
+        for k in C-c c-C C-d C-z 'C-\\' '^C' '^d' Escape escape; do
+            interrupt_key \"\$k\" || echo \"missed \$k\"
         done
-        for k in Up C-c C-u m M-m Tab Escape BSpace; do
-            ! key_ends_line \"\$k\" || echo \"wrong \$k\"
+        for k in Enter C-m C-a C-u Up Tab M-c C-M-c c; do
+            ! interrupt_key \"\$k\" || echo \"wrong \$k\"
         done"
     [ "$status" -eq 0 ]
     [ -z "$output" ]

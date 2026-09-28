@@ -586,21 +586,6 @@ laya_guard() {
     return 0
 }
 
-# A key that ends a line in the pane: Enter and KPEnter with any modifier,
-# C-m, C-j and C-o (bash operate-and-get-next) with any other modifier, ^M,
-# ^J, ^O, and a 0x key code. [inferred] tmux reads key names with no regard
-# to letter case, so this test does the same.
-key_ends_line() {
-    local base="${1##*-}" mods="${1%-*}"
-    [ "$mods" != "$1" ] || mods=
-    case "$base" in
-        [Ee][Nn][Tt][Ee][Rr]|[Kk][Pp][Ee][Nn][Tt][Ee][Rr]) return 0 ;;
-        '^'[MmJjOo]|0[xX]*) return 0 ;;
-        [MmJjOo]) case "-$mods-" in *-[Cc]-*) return 0 ;; esac ;;
-    esac
-    return 1
-}
-
 # reserved_word TEXT — the functions of rc.bash start with __clux_. Only
 # run itself types them, so send and run refuse them with no Laya request.
 reserved_word() {
@@ -632,6 +617,7 @@ send_gate() {
         *) line="$CURSOR_LINE$1" ;;
     esac
     [ -n "$flag" ] || line="${line#"${line%%[![:space:]]*}"}"
+    reserved_word "$line"
     # [inferred] A blank line runs nothing, so it needs no request.
     case "$line" in *[![:space:]]*) ;; *) return 0 ;; esac
     laya_gate --screen ${flag:+"$flag"} < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line") \
@@ -647,8 +633,8 @@ send_gate() {
 }
 
 # After a send with no Enter, wait at most 1 s until the cursor line ends
-# with the text. [inferred] The next send --enter reads the cursor line for
-# its gate, so the text must be on the screen first.
+# with the text. The next gate reads the cursor line, so the text must be on
+# the screen. Returns 1 when the text does not show.
 wait_for_echo() {
     local i=0
     while [ "$i" -lt 5 ]; do
@@ -656,7 +642,14 @@ wait_for_echo() {
         sleep .2
         i=$((i + 1))
     done
-    return 0
+    return 1
+}
+
+hidden_text() { [ -e "$D/hidden" ]; }
+
+refuse_hidden() {
+    printf '%s\n' 'text that the pane does not show is on the line: send --key C-c first' >&2
+    return 3
 }
 
 # $2=1 adds the pane probe on each fifth step (each 1 s): a credential prompt
@@ -941,6 +934,8 @@ run_command() {
     esac
     reserved_word "$command"
     ensure_open
+    # run types __clux_run on the same line, after the hidden text.
+    hidden_text && { refuse_hidden; return; }
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader took is free.
         [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
@@ -1008,24 +1003,31 @@ send_command() {
     if [ -n "$key" ] && interrupt_key "$key"; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
         send_key "$key"
+        # C-c discards the line, so the text that the pane did not show goes too.
+        case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" ;; esac
         return
     fi
+    hidden_text && { refuse_hidden; return; }
     check_pane || return
+    # Each send goes to the gate: text with no Enter too, and each key, because
+    # bind can make any key end a line. The gate examines the cursor line plus
+    # the text, so text typed in pieces is examined as one line.
     if [ -n "$key" ]; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
-        ! key_ends_line "$key" || send_gate "" || return
+        send_gate "" || return
         send_key "$key"
         return
     fi
     [ -n "$text" ] || usage
+    send_gate "$text" || return
+    send_literal "$text"
     if [ "$enter" -eq 1 ]; then
-        send_gate "$text" || return
-        send_literal "$text"
         send_key Enter
         return
     fi
-    send_literal "$text"
-    wait_for_echo "$text"
+    # Text that the pane does not show (after stty -echo) cannot be examined
+    # by the next gate, so each later send and run refuses until C-c.
+    wait_for_echo "$text" || { : > "$D/hidden"; refuse_hidden; return; }
 }
 
 read_command() {

