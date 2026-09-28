@@ -115,6 +115,13 @@ STUB
     ! grep -q 'kill-pane' "$log" || false
 }
 
+@test "the terminal skill carries Snippet S1 unchanged" {
+    local skills="$REPO_ROOT/plugins/clux/skills"
+    s1() { sed -n '/^# Tier 1: the harness/,/^echo "MANIFEST=/p' "$1"; }
+    [ -n "$(s1 "$skills/configuring-tmux/SKILL.md")" ]
+    [ "$(s1 "$skills/terminal/SKILL.md")" = "$(s1 "$skills/configuring-tmux/SKILL.md")" ]
+}
+
 @test "close --owner is parsed" {
     run env -u TMUX -u TMUX_PANE "$TERMINAL" close --owner
     [ "$status" -eq 2 ]

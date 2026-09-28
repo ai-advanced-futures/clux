@@ -6,8 +6,11 @@ All notable changes to clux are documented here.
 
 ### Added
 
-- **`clux:terminal` opens a visible persistent companion shell.** It supports split panes, private sockets, file-backed plain commands, and interactive pane controls.
-- Credential prompts and explicit secret runs keep sensitive output out of Claude responses. Session end cleanup removes the companion and its private state.
+- **`clux:terminal`: a companion pane that the user can see.** Claude runs commands in one tmux pane for the full session, and the user sees each command run. `scripts/terminal.sh` has the verbs `open`, `run`, `send`, `read`, `wait`, `close` and `list`. `open` makes a split pane below Claude by default, or a session on a private server with `--socket`. Both modes refuse outside tmux, and each Claude session has its own private server. The pane shell is `bash` with no history file, so `cd` and `export` stay from one command to the next
+- **`run` gives the real result, not a screen scrape.** A wrapper in the pane copies the output to a 0600 file in a private 0700 directory and writes the exit code to a second file. `run` waits for both files, prints the output (at most 200 lines, `--max-lines N`), then `exit=<rc>` on its own line, and deletes the output file. The default time limit is 100 seconds, below the 120-second limit of the Bash tool. On a time-out the command continues, and `wait --run <n>` gets the result later. One run at a time: a second `run` gives exit code 5
+- **Credential prompts go to the user.** `config/credential-patterns.txt` holds the keywords (password, passphrase, code, token, key and more) and the `[y/N]` exclusions. The tmux option `@clux-terminal-patterns` adds a user file. When the cursor line of the pane is a credential prompt, `run`, `wait`, `send` and `read` stop with exit code 3 and show no screen text. The run becomes secret, and its output never goes back to Claude. `run --secret` does the same from the start. After a secret run, `read` and `wait --pattern` refuse until the next plain `run` clears the screen and the history
+- **`SessionEnd` runs `terminal.sh close --hook`.** It clears the history, closes the pane (or stops the private server) and deletes the private directory. It is silent and always exits 0. `open` also removes the companions of owner panes that are gone, because `SessionEnd` does not come when the terminal is killed
+- `/clux:validate` checks the new `SessionEnd` command
 
 ## [3.8.0]
 
