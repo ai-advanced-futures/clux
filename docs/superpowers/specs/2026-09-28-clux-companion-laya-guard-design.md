@@ -302,8 +302,8 @@ The 3.9.0 codes stay. One code is new.
 
 | Code | Meaning |
 |---|---|
-| 3 | A credential prompt or a Laya confirmation is in the pane. The user must answer it in the pane. |
-| 2 | Also: `run` with a blank command (`run needs a command`), and a command that the client refuses as bad input (`laya: bad input`). |
+| 2 | Also, as in 3.9.0 for bad arguments: `run` with a blank command (`run needs a command`), and a command that the client refuses as bad input (`laya: bad input`). |
+| 3 | A credential prompt or a Laya confirmation is in the pane. The user must answer it in the pane. Also: text that the pane did not show is on the line (`send --key C-c` removes it). |
 | 6 | Laya: not installed, not available, refused (`dangerous` on `send`), or output held because Laya did not answer. The message on stderr tells which. The skill uses the message text to select the next step. |
 
 ## 11. Skill

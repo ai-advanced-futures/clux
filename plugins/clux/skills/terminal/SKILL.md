@@ -138,7 +138,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 0 | The verb completed. For `run`, read `exit=<rc>`. | Continue. |
 | 1 | The time limit ended. The command continues in the pane, or it waits for the answer of the user. | Use `wait --run <n>`. |
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. | Correct the call, or tell the user. |
-| 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret. | Tell the user to answer in the pane. Then use `wait --run <n>`. |
+| 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
 | 4 | No companion is open for this session. | Use `open`. |
 | 5 | Busy: a run is not complete, or the pane is not at its prompt. No run started. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. |
 | 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
