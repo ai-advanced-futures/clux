@@ -424,10 +424,17 @@ logout() { __clux_refuse; }
 __clux_clear() { printf '\033[2J\033[H'; }
 # A dangerous run asks the user first. Only "y" runs it. The INT trap keeps
 # Ctrl-C from ending the question: without it, Ctrl-C ends this function and
-# leaves <n>.confirm, and each verb refuses until close.
+# leaves <n>.confirm, and each verb refuses until close. Each <n>.cmd runs
+# one time: a run with no .cmd, or with an .rc, is refused, and .cmd is
+# deleted when it is read. Thus a declined run cannot run again.
 __clux_run() {
   local __clux_n="$1" __clux_d="$CLUX_TERMINAL_D" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
+  if [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
+    printf '%s\n' 'refused: this run is not waiting to start'
+    return 1
+  fi
   __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
+  command rm -f "$__clux_d/$__clux_n.cmd"
   if [ -e "$__clux_d/$__clux_n.confirm" ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
     printf 'laya: dangerous (%s)\n$ %s\n' "$__clux_reason" "$__clux_cmd"
@@ -592,6 +599,14 @@ key_ends_line() {
         [MmJjOo]) case "-$mods-" in *-[Cc]-*) return 0 ;; esac ;;
     esac
     return 1
+}
+
+# reserved_word TEXT — the functions of rc.bash start with __clux_. Only
+# run itself types them, so send and run refuse them with no Laya request.
+reserved_word() {
+    case "$1" in
+        *__clux_*) fail 'refused: __clux_ names are for the companion only' 2 ;;
+    esac
 }
 
 # interrupt_key KEY — C-c, C-d, C-z, C-\ or Escape (spec section 7).
@@ -924,6 +939,7 @@ run_command() {
     case "${first%%[[:space:]]*}" in
         exit|exec|logout|return) fail 'refused command first word' 2 ;;
     esac
+    reserved_word "$command"
     ensure_open
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader took is free.
@@ -984,6 +1000,7 @@ send_command() {
     case "$text$key" in
         *[[:cntrl:]]*) fail 'send text must not contain a control character: use --enter or --key' 2 ;;
     esac
+    reserved_word "$text"
     ensure_open
     laya_confirm_pending && { refuse_confirm; return; }
     # An interrupt key cannot type a value, and it must work when Laya does

@@ -227,6 +227,7 @@ The client gives `dangerous` when one boolean is above its threshold (default 0.
 
 - `run` writes an empty marker `<n>.confirm` and the reason to `<n>.reason`, then sends `__clux_run <n>` as in 3.9.0.
 - In `rc.bash`, `__clux_run` finds `<n>.confirm`. It shows `laya: dangerous (<reason>)`, then the command, then `run? [y/N] `. It reads one line from the terminal.
+- Each `<n>.cmd` runs one time. `__clux_run` refuses a run that has no `<n>.cmd` or that has an `<n>.rc`, and it deletes `<n>.cmd` when it reads it. `send` and `run` refuse text that contains `__clux_` with exit code 2, with no Laya request. Thus a declined command cannot run again through `__clux_run <n>`.
 - It deletes `<n>.confirm` on all answers.
 - On `y` it runs the command as in 3.9.0.
 - On other input it does not run the command. It writes `declined` to `<n>.declined`, `126` to `<n>.rc`, and an empty `<n>.done`. Thus `report_run` does not wait its 1 s grace and does not print the incomplete-output note.

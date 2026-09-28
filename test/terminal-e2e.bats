@@ -463,6 +463,34 @@ pane_shows() {
     [ "$status" -eq 0 ]
 }
 
+@test "a declined run cannot run again through __clux_run" {
+    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    local one="$BATS_TEST_TMPDIR/clux-danger-1" d
+    mkdir -p "$one"
+    d=$(companion_dir)
+    run "$TERMINAL" run --timeout 2 -- "rm -rf '$one'"
+    [ "$status" -eq 1 ]
+    pane_shows 'run? [y/N]'
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" n Enter
+    run "$TERMINAL" wait --timeout 5 --run 1
+    [ "$status" -eq 0 ]
+    [ "$output" = $'laya: declined by the user\nexit=126' ]
+    # The reserved word is refused before Laya, in send and in run.
+    run "$TERMINAL" send --enter -- '__clux_run 1'
+    [ "$status" -eq 2 ]
+    run "$TERMINAL" send -- ' __clux_run 1'
+    [ "$status" -eq 2 ]
+    run "$TERMINAL" run -- '__clux_run 1'
+    [ "$status" -eq 2 ]
+    # The pane shell refuses a run that has no .cmd or that has an .rc.
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" '__clux_run 1' Enter
+    sleep 1
+    [ -d "$one" ]
+    [ ! -e "$d/1.cmd" ]
+    [ "$(cat "$d/1.rc")" = 126 ]
+}
+
 # Laya 2
 @test "a caution run prints the note before exit, also through wait --run" {
     set_fake_laya '{"rules": [{"contains": "touch", "answers": {"risk": "caution", "destructive": 0.4}}]}'
