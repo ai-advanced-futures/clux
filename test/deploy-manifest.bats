@@ -24,7 +24,7 @@ _manifest_entries() {
 
 # Never deployed: each runs from the plugin tree only.
 # — the manifest header explains why. Keep this list in step with that note.
-NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh terminal.sh"
+NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh terminal.sh laya_client.py"
 
 # Sourced, never executed. They must be readable; the executable bit on them
 # means nothing. path.sh does not carry it and helpers.sh does, which is
@@ -145,4 +145,12 @@ EOF
         || { echo "the configuring-tmux skill does not reference the manifest"; false; }
     grep -q 'deploy-manifest' "$REPO_ROOT/plugins/clux/commands/validate.md" \
         || { echo "commands/validate.md does not reference the manifest"; false; }
+}
+
+@test "deploy-manifest: the header note names each never-deployed script" {
+    local base missing=""
+    for base in $NOT_DEPLOYED; do
+        grep '^#' "$MANIFEST" | grep -qF "$base" || missing="$missing $base"
+    done
+    [ -z "$missing" ] || { echo "not named in the manifest header:$missing"; false; }
 }

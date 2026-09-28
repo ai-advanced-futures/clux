@@ -65,11 +65,20 @@ plugins/clux/
 │   │                            # Setup time only — never deployed
 │   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
 │   ├── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
-│   └── terminal.sh              # Companion pane lifecycle and command transport
+│   ├── terminal.sh              # Companion pane lifecycle and command transport
+│   └── laya_client.py           # The only code that speaks to Laya
 ├── config/
 │   ├── deploy-manifest.txt      # The single list of scripts setup deploys
 │   ├── credential-patterns.txt  # Credential prompt includes and exclusions
-│   └── tmux-config.yaml         # Default tmux configuration reference
+│   ├── tmux-config.yaml         # Default tmux configuration reference
+│   └── laya/                    # Laya policies, read from the plugin tree
+│       ├── command.json         # The command gate
+│       ├── output-block.json    # The block check of the output guard
+│       ├── output-line.json     # The line check of the output guard
+│       ├── pane.json            # The prompt type of the pane
+│       ├── safe-commands.txt    # Commands that do not go to Laya
+│       ├── secret-values.txt    # Secret values that are always held
+│       └── not-secret.txt       # Line shapes that are never secret
 ├── docs/
 │   ├── setup-guide.md           # User-facing setup guide
 │   └── REFERENCE-tmux-setup-strategy.md  # Architecture reference

@@ -1,0 +1,1 @@
+{"state": "rm -rf ~/dev", "model": "english", "questions": {"risk": {"type": "choice", "instructions": "How risky is it to run this shell command?", "criteria": {"safe": null, "caution": null, "dangerous": null}}}}

@@ -1,0 +1,25 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "destructive": {
+        "type": "boolean",
+        "description": "Would the command delete data, overwrite files, or change the system in a way that is hard to undo?"
+      },
+      "exposes_secrets": {
+        "type": "boolean",
+        "description": "Would the command show or send secrets or credentials?"
+      },
+      "remote_effect": {
+        "type": "boolean",
+        "description": "Would the command change a remote system, for example push, deploy, publish or send data out?"
+      },
+      "risk": {
+        "enum": ["safe", "caution", "dangerous"],
+        "description": "How risky is it to run this shell command?"
+      }
+    }
+  },
+  "model": "english",
+  "thresholds": { "destructive": 0.8, "exposes_secrets": 0.8, "remote_effect": 0.8 }
+}

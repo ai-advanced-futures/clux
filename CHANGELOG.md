@@ -2,6 +2,29 @@
 
 All notable changes to clux are documented here.
 
+## [4.0.0]
+
+### Changed
+
+- **Breaking: the companion needs Laya.** `clux:terminal` does not operate without a local Laya model (`laya` 0.3.21, English checkpoint). Until the user runs `terminal.sh laya install`, `open` gives exit code 6 and `laya not installed: run terminal.sh laya install`. `open` starts one loopback `laya-serve` for each companion, with a random API key and its log in the private directory (0600). `close`, the `SessionEnd` hook and the reaper stop it. `CLUX_LAYA_URL` names a server that the user starts; it must be a loopback host, and clux never stops it
+- **The default time limit of `run` is 65 seconds** (it was 100 seconds), so that the Laya checks (the command gate, the pane probe and a 15 s output guard) fit in the 120-second limit of the Bash tool
+- `wait --pattern` examines the screen each second, not each 0.2 s, and tests the pattern on the guarded text
+
+### Added
+
+- **Command gate.** Each `run` command goes to Laya before it runs, except one simple command on `config/laya/safe-commands.txt`. `caution` adds `laya: caution (<reason>)` before `exit=<rc>`. `dangerous` shows `laya: dangerous (<reason>)` and `run? [y/N]` in the pane: only `y` from the user runs it; other input gives `laya: declined by the user` and `exit=126`. While the question is open, `send`, `read`, `wait --idle` and `wait --pattern` exit 3
+- **Send gate.** `send --enter` and the keys that end a line (`Enter`, `C-m`, `C-j` and more) send the full cursor line to Laya first, also inside `ssh`, `python3` or `psql`. A dangerous line gives exit code 6. `send` text with a control character, for example a newline, a carriage return or a tab, gives exit code 2; use `--enter` or `--key` (for example `--key Tab`) [inferred]
+- **Output guard.** All pane text that goes to Claude (`run`, `wait --run`, `read`, `wait --pattern`) goes to Laya in blocks, then line by line where a block is doubtful. A secret line becomes `[held by laya: secret]`, a prompt-injection block becomes `[held by laya: prompt_injection, <k> lines]`, and `laya: held <k> lines` gives the count. PEM blocks and the values in `config/laya/secret-values.txt` are always held; `config/laya/not-secret.txt` removes known false positives. When Laya does not answer, no output text goes to Claude: `output held: laya not available`, then `exit=<rc>`, and exit code 6
+- **Pane state.** `credential_on_cursor` becomes `pane_state`: Laya gives `credential`, `yes_no`, `menu`, `pager`, `shell_prompt` or `other`, and the 3.9.0 patterns can still add `credential`. `wait --idle` prints `pane=<state>` when its time limit ends
+- **Exit code 6** for Laya: not installed, not available, a dangerous `send`, or output held
+- `terminal.sh laya install` (Python 3.10 or later, a venv in `~/.local/share/clux/laya`, `pip install laya[serve]==0.3.21` and the checkpoint download, in one 540 s budget) and `terminal.sh laya status`
+- `config/laya/`: the four policies (`command.json`, `output-block.json`, `output-line.json`, `pane.json`). A user copy in `~/.config/clux/laya/<name>.json` replaces the shipped policy
+
+### Internal
+
+- `scripts/laya_client.py` is the only code that speaks to Laya. It uses no proxy and refuses a host that is not loopback. It is not deployed: it runs from the plugin tree, as `terminal.sh` does
+- `test/fixtures/fake-laya.py` answers in the wire format captured from `laya-serve` 0.3.21 in `test/fixtures/laya-wire/`. `test/laya-client.bats` covers the client; the e2e tests run against the fake server. `test/laya-live.bats` (`CLUX_LAYA_LIVE=1`, not in CI) runs the real model and measures the guard time
+
 ## [3.9.0]
 
 ### Added

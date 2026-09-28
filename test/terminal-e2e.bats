@@ -23,10 +23,15 @@ setup() {
     export TMUX="$TMUX_SOCKET,$pid,0"
     export TMUX_PANE
     TMUX_PANE=$("$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -F '#{pane_id}')
+    # The companion needs Laya (spec section 13): the fake server answers
+    # "all safe" unless a test changes its answers.
+    require_laya_python
+    start_fake_laya '{}'
 }
 
 teardown() {
     local sock
+    stop_fake_laya
     for sock in "$CLUX_TERMINAL_DIR"/*/sock; do
         [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1
     done
@@ -48,6 +53,17 @@ companion_pane() {
 
 file_mode() {
     stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"
+}
+
+# pane_shows TEXT — wait at most 5 s until the companion pane shows TEXT.
+pane_shows() {
+    local i=0
+    while [ "$i" -lt 50 ]; do
+        "$REAL_TMUX" -S "$TMUX_SOCKET" capture-pane -p -t "$(companion_pane)" | grep -qF -- "$1" && return 0
+        sleep .1
+        i=$((i + 1))
+    done
+    return 1
 }
 
 # 1
@@ -341,4 +357,215 @@ file_mode() {
     [[ "$output" == *$'private\nexit=0' ]] || false
     "$TERMINAL" close
     ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
+}
+
+# Laya 6
+@test "close stops the laya server that open started and deletes laya.log" {
+    local data="$BATS_TEST_TMPDIR/data" d pid
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    run env CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    d=$(companion_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    [ -n "$pid" ]
+    ps -o command= -p "$pid" | grep -q laya-serve
+    [ "$(file_mode "$d/laya.log")" = 600 ]
+    grep -q '^laya_url=http://127.0.0.1:[0-9][0-9]*$' "$d/state"
+    grep -Eq '^laya_key=[0-9a-f]{64}$' "$d/state"
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    ! kill -0 "$pid" 2>/dev/null || false
+    [ ! -e "$d" ]
+}
+
+@test "the reaper stops the laya server of an owner pane that is gone" {
+    local data="$BATS_TEST_TMPDIR/data" other pid
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    other=$("$REAL_TMUX" -S "$TMUX_SOCKET" split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" 3>&-)
+    TMUX_PANE="$other" CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
+        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
+    pid=$(sed -n 's/^laya_pid=//p' "$CLUX_TERMINAL_DIR"/*-"${other#%}"/state)
+    [ -n "$pid" ]
+    kill -0 "$pid"
+    "$REAL_TMUX" -S "$TMUX_SOCKET" kill-pane -t "$other"
+    "$TERMINAL" open >/dev/null
+    ! kill -0 "$pid" 2>/dev/null || false
+}
+
+@test "wait --idle prints the pane state at its time limit" {
+    set_fake_laya '{"answers": {"state": "pager"}}'
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 3' >/dev/null
+    run "$TERMINAL" wait --timeout 1 --idle
+    [ "$status" -eq 1 ]
+    [ "$output" = 'pane=pager' ]
+}
+
+@test "wait --idle exits 6 when Laya stops during the wait" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 3' >/dev/null
+    stop_fake_laya
+    run "$TERMINAL" wait --timeout 2 --idle
+    [ "$status" -eq 6 ]
+    [[ "$output" == *'laya not available: close and open the companion'* ]] || false
+}
+
+@test "a credential answer from Laya stops a run with exit 3" {
+    set_fake_laya '{"rules": [{"contains": "Enter value", "answers": {"state": "credential"}}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run --timeout 5 -- 'read -r -p "Enter value " v; echo "got:$v"'
+    [ "$status" -eq 3 ]
+    [[ "$output" == *'credential prompt in the companion pane'* ]] || false
+}
+
+# Laya 1
+@test "a dangerous run asks the user in the pane: y runs it, n declines it" {
+    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    local one="$BATS_TEST_TMPDIR/clux-danger-1" two="$BATS_TEST_TMPDIR/clux-danger-2" d
+    mkdir -p "$one" "$two"
+    d=$(companion_dir)
+    run "$TERMINAL" run --timeout 2 -- "rm -rf '$one'"
+    [ "$status" -eq 1 ]
+    [[ "$output" == 'run=1'* ]] || false
+    pane_shows 'laya: dangerous (destructive 0.95)'
+    pane_shows 'run? [y/N]'
+    [ -d "$one" ]
+    run "$TERMINAL" send -- 'y'
+    [ "$status" -eq 3 ]
+    [ "$output" = 'laya confirmation in the companion pane: the user must answer it there' ]
+    run "$TERMINAL" read
+    [ "$status" -eq 3 ]
+    run "$TERMINAL" wait --timeout 1 --idle
+    [ "$status" -eq 3 ]
+    run "$TERMINAL" wait --timeout 1 --pattern 'x'
+    [ "$status" -eq 3 ]
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" y Enter
+    run "$TERMINAL" wait --timeout 5 --run 1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'exit=0' ]] || false
+    [ ! -e "$one" ]
+    [ ! -e "$d/1.confirm" ]
+    run "$TERMINAL" run --timeout 2 -- "rm -rf '$two'"
+    [ "$status" -eq 1 ]
+    pane_shows "$two"
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" n Enter
+    run "$TERMINAL" wait --timeout 5 --run 2
+    [ "$status" -eq 0 ]
+    [ "$output" = $'laya: declined by the user\nexit=126' ]
+    [ -d "$two" ]
+    run "$TERMINAL" send -- 'echo again'
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" read
+    [ "$status" -eq 0 ]
+}
+
+# Laya 2
+@test "a caution run prints the note before exit, also through wait --run" {
+    set_fake_laya '{"rules": [{"contains": "touch", "answers": {"risk": "caution", "destructive": 0.4}}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- "touch '$BATS_TEST_TMPDIR/c'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'laya: caution (destructive 0.40)\nexit=0' ]] || false
+    [ -e "$BATS_TEST_TMPDIR/c" ]
+    run "$TERMINAL" run --timeout 1 -- "sleep 2; touch '$BATS_TEST_TMPDIR/d'"
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" wait --timeout 10 --run 2
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'laya: caution (destructive 0.40)\nexit=0' ]] || false
+}
+
+# Laya 5
+@test "run exits 6 and does not run the command when Laya stops" {
+    "$TERMINAL" open >/dev/null
+    stop_fake_laya
+    run "$TERMINAL" run -- "touch '$BATS_TEST_TMPDIR/never'"
+    [ "$status" -eq 6 ]
+    [[ "$output" == *'laya not available: close and open the companion'* ]] || false
+    [ ! -e "$BATS_TEST_TMPDIR/never" ]
+    [ ! -d "$(companion_dir)/busy" ]
+}
+
+@test "a safe-list run sends no command request to Laya" {
+    "$TERMINAL" open >/dev/null
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" run -- 'echo hi'
+    [ "$status" -eq 0 ]
+    [ -z "$(fake_laya_states destructive)" ]
+    run "$TERMINAL" run -- 'true'
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states destructive)" = '"true"' ]
+}
+
+# Laya 1a
+@test "send checks the full line in the shell and in python3, and refuses a dangerous line" {
+    set_fake_laya '{"rules": [
+        {"contains": "rm -rf", "answers": {"risk": "dangerous", "destructive": 0.95}},
+        {"contains": "rmtree", "answers": {"risk": "dangerous", "destructive": 0.9}},
+        {"contains": "clux-caution-word", "answers": {"risk": "caution", "remote_effect": 0.4}}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send -- 'rm -rf '
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send --enter -- '/tmp/clux-x'
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya: dangerous (destructive 0.95): use run, it asks the user' ]
+    [ "$(fake_laya_states destructive | tail -n 1)" = '"rm -rf /tmp/clux-x"' ]
+    "$TERMINAL" send --key C-u >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" send --enter -- 'true clux-caution-word'
+    [ "$status" -eq 0 ]
+    [ "$output" = 'laya: caution (remote_effect 0.40)' ]
+    "$TERMINAL" wait --timeout 5 --idle
+    "$TERMINAL" send --enter -- 'python3 -q' >/dev/null
+    pane_shows '>>>'
+    run "$TERMINAL" send --enter -- "import shutil; shutil.rmtree('/tmp/clux-x')"
+    [ "$status" -eq 6 ]
+    [[ "$(fake_laya_states destructive | tail -n 1)" == '">>> import shutil'* ]] || false
+}
+
+# Laya 3
+@test "run holds an AKIA line and keeps the lines around it" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'printf "a\nAKIAABCDEFGHIJKLMNOP\nb\n"'
+    [ "$status" -eq 0 ]
+    [ "$output" = $'run=1\na\n[held by laya: secret]\nb\nlaya: held 1 lines\nexit=0' ]
+}
+
+# Laya 4
+@test "read and wait --pattern use the guarded text" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'echo visible-marker; echo two; echo three; echo AKIAABCDEFGHIJKLMNOP' >/dev/null
+    run "$TERMINAL" wait --timeout 5 --pattern 'visible-marker'
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" wait --timeout 2 --pattern 'AKIA[A-Z]{16}'
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" read
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'visible-marker'* ]] || false
+    [[ "$output" == *'[held by laya: secret]'* ]] || false
+    [[ "$output" != *'AKIAABCDEFGHIJKLMNOP'* ]] || false
+}
+
+@test "run holds all output and exits 6 when the guard fails" {
+    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'echo guard-marker'
+    [ "$status" -eq 6 ]
+    [[ "$output" == *$'output held: laya not available\nexit=0'* ]] || false
+    [[ "$output" != *'guard-marker'* ]] || false
+    [ ! -d "$(companion_dir)/busy" ]
+}
+
+@test "laya status names the server of this companion" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" laya status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\nserver=external health=ok' ]] || false
+    stop_fake_laya
+    run "$TERMINAL" laya status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\nserver=external health=failed' ]] || false
 }

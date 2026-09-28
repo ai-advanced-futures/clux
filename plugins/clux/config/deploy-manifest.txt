@@ -12,9 +12,10 @@
 #
 #   grep -v '^[[:space:]]*#' deploy-manifest.txt | grep -v '^[[:space:]]*$'
 #
-# Left out on purpose: render-clux-conf.sh, verify-tmux-conf.sh and terminal.sh.
-# Each runs from the plugin tree, never from ~/.config/clux/scripts. The first
-# two run during setup; terminal.sh runs at Claude time through clux:terminal.
+# Left out on purpose: render-clux-conf.sh, verify-tmux-conf.sh, terminal.sh
+# and laya_client.py. Each runs from the plugin tree, never from
+# ~/.config/clux/scripts. The first two run during setup; terminal.sh runs at
+# Claude time through clux:terminal, and terminal.sh runs laya_client.py.
 
 # Libraries. Every script below sources one or both.
 helpers.sh
