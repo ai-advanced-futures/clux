@@ -37,12 +37,12 @@ LAYA_VENV="${XDG_DATA_HOME:-$HOME/.local/share}/clux/laya"
 LAYA_MARKER="$LAYA_VENV/.clux-installed"
 LAYA_PY="${CLUX_LAYA_PYTHON:-$LAYA_VENV/bin/python3}"
 
-# The time budget of run. The sum of the gate with its retry (10.2 s), the
+# The time budget of run. The sum of the gate with its retry (11 s), the
 # prompt wait (2 s), the clear (5 s), this run limit, the last pane probe
-# (10.2 s), the report grace (1 s), one late SECONDS tick (1 s) and the guard
+# (11 s), the report grace (1 s), one late SECONDS tick (1 s) and the guard
 # limit stays 10 s under the 120 s limit of the Bash tool. test/terminal.bats
 # checks the sum. test/laya-live.bats measures the guard time.
-RUN_TIMEOUT_DEFAULT=65
+RUN_TIMEOUT_DEFAULT=64
 LAYA_GUARD_LIMIT=15
 
 # laya install: venv, pip and the checkpoint download share one budget. The
@@ -594,6 +594,14 @@ key_ends_line() {
     return 1
 }
 
+# interrupt_key KEY — C-c, C-d, C-z, C-\ or Escape (spec section 7).
+interrupt_key() {
+    case "$1" in
+        [Cc]-[CcDdZz]|[Cc]-'\'|'^'[CcDdZz]|'^\'|[Ee]scape) return 0 ;;
+    esac
+    return 1
+}
+
 # send_gate TEXT — the command gate for a send that ends a line (spec
 # section 7). check_pane must run first: it sets CURSOR_LINE and
 # SCREEN_ABOVE. The line is the cursor line plus TEXT. At the clux$ prompt
@@ -978,6 +986,13 @@ send_command() {
     esac
     ensure_open
     laya_confirm_pending && { refuse_confirm; return; }
+    # An interrupt key cannot type a value, and it must work when Laya does
+    # not: it skips the Laya pane check.
+    if [ -n "$key" ] && interrupt_key "$key"; then
+        [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
+        send_key "$key"
+        return
+    fi
     check_pane || return
     if [ -n "$key" ]; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage

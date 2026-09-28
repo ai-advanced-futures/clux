@@ -489,6 +489,21 @@ pane_shows() {
     [ ! -d "$(companion_dir)/busy" ]
 }
 
+@test "send --key C-c stops a command when Laya stops" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "sleep 2 && touch '$BATS_TEST_TMPDIR/never'" >/dev/null
+    stop_fake_laya
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send --key Escape
+    [ "$status" -eq 0 ]
+    # Other keys still need Laya.
+    run "$TERMINAL" send --key Up
+    [ "$status" -eq 6 ]
+    sleep 3
+    [ ! -e "$BATS_TEST_TMPDIR/never" ]
+}
+
 @test "a safe-list run sends no command request to Laya" {
     "$TERMINAL" open >/dev/null
     : > "$FAKE_LAYA_LOG"

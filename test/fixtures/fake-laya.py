@@ -19,6 +19,7 @@ two verbs:
       {"asks": "prompt_injection", "fail": 500}
     ],
     "status": [503],       the first requests get these codes, then 200
+    "retry_after": "1",    the Retry-After header of a 503 (as laya-serve)
     "delay": 0,            seconds to wait before each answer
     "body": "not json",    a raw body instead of an answer
     "health_status": 200   the code of GET /health
@@ -142,10 +143,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def reply(self, code, body=None, raw=None):
+    def reply(self, code, body=None, raw=None, retry_after=None):
         data = raw.encode("utf-8") if raw is not None else json.dumps(body).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        if retry_after is not None:
+            self.send_header("Retry-After", retry_after)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -173,7 +176,9 @@ class Handler(BaseHTTPRequestHandler):
             SERVED[0] += 1
         statuses = conf.get("status", [])
         if index < len(statuses) and statuses[index] != 200:
-            return self.reply(statuses[index], BUSY if statuses[index] == 503 else {"detail": "error"})
+            if statuses[index] == 503:
+                return self.reply(503, BUSY, retry_after=str(conf.get("retry_after", "1")))
+            return self.reply(statuses[index], {"detail": "error"})
         text = state_text(body.get("state"))
         for rule in conf.get("rules", []):
             if "fail" in rule and matches(rule, text, questions):

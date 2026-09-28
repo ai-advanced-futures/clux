@@ -7,8 +7,10 @@ All notable changes to clux are documented here.
 ### Changed
 
 - **Breaking: the companion needs Laya.** `clux:terminal` does not operate without a local Laya model (`laya` 0.3.21, English checkpoint). Until the user runs `terminal.sh laya install`, `open` gives exit code 6 and `laya not installed: run terminal.sh laya install`. `open` starts one loopback `laya-serve` for each companion, with a random API key and its log in the private directory (0600). `close`, the `SessionEnd` hook and the reaper stop it. `CLUX_LAYA_URL` names a server that the user starts; it must be a loopback host, and clux never stops it
-- **The default time limit of `run` is 65 seconds** (it was 100 seconds), so that the Laya checks (the command gate, the pane probe and a 15 s output guard) fit in the 120-second limit of the Bash tool
+- **The default time limit of `run` is 64 seconds** (it was 100 seconds), so that the Laya checks (the command gate, the pane probe and a 15 s output guard) fit in the 120-second limit of the Bash tool
 - `wait --pattern` examines the screen each second, not each 0.2 s, and tests the pattern on the guarded text
+- `send --key` with `C-c`, `C-d`, `C-z`, `C-\` or `Escape` does not go through the Laya pane check, so Claude can stop a command when Laya is not available
+- After a 503 from Laya, the client waits for the `Retry-After` time of the server (at most 1 s), then tries one time more
 
 ### Added
 

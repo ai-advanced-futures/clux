@@ -85,7 +85,7 @@ terminal.sh run -- 'git status --short'
 - The first output line is `run=<n>`. Keep `<n>`. You need it for `wait --run <n>`.
 - The last output line is `exit=<rc>`. This is the exit code of the command.
 - The output has a limit of 200 lines. `--max-lines N` changes the limit. When the script cuts lines, it prints a note first.
-- The default time limit is 65 seconds. `--timeout S` changes it.
+- The default time limit is 64 seconds. `--timeout S` changes it.
 - When Laya finds a risk, the line `laya: caution (<reason>)` comes before `exit=<rc>`. The command ran. Tell the user about the risk when it is important.
 - For `run`, the output is not a TTY. For a command that needs a TTY (ssh, vim, a password prompt), use `send`.
 - For a command that starts a background process, use `send`. With `run`, you get the note `output may be incomplete`.
@@ -110,7 +110,7 @@ terminal.sh run -- 'git status --short'
 1. `terminal.sh send --enter -- 'command text'` types the text and pushes Enter.
 2. `terminal.sh wait --pattern 'RE'` waits until the screen shows the extended regex. It examines the screen each second, after the Laya check. `terminal.sh wait --idle` waits until the pane is at its prompt again. When its time limit ends, it prints `pane=<state>`: `yes_no`, `menu`, `pager`, `shell_prompt` or `other`. Use it to select the next step, for example `q` for a pager.
 3. `terminal.sh read` prints the last 50 lines of the screen. `--lines N` changes the number.
-4. `terminal.sh send --key C-c` sends one key. Other key names are, for example, `Up`, `Down` and `Enter`.
+4. `terminal.sh send --key C-c` sends one key. Other key names are, for example, `Up`, `Down` and `Enter`. `C-c`, `C-d`, `C-z`, `C-\` and `Escape` also work when Laya is not available, so you can always stop a command.
 
 Laya examines each line before Enter: `send --enter`, and `send --key` with `Enter`, `C-m` or `C-j`. The line is the text on the cursor line and your text. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 

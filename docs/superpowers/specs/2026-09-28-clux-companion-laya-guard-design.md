@@ -128,7 +128,7 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 ### Limits
 
 - Each request has a time limit of 5 s.
-- At most 16 requests run at one time (a thread pool). This agrees with the server limit `LAYA_MAX_CONCURRENT`. After a 503 the client tries one time more, after 0.2 s.
+- At most 16 requests run at one time (a thread pool). This agrees with the server limit `LAYA_MAX_CONCURRENT`. After a 503 the client tries one time more. It waits for the `Retry-After` time of the server (1 s from `laya-serve`), and never more than 1 s.
 - The `output` subcommand has a total time limit of 15 s. When the limit ends, the client exits 1. This 15 s limit is a placeholder. [inferred] Section 8 gives the full time budget and the 120 s bound it must fit. [inferred]
 
 ## 6. Laya server lifecycle
@@ -183,6 +183,8 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 ## 7. Command gate
 
 The gate applies to `run`, and to each `send` that ends a line: `send --enter` and `send --key Enter` (also `C-m` and `C-j`). This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
+
+An interrupt key (`send --key C-c`, `C-d`, `C-z`, `C-\` or `Escape`) does not end a line and cannot type a value. It does not go through the Laya pane check, so Claude can stop a command in the pane when Laya is not available. A Laya confirmation in the pane still refuses it with exit code 3.
 
 For `send`, the state that goes to Laya is:
 
@@ -272,7 +274,7 @@ Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and
 
 ### Time
 
-The output guard runs inside the time of the verb. The guard limit is 15 s. When the limit ends, all output is held (as when the client fails). The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool. The 15 s guard limit and the 90 s `run` limit are placeholders. [inferred] The plan must set both from a measured time budget. [inferred] That budget must add the gate (5 s, or 10.2 s with the 503 retry), `wait_for_prompt` (2 s), the clear (5 s), the report grace (1 s), and the guard limit. [inferred] The sum must stay under the 120 s limit of the Bash tool. [inferred] A normal 200-line output that exceeds the guard limit is held in full, the same as a client failure. [inferred]
+The output guard runs inside the time of the verb. The guard limit is 15 s. When the limit ends, all output is held (as when the client fails). The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool. The 15 s guard limit and the 90 s `run` limit are placeholders. [inferred] The plan must set both from a measured time budget. [inferred] That budget must add the gate (5 s, or 11 s with the 503 retry), `wait_for_prompt` (2 s), the clear (5 s), the report grace (1 s), and the guard limit. [inferred] The sum must stay under the 120 s limit of the Bash tool. [inferred] A normal 200-line output that exceeds the guard limit is held in full, the same as a client failure. [inferred]
 
 ## 9. Pane state
 

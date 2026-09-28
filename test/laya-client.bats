@@ -196,12 +196,29 @@ PY
     [ -z "$output" ]
 }
 
-@test "a 503 then a 200: the client tries one time more" {
+@test "a 503 then a 200: the client tries one time more, after the Retry-After" {
     start_fake_laya '{"status": [503], "answers": {"destructive": 0.9}}'
+    local start=$SECONDS
     run --separate-stderr client command <<<'rm x'
     [ "$status" -eq 0 ]
     [ "$output" = '{"level": "dangerous", "reason": "destructive 0.90"}' ]
     [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 2 ]
+    python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import laya_client as c
+assert c.retry_after({"Retry-After": "1"}) == 1.0
+assert c.retry_after({"Retry-After": "0"}) == 0.0
+assert c.retry_after({"Retry-After": "30"}) == c.RETRY_DELAY
+assert c.retry_after({"Retry-After": "nan"}) == c.RETRY_DELAY
+assert c.retry_after({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}) == c.RETRY_DELAY
+assert c.retry_after({}) == c.RETRY_DELAY' "$(dirname "$LAYA_CLIENT")"
+    [ $((SECONDS - start)) -ge 1 ]
+}
+
+@test "a 503 with a long Retry-After: the client waits at most RETRY_DELAY" {
+    start_fake_laya '{"status": [503], "retry_after": "30", "answers": {"destructive": 0.9}}'
+    local start=$SECONDS
+    run --separate-stderr client command <<<'rm x'
+    [ "$status" -eq 0 ]
+    [ $((SECONDS - start)) -le 3 ]
 }
 
 @test "two 503 answers: exit 1" {

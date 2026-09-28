@@ -40,7 +40,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 CONFIG = os.path.join(HERE, "..", "config", "laya")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 REQUEST_LIMIT = 5.0
-RETRY_DELAY = 0.2
+RETRY_DELAY = 1.0   # the Retry-After of the server, and the most that the client waits
 GATE_LIMIT = 2 * REQUEST_LIMIT + RETRY_DELAY   # one request, the pause and the retry after a 503
 MESSAGES = {1: "laya: not available", 2: "laya: bad input"}
 
@@ -63,6 +63,20 @@ class Exit(Exception):
 
 class Busy(Exception):
     """The server gave 503: too many requests at one time."""
+
+    def __init__(self, delay):
+        super().__init__()
+        self.delay = delay
+
+
+def retry_after(headers):
+    """The Retry-After seconds of a 503, from 0 to RETRY_DELAY. RETRY_DELAY
+    when the header is not there or is not a number of seconds."""
+    try:
+        delay = float(headers.get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        return RETRY_DELAY
+    return min(max(delay, 0.0), RETRY_DELAY) if delay == delay else RETRY_DELAY
 
 
 def read_stdin():
@@ -144,7 +158,7 @@ class Remote:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             if error.code == 503:
-                raise Busy()
+                raise Busy(retry_after(error.headers))
             raise Fail(1)
         except (OSError, ValueError, http.client.HTTPException):
             raise Fail(1)
@@ -158,10 +172,10 @@ class Remote:
             body["model"] = model
         try:
             result = self.call("POST", "/v1/systemone", body)
-        except Busy:
+        except Busy as busy:
             # The server runs at most LAYA_MAX_CONCURRENT requests at one
-            # time. Try one time more, after RETRY_DELAY.
-            time.sleep(RETRY_DELAY)
+            # time. Try one time more, after the Retry-After of the server.
+            time.sleep(busy.delay)
             try:
                 result = self.call("POST", "/v1/systemone", body)
             except Busy:

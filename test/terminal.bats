@@ -269,9 +269,9 @@ STUB
     # Tenths of a second: the gate with its retry, wait_for_prompt, the clear,
     # the run limit, the last pane_state call, the report grace, the late
     # SECONDS tick and the guard limit.
-    [ $((102 + 20 + 50 + t * 10 + 102 + 10 + 10 + g * 10)) -le 1100 ]
+    [ $((110 + 20 + 50 + t * 10 + 110 + 10 + 10 + g * 10)) -le 1100 ]
     grep -q '^REQUEST_LIMIT = 5.0$' "$LAYA_CLIENT"
-    grep -q '^RETRY_DELAY = 0.2$' "$LAYA_CLIENT"
+    grep -q '^RETRY_DELAY = 1.0 ' "$LAYA_CLIENT"
     grep -q 'local timeout=\$RUN_TIMEOUT_DEFAULT ' "$TERMINAL"
 }
 
