@@ -73,7 +73,7 @@ When `open` gives exit code 6 and `laya not installed: run terminal.sh laya inst
 
 ## Time limits
 
-`run` and `wait` take `--timeout S`. The Laya checks add time to each verb. Each time S + 45 is more than 120, set the Bash tool `timeout` parameter to more than S + 45 seconds. If you do not, the Bash tool stops the call first.
+`run` and `wait` take `--timeout S`. The Laya checks add at most 46 seconds to each verb. Each time S + 56 is more than 120 (S more than 64), set the Bash tool `timeout` parameter to (S + 56) × 1000 milliseconds or more. If you do not, the Bash tool can stop the call during the Laya checks.
 
 ## Run a plain command
 
@@ -115,7 +115,8 @@ terminal.sh run -- 'git status --short'
 
 Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 
-- Text that you send with no `--enter` must show on the cursor line. When the pane does not show it (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
+- At a shell prompt, the cursor must be at the end of the line. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`.
+- Text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 
 - The text of `send` must not contain a control character, for example a newline, a carriage return or a tab (exit code 2). [inferred] Send one line at a time with `--enter` or `--key` (for example `--key Tab`). [inferred]
 - When Laya finds a risk, `send` prints `laya: caution (<reason>)` and sends the line.
@@ -141,7 +142,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
 | 4 | No companion is open for this session. | Use `open`. |
 | 5 | Busy: a run is not complete, or the pane is not at its prompt. No run started. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. |
-| 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
+| 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. Other `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
 
 ## Laya settings
 
@@ -149,7 +150,7 @@ Do not edit the files in `config/laya/`, or the user copies in `~/.config/clux/l
 
 ## Close the companion
 
-`terminal.sh close` clears the history, closes the pane (or stops the private server), stops the Laya server that `open` started, and deletes the private files. The `SessionEnd` hook does the same at the end of the session.
+`terminal.sh close` clears the history, closes the pane (or stops the private server), deletes the private files, and then stops the Laya server that `open` started. The `SessionEnd` hook does the same at the end of the session.
 
 ## Use from another skill
 

@@ -380,6 +380,29 @@ pane_shows() {
     [ ! -e "$d" ]
 }
 
+@test "close --hook removes the pane and the directory first and does not wait for the server" {
+    local data="$BATS_TEST_TMPDIR/data" d pid pane start
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    CLUX_FAKE_LAYA_IGNORE_TERM=1 CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
+        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    pane=$(companion_pane)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    kill -0 "$pid"
+    start=$SECONDS
+    run "$TERMINAL" close --hook < /dev/null
+    local took=$((SECONDS - start)) alive=0
+    ! kill -0 "$pid" 2>/dev/null || alive=1
+    # The server ignores TERM, so it holds the bats output until kill -9.
+    kill -9 "$pid" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+    [ "$took" -lt 2 ]
+    [ "$alive" -eq 1 ]
+    [ ! -e "$d" ]
+    ! "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null 2>&1 || false
+}
+
 @test "the reaper stops the laya server of an owner pane that is gone" {
     local data="$BATS_TEST_TMPDIR/data" other pid
     make_fake_venv "$data/clux/laya"
@@ -415,6 +438,26 @@ pane_shows() {
     [[ "$output" == *'laya not available: close and open the companion'* ]] || false
 }
 
+@test "wait --pattern goes on after one failed pane probe" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
+    # Only the pane question fails: the guard of the screen still works.
+    set_fake_laya '{"rules": [{"asks": "state", "fail": 500}]}'
+    # Two probes in 1 s: fewer than the three failures in a row that stop it.
+    run "$TERMINAL" wait --timeout 1 --pattern 'clux-no-match'
+    [ "$status" -eq 1 ] || { echo "$output"; false; }
+}
+
+@test "wait --run 6 says that the command continues" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run --timeout 1 -- 'sleep 15'
+    [ "$status" -eq 1 ]
+    stop_fake_laya
+    run "$TERMINAL" wait --timeout 10 --run 1
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya not available: run 1 continues in the pane; use wait --run 1 again' ]
+}
+
 @test "a wait sends no pane request while the screen does not change" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
@@ -432,6 +475,10 @@ pane_shows() {
     run "$TERMINAL" send --enter -- 'hello'
     [ "$status" -eq 0 ]
     [ "$(fake_laya_states destructive | tail -n 1)" = '"hello"' ]
+    # The pane probe gets the blank cursor line as its last line.
+    "$TERMINAL" send --enter -- 'read -r y' >/dev/null
+    "$TERMINAL" wait --timeout 2 --idle >/dev/null || true
+    [[ "$(fake_laya_states state | tail -n 1)" == *'read -r y\n"' ]] || { fake_laya_states state | tail -n 1; false; }
 }
 
 @test "a credential answer from Laya stops a run with exit 3" {
@@ -478,6 +525,10 @@ pane_shows() {
     [ "$status" -eq 0 ]
     [ "$output" = $'laya: declined by the user\nexit=126' ]
     [ -d "$two" ]
+    # send has no safe list, so the screen with clux-danger must go first.
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" clear Enter
+    sleep .5
+    "$REAL_TMUX" -S "$TMUX_SOCKET" clear-history -t "$(companion_pane)"
     run "$TERMINAL" send -- 'echo again'
     [ "$status" -eq 0 ]
     run "$TERMINAL" read
@@ -634,6 +685,38 @@ pane_shows() {
     [ "$status" -eq 0 ]
 }
 
+@test "send does not use the safe list, and a key that a program takes is not hidden text" {
+    "$TERMINAL" open >/dev/null
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" send --enter -- 'pwd'
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states destructive | tail -n 1)" = '"pwd"' ]
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null || true
+    "$TERMINAL" send --enter -- 'seq 1 200 | less' >/dev/null
+    pane_shows ':'
+    run "$TERMINAL" send -- 'q'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$(companion_dir)/hidden" ]
+    sleep .5
+    run "$TERMINAL" send --enter -- 'true'
+    [ "$status" -eq 0 ]
+}
+
+@test "send refuses text when the cursor is not at the end of a shell line" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send -- 'echo abc'
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send --key C-a
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send -- 'rm -rf x; '
+    [ "$status" -eq 2 ]
+    [ "$output" = 'the cursor is not at the end of the line: send --key End or --key C-c first' ]
+    run "$TERMINAL" send --key C-e
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send -- ' def'
+    [ "$status" -eq 0 ]
+}
+
 @test "text that the pane does not show stops send and run until C-c" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'stty -echo' >/dev/null
@@ -688,6 +771,8 @@ pane_shows() {
     run "$TERMINAL" run -- 'echo guard-marker'
     [ "$status" -eq 6 ]
     [[ "$output" == *$'output held: laya not available: use wait --run 1 again\nexit=0'* ]] || false
+    [[ "$output" == *'laya not available: the output stays; use wait --run 1 when Laya answers'* ]] || false
+    [[ "$output" != *'close and open'* ]] || false
     [[ "$output" != *'guard-marker'* ]] || false
     [ ! -d "$(companion_dir)/busy" ]
     set_fake_laya '{}'

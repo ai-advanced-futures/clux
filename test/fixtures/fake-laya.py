@@ -33,11 +33,13 @@ Environment: LAYA_HOST (default 127.0.0.1), LAYA_PORT (0 selects a free port),
 LAYA_API_KEY, CLUX_FAKE_LAYA_ANSWERS, CLUX_FAKE_LAYA_PORT_FILE (gets the
 port), CLUX_FAKE_LAYA_LOG (one JSON line for each request: the state, the
 question names and the model), CLUX_FAKE_LAYA_WIRE (the captures; the default
-is laya-wire next to the real path of this file).
+is laya-wire next to the real path of this file), CLUX_FAKE_LAYA_IGNORE_TERM
+(1: the server ignores SIGTERM, as a slow server).
 """
 import copy
 import json
 import os
+import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -193,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if os.environ.get("CLUX_FAKE_LAYA_IGNORE_TERM") == "1":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     server = ThreadingHTTPServer((os.environ.get("LAYA_HOST", "127.0.0.1"),
                                   int(os.environ.get("LAYA_PORT", "0"))), Handler)
     server.daemon_threads = True

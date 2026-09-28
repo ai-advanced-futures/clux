@@ -178,6 +178,13 @@ refuse_laya() {
     return 6
 }
 
+# The pane probes of a run failed. The command continues and the run keeps
+# the lock, so close would stop it.
+refuse_laya_run() {
+    printf 'laya not available: run %s continues in the pane; use wait --run %s again\n' "$1" "$1" >&2
+    return 6
+}
+
 # Run the client with the server of this companion. The URL and the key come
 # from state, not from the environment, so all verbs of one companion use one
 # server. The client stderr has only fixed messages; each verb prints its own.
@@ -231,12 +238,14 @@ laya_pid_is_server() {
     return 1
 }
 
-# kill, then kill -9 after 3 s.
+# laya_stop_server PID [NOWAIT] — kill, then kill -9 after 3 s. NOWAIT=1
+# sends kill only.
 laya_stop_server() {
     local pid="${1:-}" i=0
     case "$pid" in ''|*[!0-9]*) return 0 ;; esac
     laya_pid_is_server "$pid" || return 0
     kill "$pid" 2>/dev/null || return 0
+    [ "${2:-0}" -eq 0 ] || return 0
     while [ "$i" -lt 15 ] && laya_pid_is_server "$pid"; do sleep .2; i=$((i + 1)); done
     ! laya_pid_is_server "$pid" || kill -9 "$pid" 2>/dev/null || true
 }
@@ -566,7 +575,10 @@ pane_state() {
     capture_to_cursor || return 1
     CURSOR_LINE="${CAPTURE##*$'\n'}"
     [ -z "$PANE_STATE" ] || [ "$CAPTURE" != "$PANE_TEXT" ] || return 0
-    window=$(printf '%s\n' "$CAPTURE" | tail -n 5)
+    # The x keeps a blank cursor line through the command substitution.
+    window=$(printf '%s\n' "$CAPTURE" | tail -n 5 && printf x)
+    window="${window%x}"
+    window="${window%$'\n'}"
     case "$window" in
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
@@ -689,17 +701,20 @@ interrupt_key() {
 # screen, and the safe list does not apply. [inferred] The cursor line is the
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
-    local line flag=--no-safe-list
+    local line prompt=0
     case "$CURSOR_LINE" in
-        'clux$ '*) line="${CURSOR_LINE#'clux$ '}$1"; flag= ;;
-        'clux$') line="$1"; flag= ;;
+        'clux$ '*) line="${CURSOR_LINE#'clux$ '}$1"; prompt=1 ;;
+        'clux$') line="$1"; prompt=1 ;;
         *) line="$CURSOR_LINE$1" ;;
     esac
-    [ -n "$flag" ] || line="${line#"${line%%[![:space:]]*}"}"
+    [ "$prompt" -eq 0 ] || line="${line#"${line%%[![:space:]]*}"}"
     reserved_word "$line"
     # [inferred] A blank line runs nothing, so it needs no request.
     case "$line" in *[![:space:]]*) ;; *) return 0 ;; esac
-    laya_gate --screen ${flag:+"$flag"} < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    # [inferred] No safe list for send: only run checks that the first word
+    # is a program or a builtin (the .safe marker), so on send a function of
+    # the same name would skip Laya.
+    laya_gate --screen --no-safe-list < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
         0) ;;
         2) fail 'laya: bad input' 2 ;;
@@ -715,17 +730,40 @@ send_gate() {
     return 0
 }
 
-# After a send with no Enter, wait at most 1 s until the cursor line ends
-# with the text. The next gate reads the cursor line, so the text must be on
-# the screen. Returns 1 when the text does not show.
+# wait_for_echo TEXT BEFORE — after a send with no Enter, wait at most 1 s
+# until the cursor line ends with the text or is not BEFORE any more. The
+# next gate reads the cursor line, so the text must be on the screen. A
+# program that takes the key and does not show it (q in a pager) changes the
+# line, so that is not hidden text. Returns 1 when the line did not change.
 wait_for_echo() {
     local i=0
     while [ "$i" -lt 5 ]; do
-        capture_cursor_line && case "$CURSOR_LINE" in *"$1") return 0 ;; esac
+        if capture_cursor_line; then
+            case "$CURSOR_LINE" in *"$1") return 0 ;; esac
+            [ "$CURSOR_LINE" = "$2" ] || return 0
+        fi
         sleep .2
         i=$((i + 1))
     done
     return 1
+}
+
+# shell_line — the cursor line is a shell prompt: the clux$ prompt, or a
+# prompt that Laya calls shell_prompt (ssh, python3, psql).
+shell_line() {
+    case "$CURSOR_LINE" in 'clux$'*) return 0 ;; esac
+    [ "$PANE_STATE" = shell_prompt ]
+}
+
+# cursor_mid_line — there is text after the cursor on the cursor row.
+cursor_mid_line() {
+    local pos x y row
+    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y}') || return 1
+    x="${pos% *}"
+    y="${pos#* }"
+    row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 1
+    rtrim "$row"
+    [ "${#RTRIM}" -gt "$x" ]
 }
 
 hidden_text() { [ -e "$D/hidden" ]; }
@@ -937,8 +975,8 @@ report_run() {
             # .out stays, so wait --run gives the output when Laya answers.
             printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
             release_busy
-            refuse_laya
-            return
+            printf 'laya not available: the output stays; use wait --run %s when Laya answers\n' "$n" >&2
+            return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
         [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
@@ -1053,7 +1091,7 @@ run_command() {
     case $? in
         0) report_run "$n" "$max" ;;
         3) refuse_credential ;;
-        6) refuse_laya ;;
+        6) refuse_laya_run "$n" ;;
         *)
             printf 'time limit: run %s continues in the pane; use wait --run %s\n' "$n" "$n" >&2
             return 1
@@ -1062,7 +1100,7 @@ run_command() {
 }
 
 send_command() {
-    local enter=0 key="" text=""
+    local enter=0 key="" text="" before
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --enter) enter=1; shift ;;
@@ -1102,6 +1140,13 @@ send_command() {
         return
     fi
     [ -n "$text" ] || usage
+    # The gate examines the cursor line plus the text, so the text must go
+    # at the end of the line. After Home or Left in a shell it goes in the
+    # middle.
+    if shell_line && cursor_mid_line; then
+        fail 'the cursor is not at the end of the line: send --key End or --key C-c first' 2
+    fi
+    before="$CURSOR_LINE"
     send_gate "$text" || return
     send_literal "$text"
     if [ "$enter" -eq 1 ]; then
@@ -1110,7 +1155,7 @@ send_command() {
     fi
     # Text that the pane does not show (after stty -echo) cannot be examined
     # by the next gate, so each later send and run refuses until C-c.
-    wait_for_echo "$text" || { : > "$D/hidden"; refuse_hidden; return; }
+    wait_for_echo "$text" "$before" || { : > "$D/hidden"; refuse_hidden; return; }
 }
 
 read_command() {
@@ -1160,7 +1205,7 @@ wait_command() {
             case $? in
                 0) report_run "$value" "$max" ;;
                 3) refuse_credential ;;
-                6) refuse_laya ;;
+                6) refuse_laya_run "$value" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1182,7 +1227,11 @@ wait_command() {
             deadline=$((SECONDS + timeout))
             while :; do
                 laya_confirm_pending && { refuse_confirm; return; }
-                check_pane || return
+                probe_pane
+                case $? in
+                    3) refuse_credential; return ;;
+                    6) refuse_laya; return ;;
+                esac
                 # The guard runs only when the screen changed and the raw
                 # screen matches: the guarded text is the raw text with
                 # some lines replaced, so it cannot match when the raw text
@@ -1226,10 +1275,13 @@ close_command() {
     [ -z "$owner" ] || TMUX_PANE="%${owner#%}"
     terminal_init
     state_load || return 0
-    laya_stop_server "$S_LAYA_PID"
+    # The screen, the pane and $D (with the key) go first: the SessionEnd
+    # hook has 5 s, and the server can be slow to stop. In --hook mode the
+    # server gets TERM with no wait.
     tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
+    laya_stop_server "$S_LAYA_PID" "$hook"
 }
 
 # Install step 1. [inferred] The first of these names that is Python 3.10 or

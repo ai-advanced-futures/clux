@@ -157,7 +157,7 @@ Each Claude Code session has its own server. Each server uses about 1–2 GB of 
 
 ### Stop
 
-- `close` and `close --hook` stop the server with `kill <laya_pid>`, then `kill -9` after 3 s. They delete `$D/laya.log` with `$D`.
+- `close` and `close --hook` first clear the pane history, remove the pane and delete `$D` (with `laya.log` and the key). [inferred] Then they stop the server: `close` with `kill <laya_pid>`, then `kill -9` after 3 s; `close --hook` with `kill` only and no wait, because the `SessionEnd` hook has little time. [inferred]
 - clux stops only a process whose pid is in `state` and whose command line contains `laya-serve`. This prevents a kill of a new process that has the same pid.
 - The reaper (3.9.0) also stops the server of an owner pane that is gone.
 
@@ -182,18 +182,18 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 
 ## 7. Command gate
 
-The gate applies to `run` and to each `send`: text with or without `--enter`, and each `--key` except the interrupt keys below. A key goes to the gate because `bind` can make any key end a line. The line is the cursor line plus the new text, so text sent in pieces is examined as one line. This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
+The gate applies to `run` and to each `send`: text with or without `--enter`, and each `--key` except the interrupt keys below. A key goes to the gate because `bind` can make any key end a line. The line is the cursor line plus the new text, so text sent in pieces is examined as one line. This is true in all pane states, not only at the `clux$` prompt. [inferred] At the `clux$` prompt, and when Laya gives `shell_prompt`, the cursor must be at the end of the line: text after the cursor (after `Home` or `Left`) would put the new text in the middle, and the gate would examine a different line. Then `send` refuses the text with exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
 
 An interrupt key (`send --key C-c`, `C-d`, `C-z`, `C-\` or `Escape`) does not end a line and cannot type a value. It does not go through the Laya pane check, so Claude can stop a command in the pane when Laya is not available. A Laya confirmation in the pane still refuses it with exit code 3.
 
-Text that `send` types with no `--enter` must show on the cursor line within 1 s. When it does not (for example after `stty -echo`), the next gate cannot examine it. Then `send` writes the marker `hidden` and exits 3 with `text that the pane does not show is on the line: send --key C-c first`. While the marker exists, each `send` and `run` refuses with exit code 3. Only `send --key C-c` removes it, because C-c discards the line. [inferred] A `bind` that makes a key type hidden text is outside this check; the gate examines the `bind` command itself.
+Text that `send` types with no `--enter` must show on the cursor line within 1 s. [inferred] When the cursor line changes to other text (a program took the key, for example `q` in `less`), the text is not hidden. When the cursor line stays the same (for example after `stty -echo`), the next gate cannot examine it. Then `send` writes the marker `hidden` and exits 3 with `text that the pane does not show is on the line: send --key C-c first`. While the marker exists, each `send` and `run` refuses with exit code 3. Only `send --key C-c` removes it, because C-c discards the line. [inferred] A `bind` that makes a key type hidden text is outside this check; the gate examines the `bind` command itself.
 
 For `send`, the state that goes to Laya is:
 
 - `line`: the full input line. At the `clux$` prompt this is the text after `clux$ ` on the cursor line, plus the new text. Thus a command that Claude types in parts gets the same check as a command in one part. In other states (a continuation line, a heredoc, a program prompt) there is no `clux$`, and `line` is the cursor line plus the new text.
 - `screen`: the 4 lines above the cursor line, so that Laya knows the program (for example `mysql>` or a `[y/N]` question).
 
-The safe list applies only at the `clux$` prompt.
+The safe list applies only to `run`. [inferred] `send` always goes to Laya: only `run` checks with `type -t` that the first word is a program or a builtin (see below), so on `send` a function with the name of a safe-list word would skip Laya.
 
 ### Safe list
 
@@ -201,7 +201,7 @@ A command skips Laya only when all of these are true:
 
 - The command's first words equal one full line of `config/laya/safe-commands.txt`, word for word (for example `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `git status`, `git log`, `git diff`). [inferred] `git` alone does not match the `git status` line. [inferred] `git push --force` matches no line. [inferred]
 - No word after the matched line starts with `--`. A long option can write a file (`git diff --output=<file>`), so `git log --output=<file>` and `ls --color` go to Laya. Short options (`ls -la`, `git log -3`) do not end the match.
-- It is one simple command. It contains none of these: `;` `|` `&` `<` `>` `$` `` ` `` `(` `)` newline.
+- It is one simple command of plain words. It contains none of these: `;` `|` `&` `<` `>` `$` `` ` `` `(` `)` newline, and none of `'` `"` `\` `{` `}` `*` `?` `[` `]` `~` `!`. [inferred] Bash changes a word with quotes, a backslash, braces, a glob or `~` before the command gets it: `git diff '--output=x'`, `git diff {--output=x,}` and `git diff \--output=x` all give `--output=x`.
 Thus `ls -la` skips Laya, and `ls $(rm -rf x)` goes to Laya.
 
 The pane shell runs `shopt -u expand_aliases`, so an alias cannot change what a safe-list word runs. `run` writes `<n>.safe` for a safe-list command. For such a run, `__clux_run` checks the first word with `type -t`. When it is not a program or a builtin (for example a function of the same name), the run prints `refused: the first word is an alias or a function in the companion shell` and exits 126. [inferred] The safe list trusts `PATH`; a command that changes `PATH` goes to Laya.
@@ -258,6 +258,8 @@ The guard applies to all text that goes from the pane to Claude:
    - the line alone is above the line threshold (default 0.75), or
    - the pair is above the threshold, and the line above alone is not. Thus the secret is in this line (for example `hunter2` after `Password:`).
 
+   The line above has its own alone score. [inferred] When that score is above the line threshold, the line above is held too, also when its own block was not flagged (a secret on the last line of a block).
+
    Each held line becomes `[held by laya: secret]`.
 6. **Multi-line secrets.** Lines between `-----BEGIN` and `-----END` are held as one unit. A `-----BEGIN` with no matching `-----END` in the text holds to the end of the text. [inferred] `not-secret.txt` (section 15) can remove a hold set by the line check (step 5). [inferred] It never removes a hold set by the PEM rule, the injection rule (step 4), or the half rule below. [inferred] It runs before the half rule counts held lines. [inferred] When more than half of the lines of a block are held, the full block is held.
 7. **Long lines.** When a piece of a long line is flagged, the full line is held.
@@ -273,7 +275,7 @@ Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and
 
 - `run` and `wait --run`: the guarded text, then `laya: held <k> lines` when lines were held, then `exit=<rc>`. The exit code stays 0.
 - `read`: the guarded text.
-- When the client fails: no output text. The line `output held: laya not available: use wait --run <n> again`, then `exit=<rc>`. The verb exits 6. `<n>.out` stays until the next `run`, so `wait --run <n>` gives the output when Laya answers again. For `read` the verb prints nothing and exits 6.
+- When the client fails: no output text. The line `output held: laya not available: use wait --run <n> again`, then `exit=<rc>`. On stderr: `laya not available: the output stays; use wait --run <n> when Laya answers`. The verb exits 6. `<n>.out` stays until the next `run`, so `wait --run <n>` gives the output when Laya answers again. For `read` the verb prints nothing and exits 6.
 - The guard gets at most the last 32768 bytes (`LAYA_GUARD_BYTES`), after the cut to `--max-lines`. Then the verb prints `output cut: the last 32768 bytes`. Thus one very long line does not use the full guard limit. A cut can start inside a PEM key: an `-----END` line with no `-----BEGIN` above it holds from the first line.
 - The raw text stays visible in the pane for the user.
 
@@ -290,9 +292,9 @@ The output guard runs inside the time of the verb. The guard limit is 15 s. When
 - The result is `credential` when Laya gives `credential` or the 3.9.0 regular expressions find a credential prompt. terminal.sh applies this rule. [inferred] It calls the existing `line_is_credential` (3.9.0 bash, unchanged) on the cursor line. [inferred] It ORs that result with the client's `state`. [inferred] The client does not read `credential-patterns.txt`. [inferred]
 - The test `line_at_prompt` (the suffix `clux$`) stays a plain string test. It does not use Laya, because it is the marker of the clux shell and not a decision about content.
 - The wait loops call `pane_state` each fifth tick (each 1 s), as in 3.9.0. `pane_state` keeps the last capture and its answer. When the capture did not change, it sends no request.
-- When the client fails in a wait loop, the loop applies `line_is_credential` to the cursor line and continues. After 3 failed probes in a row, the verb exits 6. Thus one slow answer or one 503 does not stop the wait while the command continues.
+- When the client fails in a wait loop (`wait --run`, `wait --idle`, `wait --pattern` and `run`), the loop applies `line_is_credential` to the cursor line and continues. After 3 failed probes in a row, the verb exits 6. [inferred] For `run` and `wait --run` the message is `laya not available: run <n> continues in the pane; use wait --run <n> again`, because the command still runs. Thus one slow answer or one 503 does not stop the wait while the command continues.
 - The output guard sends at most 12 requests at one time, under `LAYA_MAX_CONCURRENT` (16), so a pane probe gets a server slot while a guard runs.
-- [inferred] The capture keeps a blank cursor line. The cursor line is then empty, not the line above it.
+- [inferred] The capture keeps a blank cursor line. The cursor line is then empty, not the line above it. The client removes only the last newline, so the blank line stays the last line that Laya gets.
 
 `credential` gives exit code 3, as in 3.9.0. The other states are for the skill and for later use. `wait --idle` prints `pane=<state>` when it ends on its time limit, so Claude knows why the pane is not at the prompt.
 

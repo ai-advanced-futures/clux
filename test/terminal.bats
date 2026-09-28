@@ -371,7 +371,9 @@ STUB
     grep -qF 'laya confirmation' "$skill"
     grep -qF '| 6 |' "$skill"
     grep -qF "The default time limit is $t seconds" "$skill"
-    grep -qF "S + $((30 + g))" "$skill"
+    # 46 s of Laya checks at most, plus a 10 s margin.
+    grep -qF "S + 56" "$skill"
+    grep -qF "(S + 56) × 1000" "$skill"
 }
 
 @test "the 4.0.0 release names Laya and the run time limit" {
