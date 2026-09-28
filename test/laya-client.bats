@@ -353,6 +353,15 @@ PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
+@test "output: a block with a total over 512 over two rows is not split" {
+    start_fake_laya '{"rules": [{"contains": "mid", "input_tokens": 300}]}'
+    local text
+    text=$(for i in $(seq 1 20); do echo "mid line $i"; done)
+    run client output --render <<<"$text"
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states prompt_injection | wc -l | tr -d ' ')" -eq 1 ]
+}
+
 @test "output: a single line that Laya cuts is split into pieces" {
     start_fake_laya '{"rules": [{"contains": "LONG", "min_length": 100, "input_tokens": 512}]}'
     local line

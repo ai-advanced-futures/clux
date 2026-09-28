@@ -15,7 +15,7 @@ two verbs:
     "rules": [                                         the first match wins
       {"equals": "hunter2", "answers": {"secret": 0.18}},
       {"contains": "AKIA", "min_lines": 2, "min_length": 10, "answers": {}},
-      {"contains": "cut", "input_tokens": 512},
+      {"contains": "cut", "input_tokens": 512},  tokens of each question row
       {"asks": "prompt_injection", "fail": 500}
     ],
     "status": [503],       the first requests get these codes, then 200
@@ -123,7 +123,9 @@ def answer(conf, state, questions):
         if "input_tokens" in rule and matches(rule, text, questions):
             tokens = rule["input_tokens"]
             break
-    result["usage"]["input_tokens"] = tokens
+    # laya-serve gives the sum over the question rows, one row for each
+    # question, each cut at 512.
+    result["usage"]["input_tokens"] = tokens * max(1, len(questions))
     return result
 
 

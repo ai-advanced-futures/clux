@@ -88,6 +88,8 @@ assert post("cut\ncut")[1]["usage"]["input_tokens"] == 512
 assert post("cut")[1]["usage"]["input_tokens"] < 512
 assert post("LONG and long")[1]["usage"]["input_tokens"] == 512
 assert post("LONG")[1]["usage"]["input_tokens"] < 512
+two = dict(secret, other={"type": "noul", "instructions": "?"})
+assert post("cut\ncut", two)[1]["usage"]["input_tokens"] == 1024
 assert post("x", {"prompt_injection": {"type": "noul", "instructions": "?"}})[0] == 500
 PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }

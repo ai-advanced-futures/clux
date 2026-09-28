@@ -322,7 +322,8 @@ def cmd_pane(args):
 
 
 BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
-CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens
+CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens for each row
+ROW_MARGIN = 16            # measured: the two output-block rows differ by 9 tokens
 MAX_PARALLEL = 12          # under LAYA_MAX_CONCURRENT (16), so a pane probe gets a slot
 DEFAULT_OUTPUT_LIMIT = 15.0
 
@@ -380,15 +381,19 @@ def halve(block):
 
 
 def check_blocks(pool, runner, pol, blocks):
-    """Send each block with the block policy. When usage.input_tokens is
-    CUT_TOKENS or more, Laya cut the block: send its halves again. Give the
-    list of (block, answer)."""
+    """Send each block with the block policy. laya-serve gives
+    usage.input_tokens as the sum over the question rows (one row for each
+    boolean question of this policy), and it cuts each row at CUT_TOKENS.
+    When the mean row is within ROW_MARGIN of CUT_TOKENS, the longest row
+    can be cut: send the halves of the block again. Give the list of
+    (block, answer)."""
+    rows = max(1, len(pol["schema"]["properties"]))
     done, pending = [], blocks
     while pending:
         answers = list(pool.map(lambda block: ask(runner, pol, block_text(block)), pending))
         again = []
         for block, answer in zip(pending, answers):
-            if answer.tokens() >= CUT_TOKENS:
+            if answer.tokens() / rows >= CUT_TOKENS - ROW_MARGIN:
                 again.extend(half for half in halve(block)
                              if any(unit.text.strip() for unit in half))
             else:

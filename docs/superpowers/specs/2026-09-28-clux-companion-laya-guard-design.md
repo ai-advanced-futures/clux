@@ -29,7 +29,7 @@ These facts come from the laya-local session and from tests on this machine (202
 - Server settings are environment variables: `LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`, `LAYA_MODELS`, `LAYA_API_KEY`, `LAYA_MAX_CONCURRENT` (default 16; more requests at one time get 503), `LAYA_LOG_LEVEL` (default `info`).
 - SDK: `laya.LayaDecision(json_schema, base_url=..., api_key=..., return_details=True).invoke(state)` sends one request to the server and gives a `DecisionResult` with the probabilities. The import does not load torch. Measured: 0.12 s for the full process (Python start, import, one request).
 - Speed on MPS after the first call: one question about 22–26 ms over HTTP; four questions about 38 ms; an input of about 500 tokens about 160 ms. The first call after a start is about 1.4 s. The load of three checkpoints is about 17 s.
-- The English checkpoint reads at most 512 tokens. It cuts the text after 512 tokens with no error. The answer gives the real count in `usage.input_tokens`.
+- The English checkpoint reads at most 512 tokens. It cuts the text after 512 tokens with no error. The answer gives the real count in `usage.input_tokens`. That count is the sum over the question rows: one row for each question, each with the question text and the state, each cut at 512 (`agent.py`). Measured: one state with the two output-block questions gives 83 = 46 + 37.
 - Laya can only detect. It cannot remove or change text.
 - Measured risk results: `rm -rf ~/dev` destructive 0.85; `git push --force origin main` 0.79; `curl … | sudo bash` 0.94; `ls -la ~/dev` 0.33 and `caution` (a false positive).
 
@@ -252,7 +252,7 @@ The guard applies to all text that goes from the pane to Claude:
 
 1. **Blocks.** The client splits the text into blocks of complete lines. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
 2. **Block check.** The client sends all blocks with `output-block.json`, at most 12 at one time. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
-3. **Cut text.** When `usage.input_tokens` of an answer is 512 or more, Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
+3. **Cut text.** The client divides `usage.input_tokens` by the number of questions of the block policy (2). When that mean row is 496 (512 minus a margin of 16) or more, the longest row can be cut, so Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
 4. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
 5. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line two times with `output-line.json` (the same `secret` question): the line alone, and the line with the line above it. A line is held when:
    - the line alone is above the line threshold (default 0.75), or
@@ -335,7 +335,7 @@ The 3.9.0 codes stay. One code is new.
   4. The fake server gives 503, then 200: the client tries one time more and gives the result.
   5. No server, a time-out, bad JSON: the client exits 1 and prints no input text to stdout or stderr.
   6. Terminal text never goes to stderr (a test sends a unique marker and greps stderr).
-  7. A block that the fake server answers with `input_tokens` 512 is split and sent again.
+  7. A block that the fake server answers with `input_tokens` 512 for each row is split and sent again. A block with 300 for each row (600 in total) is not split. The fake server gives the sum over the rows, as `laya-serve` does.
   8. The pair rule: `hunter2` after `Password:` is held; the line after a held secret line is not held only because of that secret.
   9. `secret-values.txt` holds an `AKIA…` line when the fake server gives 0 for it.
 - `test/terminal.bats`: `CLUX_LAYA_URL` with a host that is not loopback gives exit 6; `open` with no venv gives exit 6 and the install message; the regex layer adds `credential` when the client answer is `other` and `line_is_credential` matches. [inferred]
