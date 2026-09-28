@@ -111,12 +111,12 @@ terminal.sh run -- 'git status --short'
 1. `terminal.sh send --enter -- 'command text'` types the text and pushes Enter.
 2. `terminal.sh wait --pattern 'RE'` waits until the screen shows the extended regex. It examines the screen each second, after the Laya check. `terminal.sh wait --idle` waits until the pane is at its prompt again. When its time limit ends, it prints `pane=<state>`: `yes_no`, `menu`, `pager`, `shell_prompt` or `other`. Use it to select the next step, for example `q` for a pager.
 3. `terminal.sh read` prints the last 50 lines of the screen. `--lines N` changes the number.
-4. `terminal.sh send --key C-c` sends one key. Other key names are, for example, `Up`, `Down` and `Enter`. `C-c`, `C-d`, `C-z`, `C-\` and `Escape` also work when Laya is not available, so you can always stop a command.
+4. `terminal.sh send --key C-c` sends one key. Other key names are, for example, `Up`, `Down`, `Enter`, `PageDown` and `M-x`. A key must be a key name: other text, and one character alone, gives exit code 2. Send text with `send -- TEXT`. `C-c`, `C-d`, `C-z`, `C-\` and `Escape` also work when Laya is not available, so you can always stop a command.
 
 Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 
 - At a shell prompt, the cursor must be at the end of the line. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`.
-- Text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
+- At a shell prompt, text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 
 - The text of `send` must not contain a control character, for example a newline, a carriage return or a tab (exit code 2). [inferred] Send one line at a time with `--enter` or `--key` (for example `--key Tab`). [inferred]
 - When Laya finds a risk, `send` prints `laya: caution (<reason>)` and sends the line.
@@ -141,7 +141,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. | Correct the call, or tell the user. |
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
 | 4 | No companion is open for this session. | Use `open`. |
-| 5 | Busy: a run is not complete, or the pane is not at its prompt. No run started. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. |
+| 5 | Busy: a run is not complete, the pane is not at its prompt, or the output of the last run is held because Laya did not answer. No run started. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. |
 | 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. Other `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
 
 ## Laya settings

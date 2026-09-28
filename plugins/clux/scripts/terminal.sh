@@ -192,16 +192,10 @@ laya_call() {
     CLUX_LAYA_URL="$S_LAYA_URL" CLUX_LAYA_KEY="$S_LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" "$@" 2>/dev/null
 }
 
-# The same rule as the client: http, a loopback host, and no user part.
+# The client makes the check (http, a loopback host, no user part), so the
+# rule is in one place.
 laya_url_is_loopback() {
-    local rest="${1#http://}" host
-    [ "$rest" != "$1" ] || return 1
-    rest="${rest%%/*}"
-    case "$rest" in *@*) return 1 ;; esac
-    case "$rest" in '[::1]'|'[::1]:'*) return 0 ;; esac
-    host="${rest%%:*}"
-    case "$host" in 127.0.0.1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]) return 0 ;; esac
-    return 1
+    "$LAYA_PY" "$LAYA_CLIENT" check-url "$1" >/dev/null 2>&1
 }
 
 # "Installed" is the marker of `laya install` and the English checkpoint in
@@ -238,16 +232,36 @@ laya_pid_is_server() {
     return 1
 }
 
-# laya_stop_server PID [NOWAIT] — kill, then kill -9 after 3 s. NOWAIT=1
-# sends kill only.
+# laya_stop_server PID... — kill each server, then kill -9 each one that
+# still runs after 3 s. One wait for all, so the reaper of open does not
+# wait 3 s for each dead companion.
 laya_stop_server() {
-    local pid="${1:-}" i=0
-    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-    laya_pid_is_server "$pid" || return 0
-    kill "$pid" 2>/dev/null || return 0
-    [ "${2:-0}" -eq 0 ] || return 0
-    while [ "$i" -lt 15 ] && laya_pid_is_server "$pid"; do sleep .2; i=$((i + 1)); done
-    ! laya_pid_is_server "$pid" || kill -9 "$pid" 2>/dev/null || true
+    local pid live=() left i=0
+    for pid in "$@"; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        laya_pid_is_server "$pid" || continue
+        kill "$pid" 2>/dev/null && live+=("$pid")
+    done
+    while [ "${#live[@]}" -gt 0 ] && [ "$i" -lt 15 ]; do
+        left=()
+        for pid in "${live[@]}"; do
+            ! laya_pid_is_server "$pid" || left+=("$pid")
+        done
+        live=(${left[@]+"${left[@]}"})
+        [ "${#live[@]}" -gt 0 ] || return 0
+        sleep .2
+        i=$((i + 1))
+    done
+    for pid in ${live[@]+"${live[@]}"}; do
+        ! laya_pid_is_server "$pid" || kill -9 "$pid" 2>/dev/null || true
+    done
+}
+
+# laya_stop_server_later PID — the same stop in a process that the hook does
+# not wait for. It ignores HUP and TERM, so the end of the session does not
+# stop it before its kill -9.
+laya_stop_server_later() {
+    ( trap '' HUP INT TERM; laya_stop_server "$1" ) < /dev/null > /dev/null 2>&1 3>&- &
 }
 
 # laya_start_server LOG OFFLINE — start laya-serve on a free loopback port
@@ -279,6 +293,22 @@ laya_wait_health() {
         [ "$SECONDS" -lt "$1" ] || return 1
         sleep .5
     done
+    # [inferred] The port was free when the client found it, but another
+    # process can take it before laya-serve does. That process would get
+    # the key and the terminal text, so the answer must come from our
+    # server: our process must listen on the port.
+    kill -0 "$LAYA_PID" 2>/dev/null || return 2
+    laya_owns_port "$LAYA_PID" "${LAYA_URL##*:}" || return 2
+}
+
+# laya_owns_port PID PORT — PID listens on the loopback TCP PORT. It uses
+# lsof, else ss. [inferred] With neither tool it cannot check and returns 0.
+laya_owns_port() {
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -a -p "$1" -iTCP:"$2" -sTCP:LISTEN >/dev/null 2>&1
+    elif command -v ss >/dev/null 2>&1; then
+        ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1,"
+    fi
 }
 
 # Spec section 6, step 7: health for at most 60 s, then a warm-up request,
@@ -380,10 +410,13 @@ kill_companion() {
     esac
 }
 
+# remove_companion_dir DIR KILL_SPLIT — the reaper adds the server pid to
+# REAP_PIDS; reap_companions stops all of them with one wait.
+REAP_PIDS=()
 remove_companion_dir() {
     local dir="$1" kill_split="${2:-0}"
     state_load "$dir" || { rm -rf "$dir"; return; }
-    laya_stop_server "$S_LAYA_PID"
+    [ -z "$S_LAYA_PID" ] || REAP_PIDS+=("$S_LAYA_PID")
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" "$kill_split"
     rm -rf "$dir"
 }
@@ -417,6 +450,8 @@ reap_companions() {
             kill -0 "$pid" 2>/dev/null || remove_companion_dir "$dir" 0
         fi
     done
+    [ "${#REAP_PIDS[@]}" -eq 0 ] || laya_stop_server "${REAP_PIDS[@]}"
+    REAP_PIDS=()
 }
 
 list_command() {
@@ -629,7 +664,8 @@ check_pane() {
 
 GATE_LEVEL=
 GATE_REASON=
-LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)"'
+GATE_SAFE_LIST=0
+LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)", "safe_list": (true|false)'
 
 # laya_gate [--screen] [--no-safe-list] < TEXT — the command gate of the
 # client (spec section 7). Sets GATE_LEVEL and GATE_REASON. Returns 2 when
@@ -643,6 +679,8 @@ laya_gate() {
     [[ "$out" =~ $LEVEL_RE ]] || return 6
     GATE_LEVEL="${BASH_REMATCH[1]}"
     GATE_REASON="${BASH_REMATCH[2]}"
+    GATE_SAFE_LIST=0
+    [ "${BASH_REMATCH[3]}" != true ] || GATE_SAFE_LIST=1
 }
 
 GUARD_HELD=0
@@ -683,6 +721,32 @@ reserved_word() {
     case "$1" in
         *__clux_*) fail 'refused: __clux_ names are for the companion only' 2 ;;
     esac
+}
+
+# key_name KEY — a tmux key name: a named key (Enter, Up, F5 and more), or
+# a modifier (C-, M-, S-) with one character or a named key, or ^X. tmux
+# types any other argument as text, with no echo check, so send refuses it
+# (exit 2). One character alone is text too: send it with send -- TEXT.
+key_name() {
+    local k="$1" mods=0 rc=1 nocase
+    # tmux reads a key name with no case (enter is Enter).
+    nocase=$(shopt -p nocasematch)
+    shopt -s nocasematch
+    while :; do
+        case "$k" in
+            [CcMmSs]-?*) k="${k#??}"; mods=1 ;;
+            *) break ;;
+        esac
+    done
+    case "$k" in
+        Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|End) rc=0 ;;
+        PageUp|PgUp|PageDown|PgDn|NPage|PPage|Insert|IC|Delete|DC) rc=0 ;;
+        F[1-9]|F1[0-2]) rc=0 ;;
+        '^'?) [ "$mods" -ne 0 ] || rc=0 ;;
+        ?) [ "$mods" -ne 1 ] || rc=0 ;;
+    esac
+    $nocase
+    return "$rc"
 }
 
 # interrupt_key KEY — C-c, C-d, C-z, C-\ or Escape (spec section 7).
@@ -730,14 +794,14 @@ send_gate() {
     return 0
 }
 
-# wait_for_echo TEXT BEFORE — after a send with no Enter, wait at most 1 s
+# wait_for_echo TEXT BEFORE — after a send with no Enter, wait at most 2 s
 # until the cursor line ends with the text or is not BEFORE any more. The
 # next gate reads the cursor line, so the text must be on the screen. A
 # program that takes the key and does not show it (q in a pager) changes the
 # line, so that is not hidden text. Returns 1 when the line did not change.
 wait_for_echo() {
     local i=0
-    while [ "$i" -lt 5 ]; do
+    while [ "$i" -lt 10 ]; do
         if capture_cursor_line; then
             case "$CURSOR_LINE" in *"$1") return 0 ;; esac
             [ "$CURSOR_LINE" = "$2" ] || return 0
@@ -756,14 +820,15 @@ shell_line() {
 }
 
 # cursor_mid_line — there is text after the cursor on the cursor row.
+# cursor_x counts screen cells, and a wide character takes 2, so the client
+# counts the cells of the row.
 cursor_mid_line() {
     local pos x y row
     pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y}') || return 1
     x="${pos% *}"
     y="${pos#* }"
     row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 1
-    rtrim "$row"
-    [ "${#RTRIM}" -gt "$x" ]
+    printf '%s\n' "$row" | "$LAYA_PY" "$LAYA_CLIENT" after-cursor "$x" >/dev/null 2>&1
 }
 
 hidden_text() { [ -e "$D/hidden" ]; }
@@ -911,6 +976,19 @@ send_key() { tmux_state send-keys -t "$S_PANE" "$1"; }
 
 release_busy() { rmdir "$D/busy" 2>/dev/null || true; }
 
+# release_run N — free the lock only for the last run. wait --run on an older
+# run must not free the lock of a run that continues.
+release_run() {
+    [ "$1" -ne "${S_SEQ:-0}" ] || release_busy
+}
+
+# The last run has output that the guard could not examine (<n>.held). It
+# keeps the lock, so no new run deletes that output, until wait --run gives
+# it.
+output_held() {
+    [ "${S_SEQ:-0}" -gt 0 ] && [ -e "$D/$S_SEQ.held" ]
+}
+
 # The last run was secret. Its text can still be on the screen, so read and
 # wait --pattern refuse until the next run clears the screen and the history.
 last_run_secret() {
@@ -935,7 +1013,7 @@ refuse_confirm() {
 # A run that ended on its time limit keeps the lock. The first reader that
 # finds its <n>.rc removes it.
 release_if_done() {
-    [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && release_busy
+    [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! output_held && release_busy
     return 0
 }
 
@@ -954,7 +1032,7 @@ report_run() {
         read -r rc < "$D/$n.rc"
         printf 'laya: declined by the user\nexit=%s\n' "$rc"
         rm -f "$D/$n.out"
-        release_busy
+        release_run "$n"
         return 0
     fi
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
@@ -972,9 +1050,10 @@ report_run() {
             laya_guard "$D/$n.out" || guard=6
         fi
         if [ "$guard" -ne 0 ]; then
-            # .out stays, so wait --run gives the output when Laya answers.
+            # .out stays and the run keeps the lock, so wait --run gives the
+            # output when Laya answers, and no new run deletes it.
             printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
-            release_busy
+            : > "$D/$n.held"
             printf 'laya not available: the output stays; use wait --run %s when Laya answers\n' "$n" >&2
             return 6
         fi
@@ -989,8 +1068,8 @@ report_run() {
         printf 'laya: caution (%s)\n' "$reason"
     fi
     printf 'exit=%s\n' "$rc"
-    rm -f "$D/$n.out"
-    release_busy
+    rm -f "$D/$n.out" "$D/$n.held"
+    release_run "$n"
 }
 
 # The pane probe runs on each fifth step, not each step: the normal exit is
@@ -1051,6 +1130,7 @@ run_command() {
     ensure_open
     # run types __clux_run on the same line, after the hidden text.
     hidden_text && { refuse_hidden; return; }
+    output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ first" 5
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader took is free.
         [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
@@ -1076,7 +1156,7 @@ run_command() {
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
-    [ "$GATE_REASON" != 'safe list' ] || : > "$D/$n.safe"
+    [ "$GATE_SAFE_LIST" -eq 0 ] || : > "$D/$n.safe"
     case "$GATE_LEVEL" in
         caution) printf '%s\n' "$GATE_REASON" > "$D/$n.caution" ;;
         dangerous)
@@ -1117,6 +1197,7 @@ send_command() {
         *[[:cntrl:]]*) fail 'send text must not contain a control character: use --enter or --key' 2 ;;
     esac
     reserved_word "$text"
+    [ -z "$key" ] || key_name "$key" || fail "not a key name: $key: send text with send -- TEXT" 2
     ensure_open
     laya_confirm_pending && { refuse_confirm; return; }
     # An interrupt key cannot type a value, and it must work when Laya does
@@ -1154,7 +1235,10 @@ send_command() {
         return
     fi
     # Text that the pane does not show (after stty -echo) cannot be examined
-    # by the next gate, so each later send and run refuses until C-c.
+    # by the next gate, so each later send and run refuses until C-c. Only a
+    # shell line must show the text: a pager or a menu takes a key and can
+    # keep the same cursor line (space in less).
+    shell_line || return 0
     wait_for_echo "$text" "$before" || { : > "$D/hidden"; refuse_hidden; return; }
 }
 
@@ -1276,12 +1360,17 @@ close_command() {
     terminal_init
     state_load || return 0
     # The screen, the pane and $D (with the key) go first: the SessionEnd
-    # hook has 5 s, and the server can be slow to stop. In --hook mode the
-    # server gets TERM with no wait.
+    # hook has 5 s, and the server can be slow to stop. In --hook mode a
+    # separate process stops the server (kill -9 after 3 s), because $D
+    # with the pid is gone and the reaper cannot find it again.
     tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
-    laya_stop_server "$S_LAYA_PID" "$hook"
+    if [ "$hook" -eq 1 ]; then
+        laya_stop_server_later "$S_LAYA_PID"
+    else
+        laya_stop_server "$S_LAYA_PID"
+    fi
 }
 
 # Install step 1. [inferred] The first of these names that is Python 3.10 or

@@ -119,7 +119,7 @@ Input: the URL comes from the environment variable `CLUX_LAYA_URL`, and the key 
 | Subcommand | stdin | stdout |
 |---|---|---|
 | `health` | nothing | `{"ok": true}`, or exit 1 |
-| `command` | the command text | `{"level": "safe"\|"caution"\|"dangerous", "reason": "destructive 0.85"}` |
+| `command` | the command text | `{"level": "safe"\|"caution"\|"dangerous", "reason": "destructive 0.85", "safe_list": false}` (`safe_list` is `true` only when the safe list gave the level; terminal.sh writes `<n>.safe` from this field, not from the reason text [inferred]) |
 | `output` | the text | `{"text": "<text with held lines replaced>", "held": [{"kind": "secret", "lines": 2}, …]}` |
 | `pane` | the cursor line and the 4 lines above it | `{"state": "credential"\|"yes_no"\|"menu"\|"pager"\|"shell_prompt"\|"other"}` |
 
@@ -135,7 +135,7 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 
 ### With `CLUX_LAYA_URL`
 
-- clux tests that the host is a loopback host. If not, `open` refuses with exit code 6.
+- clux tests that the host is a loopback host. If not, `open` refuses with exit code 6. [inferred] terminal.sh uses the check of the client (`laya_client.py check-url`), so the two cannot disagree (for example on `HTTP://`).
 - clux calls `health`. If it fails, `open` refuses with exit code 6.
 - clux never starts or stops this server. `CLUX_LAYA_KEY` can hold its API key.
 - After the pane is made, `open` writes `laya_url` to `state`. [inferred] It writes `laya_key` too, when `CLUX_LAYA_KEY` is set. [inferred] It does not write `laya_pid`, so `close` knows the server is external. [inferred]
@@ -148,6 +148,7 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 2. It makes `$D`. [inferred]
 3. It selects a free port on `127.0.0.1` and makes a random API key (32 bytes from `/dev/urandom`, in hex).
 4. It starts `laya-serve` in the background with: `LAYA_HOST=127.0.0.1`, `LAYA_PORT=<port>`, `LAYA_API_KEY=<key>`, `LAYA_LOG_LEVEL=warning`, `LAYA_MODELS=english`, `HF_HUB_OFFLINE=1`, `USE_TF=0`. stdout and stderr go to `$D/laya.log` (0600).
+   [inferred] When health answers, the process that `open` started must listen on the port (`lsof`, else `ss`). Another local process can take the free port before `laya-serve` does, and it would get the key and the terminal text. When the check fails, `open` stops as if the server did not start. With neither tool, clux cannot make this check.
 5. It makes the pane. [inferred]
 6. It writes `laya_pid`, `laya_url` and `laya_key` to `state` in one call, together with the pane, mode, socket and seq fields (the file is 0600). [inferred] `laya_url` is `http://127.0.0.1:<port>`. [inferred] `write_state` and `state_load` carry these three fields on every rewrite and every read. [inferred]
 7. It calls `health` each 0.5 s for at most 60 s. Then it sends a warm-up request, because the first call takes about 1.4 s. [inferred] The warm-up tries again until the same 60 s end, because on a cold machine the first request can take more than the 5 s request limit. `open` and `laya install` use one start function (with the log path and `HF_HUB_OFFLINE` as parameters) and one health-wait function.
@@ -157,9 +158,9 @@ Each Claude Code session has its own server. Each server uses about 1–2 GB of 
 
 ### Stop
 
-- `close` and `close --hook` first clear the pane history, remove the pane and delete `$D` (with `laya.log` and the key). [inferred] Then they stop the server: `close` with `kill <laya_pid>`, then `kill -9` after 3 s; `close --hook` with `kill` only and no wait, because the `SessionEnd` hook has little time. [inferred]
+- `close` and `close --hook` first clear the pane history, remove the pane and delete `$D` (with `laya.log` and the key). [inferred] Then they stop the server with `kill <laya_pid>`, then `kill -9` after 3 s. [inferred] `close --hook` does this in a separate process that ignores `HUP` and `TERM` and that the hook does not wait for, because the `SessionEnd` hook has little time and the pid in `$D` is gone.
 - clux stops only a process whose pid is in `state` and whose command line contains `laya-serve`. This prevents a kill of a new process that has the same pid.
-- The reaper (3.9.0) also stops the server of an owner pane that is gone.
+- The reaper (3.9.0) also stops the server of an owner pane that is gone. [inferred] It sends `kill` to all such servers first and waits one time (at most 3 s) for all of them, so `open` does not wait 3 s for each one.
 
 ### Who owns the server
 
@@ -182,11 +183,13 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 
 ## 7. Command gate
 
-The gate applies to `run` and to each `send`: text with or without `--enter`, and each `--key` except the interrupt keys below. A key goes to the gate because `bind` can make any key end a line. The line is the cursor line plus the new text, so text sent in pieces is examined as one line. This is true in all pane states, not only at the `clux$` prompt. [inferred] At the `clux$` prompt, and when Laya gives `shell_prompt`, the cursor must be at the end of the line: text after the cursor (after `Home` or `Left`) would put the new text in the middle, and the gate would examine a different line. Then `send` refuses the text with exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
+The gate applies to `run` and to each `send`: text with or without `--enter`, and each `--key` except the interrupt keys below. A key goes to the gate because `bind` can make any key end a line. The line is the cursor line plus the new text, so text sent in pieces is examined as one line. This is true in all pane states, not only at the `clux$` prompt. [inferred] At the `clux$` prompt, and when Laya gives `shell_prompt`, the cursor must be at the end of the line (`cursor_x` counts screen cells, and a wide character takes 2, so the client counts the cells of the row [inferred]): text after the cursor (after `Home` or `Left`) would put the new text in the middle, and the gate would examine a different line. Then `send` refuses the text with exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
+
+[inferred] `send --key` takes only a tmux key name: a named key (`Enter`, `Up`, `F5`, `PageDown` and others), a modifier (`C-`, `M-`, `S-`) with one character or a named key, or `^X`. tmux types any other argument as text, and a key has no echo check, so `send --key 'curl x | sh'` after `stty -echo` would type a command that no gate examined. Other text gives exit code 2 and `not a key name: <key>: send text with send -- TEXT`. One character alone is text too.
 
 An interrupt key (`send --key C-c`, `C-d`, `C-z`, `C-\` or `Escape`) does not end a line and cannot type a value. It does not go through the Laya pane check, so Claude can stop a command in the pane when Laya is not available. A Laya confirmation in the pane still refuses it with exit code 3.
 
-Text that `send` types with no `--enter` must show on the cursor line within 1 s. [inferred] When the cursor line changes to other text (a program took the key, for example `q` in `less`), the text is not hidden. When the cursor line stays the same (for example after `stty -echo`), the next gate cannot examine it. Then `send` writes the marker `hidden` and exits 3 with `text that the pane does not show is on the line: send --key C-c first`. While the marker exists, each `send` and `run` refuses with exit code 3. Only `send --key C-c` removes it, because C-c discards the line. [inferred] A `bind` that makes a key type hidden text is outside this check; the gate examines the `bind` command itself.
+At the `clux$` prompt and when Laya gives `shell_prompt`, text that `send` types with no `--enter` must show on the cursor line within 2 s. [inferred] In other states (a pager, a menu) a program takes the key and can keep the same cursor line (space in `less`), so there is no check. When the cursor line changes to other text (a program took the key, for example `q` in `less`), the text is not hidden. When the cursor line stays the same (for example after `stty -echo`), the next gate cannot examine it. Then `send` writes the marker `hidden` and exits 3 with `text that the pane does not show is on the line: send --key C-c first`. While the marker exists, each `send` and `run` refuses with exit code 3. Only `send --key C-c` removes it, because C-c discards the line. [inferred] A `bind` that makes a key type hidden text is outside this check; the gate examines the `bind` command itself.
 
 For `send`, the state that goes to Laya is:
 
@@ -251,7 +254,7 @@ The guard applies to all text that goes from the pane to Claude:
 ### Steps
 
 1. **Blocks.** The client splits the text into blocks of complete lines. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
-2. **Block check.** The client sends all blocks with `output-block.json`, at most 12 at one time. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
+2. **Block check.** The client sends all blocks with `output-block.json`, at most 2 at one time. [inferred] `laya-serve` 0.3.21 runs one model request at a time, and the 5 s request limit counts the time in its queue; with 2, a request waits for at most one other request. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
 3. **Cut text.** The client divides `usage.input_tokens` by the number of questions of the block policy (2). When that mean row is 496 (512 minus a margin of 16) or more, the longest row can be cut, so Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
 4. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
 5. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line two times with `output-line.json` (the same `secret` question): the line alone, and the line with the line above it. A line is held when:
@@ -275,7 +278,7 @@ Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and
 
 - `run` and `wait --run`: the guarded text, then `laya: held <k> lines` when lines were held, then `exit=<rc>`. The exit code stays 0.
 - `read`: the guarded text.
-- When the client fails: no output text. The line `output held: laya not available: use wait --run <n> again`, then `exit=<rc>`. On stderr: `laya not available: the output stays; use wait --run <n> when Laya answers`. The verb exits 6. `<n>.out` stays until the next `run`, so `wait --run <n>` gives the output when Laya answers again. For `read` the verb prints nothing and exits 6.
+- When the client fails: no output text. The line `output held: laya not available: use wait --run <n> again`, then `exit=<rc>`. On stderr: `laya not available: the output stays; use wait --run <n> when Laya answers`. The verb exits 6. `<n>.out` stays, and the run keeps the lock (the marker `<n>.held`), so `wait --run <n>` gives the output when Laya answers again. [inferred] Until then a new `run` exits 5 with `the output of run <n> is held: use wait --run <n> first`, so no new run deletes the output. [inferred] `wait --run` on an older run does not free the lock of the last run. For `read` the verb prints nothing and exits 6.
 - The guard gets at most the last 32768 bytes (`LAYA_GUARD_BYTES`), after the cut to `--max-lines`. Then the verb prints `output cut: the last 32768 bytes`. Thus one very long line does not use the full guard limit. A cut can start inside a PEM key: an `-----END` line with no `-----BEGIN` above it holds from the first line.
 - The raw text stays visible in the pane for the user.
 
@@ -293,7 +296,7 @@ The output guard runs inside the time of the verb. The guard limit is 15 s. When
 - The test `line_at_prompt` (the suffix `clux$`) stays a plain string test. It does not use Laya, because it is the marker of the clux shell and not a decision about content.
 - The wait loops call `pane_state` each fifth tick (each 1 s), as in 3.9.0. `pane_state` keeps the last capture and its answer. When the capture did not change, it sends no request.
 - When the client fails in a wait loop (`wait --run`, `wait --idle`, `wait --pattern` and `run`), the loop applies `line_is_credential` to the cursor line and continues. After 3 failed probes in a row, the verb exits 6. [inferred] For `run` and `wait --run` the message is `laya not available: run <n> continues in the pane; use wait --run <n> again`, because the command still runs. Thus one slow answer or one 503 does not stop the wait while the command continues.
-- The output guard sends at most 12 requests at one time, under `LAYA_MAX_CONCURRENT` (16), so a pane probe gets a server slot while a guard runs.
+- The output guard sends at most 2 requests at one time (see section 8), so a pane probe waits for at most 2 requests.
 - [inferred] The capture keeps a blank cursor line. The cursor line is then empty, not the line above it. The client removes only the last newline, so the blank line stays the last line that Laya gets.
 
 `credential` gives exit code 3, as in 3.9.0. The other states are for the skill and for later use. `wait --idle` prints `pane=<state>` when it ends on its time limit, so Claude knows why the pane is not at the prompt.

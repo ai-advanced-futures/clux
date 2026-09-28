@@ -403,6 +403,22 @@ pane_shows() {
     ! "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null 2>&1 || false
 }
 
+@test "close --hook still stops a server that ignores TERM, after the hook ends" {
+    local data="$BATS_TEST_TMPDIR/data" d pid i=0
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    CLUX_FAKE_LAYA_IGNORE_TERM=1 CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
+        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    "$TERMINAL" close --hook < /dev/null
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do sleep .2; i=$((i + 1)); done
+    local alive=0
+    ! kill -0 "$pid" 2>/dev/null || alive=1
+    kill -9 "$pid" 2>/dev/null || true
+    [ "$alive" -eq 0 ]
+}
+
 @test "the reaper stops the laya server of an owner pane that is gone" {
     local data="$BATS_TEST_TMPDIR/data" other pid
     make_fake_venv "$data/clux/laya"
@@ -694,6 +710,10 @@ pane_shows() {
     "$TERMINAL" wait --timeout 5 --idle >/dev/null || true
     "$TERMINAL" send --enter -- 'seq 1 200 | less' >/dev/null
     pane_shows ':'
+    # Space pages the text and the cursor line stays ':'.
+    run "$TERMINAL" send -- ' '
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$(companion_dir)/hidden" ]
     run "$TERMINAL" send -- 'q'
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ ! -e "$(companion_dir)/hidden" ]
@@ -715,6 +735,21 @@ pane_shows() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" send -- ' def'
     [ "$status" -eq 0 ]
+}
+
+@test "send --key refuses text that is not a key name, also after stty -echo" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'stty -echo' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" send --key "touch $BATS_TEST_TMPDIR/keytext"
+    [ "$status" -eq 2 ]
+    [ "$output" = "not a key name: touch $BATS_TEST_TMPDIR/keytext: send text with send -- TEXT" ]
+    run "$TERMINAL" send --key a
+    [ "$status" -eq 2 ]
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ]
+    sleep 1
+    [ ! -e "$BATS_TEST_TMPDIR/keytext" ]
 }
 
 @test "text that the pane does not show stops send and run until C-c" {
@@ -774,11 +809,35 @@ pane_shows() {
     [[ "$output" == *'laya not available: the output stays; use wait --run 1 when Laya answers'* ]] || false
     [[ "$output" != *'close and open'* ]] || false
     [[ "$output" != *'guard-marker'* ]] || false
-    [ ! -d "$(companion_dir)/busy" ]
+    # The run keeps the lock: no new run deletes the held output.
+    [ -d "$(companion_dir)/busy" ]
+    run "$TERMINAL" read
+    [ "$status" -eq 6 ]
+    run "$TERMINAL" run -- 'echo next'
+    [ "$status" -eq 5 ]
+    [ "$output" = 'the output of run 1 is held: use wait --run 1 first' ]
     set_fake_laya '{}'
     run "$TERMINAL" wait --run 1
     [ "$status" -eq 0 ]
     [ "$output" = $'guard-marker\nexit=0' ]
+    [ ! -d "$(companion_dir)/busy" ]
+    run "$TERMINAL" run -- 'echo next'
+    [ "$status" -eq 0 ]
+}
+
+@test "wait --run on an older run does not free the lock of a run that continues" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'true'
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" run --timeout 1 -- 'sleep 6'
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" wait --timeout 2 --run 1
+    [ "$status" -eq 0 ]
+    [ -d "$(companion_dir)/busy" ]
+    run "$TERMINAL" run -- 'echo late'
+    [ "$status" -eq 5 ]
+    run "$TERMINAL" wait --timeout 10 --run 2
+    [ "$status" -eq 0 ]
 }
 
 @test "the guard gets at most the last 32768 bytes of the output" {

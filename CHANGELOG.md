@@ -11,7 +11,12 @@ All notable changes to clux are documented here.
 - `wait --pattern` examines the screen each second, not each 0.2 s, and tests the pattern on the guarded text
 - `send --key` with `C-c`, `C-d`, `C-z`, `C-\` or `Escape` does not go through the Laya pane check, so Claude can stop a command when Laya is not available
 - The safe list stops at a long option (`git diff --output=<file>` goes to Laya), and at quotes, a backslash, braces, a glob or `~`. It applies to `run` only; each `send` goes to Laya. The pane shell does not expand aliases, and a safe-list run whose first word is a function is refused with exit 126
-- `send` refuses text with exit code 2 when the cursor is not at the end of a shell line
+- `send` refuses text with exit code 2 when the cursor is not at the end of a shell line (in screen cells, so wide characters count 2)
+- `send --key` takes only a tmux key name; other text gives exit code 2
+- When the output guard fails, the run keeps its lock until `wait --run <n>` gives the output, so a new run cannot delete it (exit code 5)
+- The output guard sends at most 2 requests at one time: `laya-serve` runs one request at a time
+- `open` makes sure that the process that listens on the Laya port is the server it started, and the reaper stops the servers of gone companions with one wait
+- `close --hook` stops the Laya server in a separate process, with `kill -9` after 3 s
 - `close` removes the pane and the private directory first, then stops the Laya server; `close --hook` does not wait for the server to stop
 - One failed pane probe does not stop a wait (also `wait --pattern`): the wait ends with exit code 6 after 3 failed probes in a row. For `run` and `wait --run` the message says that the command continues. A probe sends no request when the screen did not change
 - Each run command runs one time: a declined command cannot run again through `__clux_run`, and `send` and `run` refuse `__clux_` names (exit code 2)
