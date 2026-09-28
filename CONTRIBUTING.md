@@ -30,6 +30,8 @@ plugins/clux/
 ├── skills/
 │   └── configuring-tmux/        # The whole setup procedure and every rule
 │       └── SKILL.md             #   governing it. /clux:setup invokes this
+│   └── terminal/                # Persistent visible companion terminal
+│       └── SKILL.md             #   Plain, interactive, and secret command rules
 ├── hooks/
 │   ├── hooks.json               # Auto-registered hooks
 │   ├── notify-tmux.sh           # Writes the notification queue
@@ -62,9 +64,11 @@ plugins/clux/
 │   ├── throttle.sh              # Memoizes any #() status job
 │   │                            # Setup time only — never deployed
 │   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
-│   └── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
+│   ├── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
+│   └── terminal.sh              # Companion pane lifecycle and command transport
 ├── config/
 │   ├── deploy-manifest.txt      # The single list of scripts setup deploys
+│   ├── credential-patterns.txt  # Credential prompt includes and exclusions
 │   └── tmux-config.yaml         # Default tmux configuration reference
 ├── docs/
 │   ├── setup-guide.md           # User-facing setup guide

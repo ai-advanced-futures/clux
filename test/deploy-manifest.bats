@@ -22,9 +22,9 @@ _manifest_entries() {
     grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$'
 }
 
-# Runs at setup time only, from the plugin tree, and deliberately not deployed
+# Never deployed: each runs from the plugin tree only.
 # — the manifest header explains why. Keep this list in step with that note.
-SETUP_ONLY="render-clux-conf.sh verify-tmux-conf.sh"
+NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh terminal.sh"
 
 # Sourced, never executed. They must be readable; the executable bit on them
 # means nothing. path.sh does not carry it and helpers.sh does, which is
@@ -75,14 +75,14 @@ EOF
     listed="$(_manifest_entries)"
     for path in "$SCRIPTS_DIR"/*.sh; do
         local base="${path##*/}"
-        case " $SETUP_ONLY " in
+        case " $NOT_DEPLOYED " in
             *" $base "*) continue ;;
         esac
         printf '%s\n' "$listed" | grep -qxF "$base" || unlisted="$unlisted $base"
     done
     [ -z "$unlisted" ] || {
         echo "present in scripts/ but missing from the manifest:$unlisted"
-        echo "add it to the manifest, or to SETUP_ONLY here if it is deliberately not deployed"
+        echo "add it to the manifest, or mark it deliberately not deployed here"
         false
     }
 }
@@ -115,13 +115,13 @@ EOF
     [ -z "$missing" ] || { echo "sourced but not deployed:$missing"; false; }
 }
 
-@test "deploy-manifest: the setup-only scripts are deliberately absent from it" {
+@test "deploy-manifest: the never-deployed scripts are deliberately absent from it" {
     local listed
     listed="$(_manifest_entries)"
-    for base in $SETUP_ONLY; do
-        [ -f "$SCRIPTS_DIR/$base" ] || { echo "$base no longer exists — update SETUP_ONLY"; false; }
+    for base in $NOT_DEPLOYED; do
+        [ -f "$SCRIPTS_DIR/$base" ] || { echo "$base no longer exists — update NOT_DEPLOYED"; false; }
         printf '%s\n' "$listed" | grep -qxF "$base" && {
-            echo "$base is setup-only and must not be deployed, but the manifest lists it"
+            echo "$base must not be deployed, but the manifest lists it"
             false
         }
     done
