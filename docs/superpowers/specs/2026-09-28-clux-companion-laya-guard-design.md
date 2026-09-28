@@ -108,11 +108,11 @@ Each policy file is one JSON object:
 - `schema` goes to `LayaDecision` unchanged. `enum` becomes `choice`, `boolean` becomes `noul`, and an integer with limits becomes `score`. The `description` of each property is the question.
 - `thresholds` are read only by the client.
 - Claude does not edit these files. The skill tells Claude not to edit them.
-- A user copy in `$XDG_CONFIG_HOME/clux/laya/<name>.json` replaces the shipped file of the same name. This follows the user-pattern rule for `credential-patterns.txt`.
+- A user copy in `$XDG_CONFIG_HOME/clux/laya/<name>.json` replaces the shipped file of the same name. This is a replace rule, not the add rule that `credential-patterns.txt` uses in 3.9.0. [inferred] The three `.txt` files (`safe-commands.txt`, `secret-values.txt`, `not-secret.txt`) have no user copy. [inferred] Only the shipped `.txt` files apply. [inferred]
 
 ## 5. The client
 
-`laya_client.py` runs with the Python of the clux venv. It never writes terminal text to stderr or to a log. Its stderr has only fixed error messages.
+`laya_client.py` runs with the Python of the clux venv. When `CLUX_LAYA_PYTHON` is set, `terminal.sh` runs the client with that Python instead. [inferred] The venv path (overridable by `XDG_DATA_HOME`) is otherwise used only to start `laya-serve` and for the "installed" checks in `open` and `laya status`. [inferred] It never writes terminal text to stderr or to a log. Its stderr has only fixed error messages.
 
 Input: the URL comes from the environment variable `CLUX_LAYA_URL`, and the key from `CLUX_LAYA_KEY`. `terminal.sh` sets both.
 
@@ -129,7 +129,7 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 
 - Each request has a time limit of 5 s.
 - At most 16 requests run at one time (a thread pool). This agrees with the server limit `LAYA_MAX_CONCURRENT`. After a 503 the client tries one time more, after 0.2 s.
-- The `output` subcommand has a total time limit of 15 s. When the limit ends, the client exits 1.
+- The `output` subcommand has a total time limit of 15 s. When the limit ends, the client exits 1. This 15 s limit is a placeholder. [inferred] Section 8 gives the full time budget and the 120 s bound it must fit. [inferred]
 
 ## 6. Laya server lifecycle
 
@@ -138,17 +138,20 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 - clux tests that the host is a loopback host. If not, `open` refuses with exit code 6.
 - clux calls `health`. If it fails, `open` refuses with exit code 6.
 - clux never starts or stops this server. `CLUX_LAYA_KEY` can hold its API key.
+- After the pane is made, `open` writes `laya_url` to `state`. [inferred] It writes `laya_key` too, when `CLUX_LAYA_KEY` is set. [inferred] It does not write `laya_pid`, so `close` knows the server is external. [inferred]
 
 ### Without `CLUX_LAYA_URL`
 
-`open` does these steps before it makes the pane:
+`open` does these steps:
 
-1. It finds the venv. If there is no venv, it refuses with exit code 6 and the message `laya not installed: run terminal.sh laya install`.
-2. It selects a free port on `127.0.0.1` and makes a random API key (32 bytes from `/dev/urandom`, in hex).
-3. It starts `laya-serve` in the background with: `LAYA_HOST=127.0.0.1`, `LAYA_PORT=<port>`, `LAYA_API_KEY=<key>`, `LAYA_LOG_LEVEL=warning`, `LAYA_MODELS=english`, `HF_HUB_OFFLINE=1`, `USE_TF=0`. stdout and stderr go to `$D/laya.log` (0600).
-4. It writes `laya_pid`, `laya_port` and `laya_key` to `state` (the file is 0600).
-5. It calls `health` each 0.5 s for at most 60 s. Then it sends one warm-up request, because the first call takes about 1.4 s.
-6. If a step fails, `open` stops the server, deletes `$D`, and exits 6. The pane is not made.
+1. It finds the venv. If there is no venv, it refuses with exit code 6 and the message `laya not installed: run terminal.sh laya install`. Here "no venv" means the marker file that install step 2 below writes is absent, even when the venv directory exists. [inferred] It also checks that the English checkpoint is in the Hugging Face cache. [inferred] When the checkpoint is missing, it refuses in the same way. [inferred] The check is one call from the venv Python to `huggingface_hub.try_to_load_from_cache` with `repo_id="convaiinnovations/laya"` and `filename="model.safetensors"` — the top-level checkpoint file in the snapshot, not `multilingual/model.safetensors` or `typed-decisions/model.safetensors` (checked on this machine, 2026-09-28). [inferred] Because the check is a `huggingface_hub` call, it resolves the cache root the way that library does: `HF_HUB_CACHE` when set, otherwise `$HF_HOME/hub`, otherwise the default `~/.cache/huggingface/hub`. [inferred] `install` step 2 and `laya status` use this same check, so "installed" in one place always agrees with the other two. [inferred]
+2. It makes `$D`. [inferred]
+3. It selects a free port on `127.0.0.1` and makes a random API key (32 bytes from `/dev/urandom`, in hex).
+4. It starts `laya-serve` in the background with: `LAYA_HOST=127.0.0.1`, `LAYA_PORT=<port>`, `LAYA_API_KEY=<key>`, `LAYA_LOG_LEVEL=warning`, `LAYA_MODELS=english`, `HF_HUB_OFFLINE=1`, `USE_TF=0`. stdout and stderr go to `$D/laya.log` (0600).
+5. It makes the pane. [inferred]
+6. It writes `laya_pid`, `laya_url` and `laya_key` to `state` in one call, together with the pane, mode, socket and seq fields (the file is 0600). [inferred] `laya_url` is `http://127.0.0.1:<port>`. [inferred] `write_state` and `state_load` carry these three fields on every rewrite and every read. [inferred]
+7. It calls `health` each 0.5 s for at most 60 s. Then it sends one warm-up request, because the first call takes about 1.4 s.
+8. If a step fails after the pane exists, `open` stops the server, closes the pane, and deletes `$D`, then exits 6. [inferred] If a step fails before the pane exists, `open` stops the server when it started one, and deletes `$D`, then exits 6. [inferred]
 
 Each Claude Code session has its own server. Each server uses about 1–2 GB of memory.
 
@@ -168,18 +171,18 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 
 ### Install
 
-`terminal.sh laya install` does these steps. It is the only step that uses the network.
+`terminal.sh laya install` does these steps. It is the only step that uses the network. It does not call `require_tmux`. [inferred] `terminal.sh laya status` does not call `require_tmux` either. [inferred]
 
 1. It finds `python3` version 3.10 or later. If there is none, it exits 2.
-2. It makes the venv and runs `pip install laya==0.3.21`.
-3. It downloads the English checkpoint to the Hugging Face cache with one call to the model.
+2. When the venv already exists and the English checkpoint is already in the Hugging Face cache (the check named in step 1 of "Without `CLUX_LAYA_URL`" above), it prints the installed version and exits 0. [inferred] It does not reinstall. [inferred] When the venv exists but the checkpoint is missing, it skips venv creation and pip, and goes to step 3. [inferred] Otherwise it makes the venv and runs `pip install laya==0.3.21` inside the same 540 s budget as step 3. The `timeout` command is not in the macOS base system, so step 2 does not use it. [inferred] The venv Python starts `pip install laya==0.3.21` with `subprocess.run(..., timeout=<seconds-left>)`. [inferred] `<seconds-left>` is what remains of the 540 s after step 1. [inferred] The helper exits 124 when the time ends, and with the `pip` exit code otherwise. [inferred] When `pip install` fails or the budget ends during `pip install`, it deletes the partial venv, prints the `pip` error (or the time-out), and exits 1. [inferred] When `pip install` succeeds, it writes a marker file inside the venv. [inferred] "The venv exists" in this step, in `open` step 1 (Without `CLUX_LAYA_URL`), and in `laya status` means this marker file is present, not only that the venv directory exists, so a verb end during `pip install` (for example the Bash tool's own `timeout` at 600000 ms) leaves a venv the next run treats as not yet installed, and step 2 runs again instead of going straight to step 3 with a broken venv. [inferred]
+3. It downloads the English checkpoint to the Hugging Face cache with one call to the model. This call starts `laya-serve` on a free loopback port with the same environment as `open` step 4, but without `HF_HUB_OFFLINE=1`, and with `laya-serve` stdout and stderr sent to a temp file instead of `$D/laya.log` (no companion `$D` exists yet during install). [inferred] The whole install verb has a total time budget of 540 s, measured from the start of step 1, so that steps 1 and 2 (venv creation and `pip install laya==0.3.21` with PyTorch) leave time for step 3 inside the 600000 ms Bash tool `timeout` of section 11. [inferred] It polls `health` every 0.5 s for the time left in that 540 s budget, then stops that server. [inferred] When the 540 s budget is already used up at the start of step 3 (for example after a `pip install` that used the full budget), step 3 does not start `laya-serve` at all; it goes straight to the failure path below. [inferred] A trap on the install verb stops the install `laya-serve` and deletes the temp file if the Bash tool ends the verb at its `timeout`. [inferred] The download fails when the 540 s budget ends, or when the `laya-serve` process exits before `health` succeeds. [inferred] When the download fails, it prints the failure and the last part of the temp file with any line that matches `secret-values.txt` removed, deletes the temp file, stops the server if it is still running, and exits 1. [inferred] The venv stays, so a retry skips venv creation and pip in step 2, and reaches step 3 again. [inferred]
 4. It prints the venv path and the disk space used.
 
-`terminal.sh laya status` prints the venv path, the installed version, and the state of the server of this companion.
+`terminal.sh laya status` prints the venv path, the installed version, and the state of the server of this companion. It uses the same checkpoint-cache check as `open` step 1 to report whether the checkpoint is present. [inferred]
 
 ## 7. Command gate
 
-The gate applies to `run`, and to each `send` that ends a line: `send --enter` and `send --key Enter` (also `C-m` and `C-j`). This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check.
+The gate applies to `run`, and to each `send` that ends a line: `send --enter` and `send --key Enter` (also `C-m` and `C-j`). This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check. `send -- 'text'` refuses with exit code 2 when `text` contains `\n` or `\r`. [inferred] This stops a literal newline from ending a line and skipping the gate. [inferred]
 
 For `send`, the state that goes to Laya is:
 
@@ -192,7 +195,7 @@ The safe list applies only at the `clux$` prompt.
 
 A command skips Laya only when all of these are true:
 
-- Its first word is on `config/laya/safe-commands.txt` (for example `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `git status`, `git log`, `git diff`).
+- The command's first words equal one full line of `config/laya/safe-commands.txt`, word for word (for example `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `git status`, `git log`, `git diff`). [inferred] `git` alone does not match the `git status` line. [inferred] `git push --force` matches no line. [inferred] The rule does not check the words after the matched line. [inferred] `git log --output=<file>` still matches the `git log` line and skips Laya. [inferred]
 - It is one simple command. It contains none of these: `;` `|` `&` `<` `>` `$` `` ` `` `(` `)` newline.
 - It does not start with `sudo`, `env`, `xargs`, `eval`, `command` or `builtin`.
 
@@ -226,7 +229,7 @@ The client gives `dangerous` when one boolean is above its threshold (default 0.
 - On `y` it runs the command as in 3.9.0.
 - On other input it does not run the command. It writes `declined` to `<n>.declined`, `126` to `<n>.rc`, and an empty `<n>.done`. Thus `report_run` does not wait its 1 s grace and does not print the incomplete-output note.
 - While `<n>.confirm` is present, `send` and `read` refuse with exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. Claude cannot type the answer.
-- `run` waits for the answer within its time limit. When the limit ends, the result is exit code 1 as in 3.9.0, and Claude uses `wait --run N`.
+- `run` waits for the answer within its time limit. When the limit ends, the result is exit code 1 as in 3.9.0, and Claude uses `wait --run N`. While `<n>.confirm` is present, `wait_for_run_files` does not call `pane_state`. [inferred] It only checks for the run's result files. [inferred] `wait --run N` works the same way. [inferred] `wait --idle` and `wait --pattern` still call `pane_state` on their normal tick. [inferred] While `<n>.confirm` is present, they exit 3 with the same message as `send` and `read`. [inferred]
 - A declined run gives the line `laya: declined by the user` and `exit=126`.
 
 ## 8. Output guard
@@ -250,9 +253,9 @@ The guard applies to all text that goes from the pane to Claude:
    - the pair is above the threshold, and the line above alone is not. Thus the secret is in this line (for example `hunter2` after `Password:`).
 
    Each held line becomes `[held by laya: secret]`.
-6. **Multi-line secrets.** Lines between `-----BEGIN` and `-----END` are held as one unit. When more than half of the lines of a block are held, the full block is held.
+6. **Multi-line secrets.** Lines between `-----BEGIN` and `-----END` are held as one unit. A `-----BEGIN` with no matching `-----END` in the text holds to the end of the text. [inferred] `not-secret.txt` (section 15) can remove a hold set by the line check (step 5). [inferred] It never removes a hold set by the PEM rule, the injection rule (step 4), or the half rule below. [inferred] It runs before the half rule counts held lines. [inferred] When more than half of the lines of a block are held, the full block is held.
 7. **Long lines.** When a piece of a long line is flagged, the full line is held.
-8. **Extra layer.** Each line that matches a secret-value pattern in `config/laya/secret-values.txt` (new) is also held. Examples: `AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36}`, `xox[abpr]-`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`. The 3.9.0 file `credential-patterns.txt` finds credential prompts, not values, so the guard does not use it.
+8. **Extra layer.** Each line that matches a secret-value pattern in `config/laya/secret-values.txt` (new) is also held. Examples: `AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36}`, `xox[abpr]-`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`. The 3.9.0 file `credential-patterns.txt` finds credential prompts, not values, so the guard does not use it. `secret-values.txt` and `not-secret.txt` use Python `re` syntax. [inferred] Only `credential-patterns.txt` stays ERE, read by bash. [inferred]
 
 The block threshold is lower than the line threshold, so that a doubtful block always gets the line check. Section 2 shows that most blocks of usual output go to the line check. Thus the usual cost is about 2 line requests for each line, plus the block requests. 200 lines give about 450 requests. This is an estimate: the plan must measure the real time with 16 requests at one time on MPS, before it sets the guard limit.
 
@@ -269,7 +272,7 @@ Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and
 
 ### Time
 
-The output guard runs inside the time of the verb. The guard limit is 15 s. When the limit ends, all output is held (as when the client fails). The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool.
+The output guard runs inside the time of the verb. The guard limit is 15 s. When the limit ends, all output is held (as when the client fails). The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool. The 15 s guard limit and the 90 s `run` limit are placeholders. [inferred] The plan must set both from a measured time budget. [inferred] That budget must add the gate (5 s, or 10.2 s with the 503 retry), `wait_for_prompt` (2 s), the clear (5 s), the report grace (1 s), and the guard limit. [inferred] The sum must stay under the 120 s limit of the Bash tool. [inferred] A normal 200-line output that exceeds the guard limit is held in full, the same as a client failure. [inferred]
 
 ## 9. Pane state
 
@@ -277,7 +280,7 @@ The output guard runs inside the time of the verb. The guard limit is 15 s. When
 
 - The client gets the cursor line and the 4 lines above it (the prompt `Enter value:` alone is not clear).
 - The pane-state input does not go to Claude, so this text needs no output guard.
-- The result is `credential` when Laya gives `credential` or the 3.9.0 regular expressions find a credential prompt.
+- The result is `credential` when Laya gives `credential` or the 3.9.0 regular expressions find a credential prompt. terminal.sh applies this rule. [inferred] It calls the existing `line_is_credential` (3.9.0 bash, unchanged) on the cursor line. [inferred] It ORs that result with the client's `state`. [inferred] The client does not read `credential-patterns.txt`. [inferred]
 - The test `line_at_prompt` (the suffix `clux$`) stays a plain string test. It does not use Laya, because it is the marker of the clux shell and not a decision about content.
 - The wait loops call `pane_state` each fifth tick (each 1 s), as in 3.9.0.
 - When the client fails in a wait loop, the verb exits 6.
@@ -297,7 +300,7 @@ The 3.9.0 codes stay. One code is new.
 
 `skills/terminal/SKILL.md` gets these changes:
 
-- The companion needs Laya. On exit 6 with `laya not installed`, Claude tells the user and asks to run `terminal.sh laya install`. Claude does not run it before the user agrees.
+- The companion needs Laya. On exit 6 with `laya not installed`, Claude tells the user and asks to run `terminal.sh laya install`. Claude does not run it before the user agrees. When the user agrees, Claude runs it with a Bash tool `timeout` of 600000 ms, because the install (pip of `laya` with PyTorch, plus the checkpoint download) can exceed the 120 s Bash tool default. [inferred] This timeout leaves margin over the 540 s total install budget of section 6, so the Bash tool's own limit does not cut the install verb short of its own failure path. [inferred]
 - On exit 3 with `laya confirmation`, Claude tells the user to answer in the pane, then uses `wait --run N`.
 - `[held by laya: …]` lines are not errors. Claude does not try to read the held text by other ways (for example with `cat` of the same file, or with `grep` for the value).
 - Claude does not edit the files in `config/laya/`.
@@ -315,18 +318,18 @@ The 3.9.0 codes stay. One code is new.
 
 ## 13. Tests
 
-- **Fake server.** `test/fixtures/fake-laya.py` is a small HTTP server with the two endpoints. It gives fixed answers from a JSON file that each test writes. Thus CI does not need the model.
+- **Fake server.** `test/fixtures/fake-laya.py` is a small HTTP server with the two endpoints. It gives fixed answers from a JSON file that each test writes. Thus CI does not need the model. `test_helper` sets `CLUX_LAYA_PYTHON` to the venv Python. [inferred] The default path is `~/.local/share/clux/laya/bin/python3`. [inferred] A bats file that calls the client skips its tests when that Python cannot import `laya`. [inferred] The plan captures one real request and response from `laya-serve` 0.3.21 for a `noul` property, a `choice` property, `/health`, and a 503, into `test/fixtures/`. [inferred] `fake-laya.py` and the client tests use these captures as the source of truth for the wire format. [inferred]
 - `test/laya-client.bats`:
   1. `command`: the safe list, the simple-command rule (`ls -la` skips, `ls $(rm -rf x)` does not), the three levels, the thresholds.
   2. `output`: one secret line in a block of 20 is held and the other 19 stay; an injection block is held in full; a PEM block is held as one unit; a block with more than half of its lines flagged is held in full; a long line is held in full.
-  3. `pane`: the six states; the regex layer adds `credential` when Laya gives `other`.
+  3. `pane`: the six states.
   4. The fake server gives 503, then 200: the client tries one time more and gives the result.
   5. No server, a time-out, bad JSON: the client exits 1 and prints no input text to stdout or stderr.
   6. Terminal text never goes to stderr (a test sends a unique marker and greps stderr).
   7. A block that the fake server answers with `input_tokens` 512 is split and sent again.
   8. The pair rule: `hunter2` after `Password:` is held; the line after a held secret line is not held only because of that secret.
   9. `secret-values.txt` holds an `AKIA…` line when the fake server gives 0 for it.
-- `test/terminal.bats`: `CLUX_LAYA_URL` with a host that is not loopback gives exit 6; `open` with no venv gives exit 6 and the install message.
+- `test/terminal.bats`: `CLUX_LAYA_URL` with a host that is not loopback gives exit 6; `open` with no venv gives exit 6 and the install message; the regex layer adds `credential` when the client answer is `other` and `line_is_credential` matches. [inferred]
 - `test/terminal-e2e.bats` (with the fake server through `CLUX_LAYA_URL`):
   1. A `dangerous` `run`: the pane shows the question; `send` and `read` exit 3; `tmux send-keys y Enter` lets the run complete; `n` gives `exit=126` and `laya: declined by the user`, and after it `send` and `read` work again.
   1a. `send -- 'rm -rf '` then `send --enter -- '/tmp/x'` is checked as one line and refused with exit 6. `send --enter` inside `python3` in the pane is also checked.
@@ -334,7 +337,7 @@ The 3.9.0 codes stay. One code is new.
   3. `run -- 'printf "a\nAKIA…\nb\n"'` prints `a`, `[held by laya: secret]`, `b`.
   4. `read` and `wait --pattern` use the guarded text.
   5. The fake server stops during a session: the next `run` exits 6 and the command does not run.
-  6. `close` stops the server that `open` started (test with a fake `laya-serve` in the venv path) and deletes `laya.log`.
+  6. `close` stops the server that `open` started (test with a fake `laya-serve` in the venv path) and deletes `laya.log`. This case unsets `CLUX_LAYA_URL`, because `open` does not start a server when that variable is set; `CLUX_LAYA_PYTHON` still names a real Python that can import `laya`, for the client calls. [inferred]
   7. All 3.9.0 e2e cases still pass with the fake server set to "all safe".
 - `test/laya-live.bats` (opt-in, `CLUX_LAYA_LIVE=1`): the real model on a list of commands and outputs, to find threshold drift. It is not part of CI.
 - `bats test/` must pass in full.
@@ -351,6 +354,6 @@ The 3.9.0 codes stay. One code is new.
 
 The user started the implementation on 2026-09-28 with no change to the recommendations. Thus:
 
-1. **False positives in the output guard: option (b).** `config/laya/not-secret.txt` (new) holds regular expressions for line shapes that are never secret (for example `^commit [0-9a-f]{40}$` and `ls -l` lines). A match removes a Laya hold only when the line has no `=`, `:` or `@`. A match never removes a hold from `secret-values.txt`. This is the one exception to the rule "regular expressions can only add a hold".
+1. **False positives in the output guard: option (b).** `config/laya/not-secret.txt` (new) holds regular expressions for line shapes that are never secret (for example `^commit [0-9a-f]{40}$` and `ls -l` lines). An anchored pattern matches the full line shape (for example an anchored `ls -l` pattern that allows an `HH:MM` time and a trailing `@`). [inferred] A match by an anchored pattern removes a hold with no character check. [inferred] A match by any other pattern removes a hold only when the line has no `=`, `:` or `@`. A match never removes a hold from `secret-values.txt`. This is the one exception to the rule "regular expressions can only add a hold".
 2. **`send` in all pane states,** as section 7 says.
 3. **Version 4.0.0.**
