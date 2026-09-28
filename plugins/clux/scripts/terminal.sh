@@ -241,34 +241,49 @@ laya_stop_server() {
     ! laya_pid_is_server "$pid" || kill -9 "$pid" 2>/dev/null || true
 }
 
-# Start laya-serve for this companion (spec section 6, steps 3 and 4). Sets
-# LAYA_PID, LAYA_URL and LAYA_KEY. The key is 32 random bytes in hex. The
-# server output goes to $D/laya.log (0600, umask 077).
+# laya_start_server LOG OFFLINE — start laya-serve on a free loopback port
+# with a new key of 32 random bytes in hex (spec section 6, steps 3 and 4).
+# The server output goes to LOG. OFFLINE=1 sets HF_HUB_OFFLINE, so the
+# server does not download; laya install passes 0. Sets LAYA_PID, LAYA_URL
+# and LAYA_KEY.
 laya_start_server() {
-    local port key
+    local port key offline=
     port=$("$LAYA_PY" "$LAYA_CLIENT" port 2>/dev/null) || return 1
     case "$port" in ''|*[!0-9]*) return 1 ;; esac
     key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
     [ "${#key}" -eq 64 ] || return 1
-    : > "$D/laya.log"
-    LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_API_KEY="$key" LAYA_LOG_LEVEL=warning \
-        LAYA_MODELS=english HF_HUB_OFFLINE=1 USE_TF=0 \
-        nohup "$LAYA_VENV/bin/laya-serve" >> "$D/laya.log" 2>&1 < /dev/null 3>&- &
+    [ "$2" -eq 0 ] || offline=HF_HUB_OFFLINE=1
+    env LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_API_KEY="$key" LAYA_LOG_LEVEL=warning \
+        LAYA_MODELS=english USE_TF=0 ${offline:+"$offline"} \
+        nohup "$LAYA_VENV/bin/laya-serve" >> "$1" 2>&1 < /dev/null 3>&- &
     LAYA_PID=$!
     LAYA_URL="http://127.0.0.1:$port"
     LAYA_KEY="$key"
 }
 
-# Spec section 6, step 7: health each 0.5 s for at most 60 s, then one
-# warm-up request, because the first call after a start takes about 1.4 s.
+# laya_wait_health DEADLINE — health each 0.5 s until SECONDS reaches
+# DEADLINE, for the server of LAYA_PID, LAYA_URL and LAYA_KEY. Returns 2
+# when the server process ends, 1 when the time ends.
+laya_wait_health() {
+    until CLUX_LAYA_URL="$LAYA_URL" CLUX_LAYA_KEY="$LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" health >/dev/null 2>&1; do
+        kill -0 "$LAYA_PID" 2>/dev/null || return 2
+        [ "$SECONDS" -lt "$1" ] || return 1
+        sleep .5
+    done
+}
+
+# Spec section 6, step 7: health for at most 60 s, then a warm-up request,
+# because the first call after a start takes about 1.4 s. The warm-up tries
+# again until the same 60 s end: on a cold machine the first request can
+# take more than the 5 s request limit.
 laya_wait_ready() {
     local deadline=$((SECONDS + 60))
-    until laya_call health >/dev/null; do
-        kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
+    laya_wait_health "$deadline" || return 1
+    until printf '%s\n' 'clux$' | laya_call pane >/dev/null; do
+        kill -0 "$LAYA_PID" 2>/dev/null || return 1
         [ "$SECONDS" -lt "$deadline" ] || return 1
         sleep .5
     done
-    printf '%s\n' 'clux$' | laya_call pane >/dev/null
 }
 
 # open_abort PANE_MADE MESSAGE — undo a failed open and exit 6 (spec section
@@ -605,12 +620,14 @@ GATE_REASON=
 LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)"'
 
 # laya_gate [--screen] [--no-safe-list] < TEXT — the command gate of the
-# client (spec section 7). Sets GATE_LEVEL and GATE_REASON. Returns 6 when
-# the client fails. [inferred] terminal.sh reads the fixed JSON shape with a
+# client (spec section 7). Sets GATE_LEVEL and GATE_REASON. Returns 2 when
+# the client refuses the input (exit 2) and 6 when it fails. [inferred] terminal.sh reads the fixed JSON shape with a
 # bash regular expression, because jq is only recommended for clux.
 laya_gate() {
-    local out
-    out=$(laya_call command "$@") || return 6
+    local out rc=0
+    out=$(laya_call command "$@") || rc=$?
+    [ "$rc" -ne 2 ] || return 2
+    [ "$rc" -eq 0 ] || return 6
     [[ "$out" =~ $LEVEL_RE ]] || return 6
     GATE_LEVEL="${BASH_REMATCH[1]}"
     GATE_REASON="${BASH_REMATCH[2]}"
@@ -682,8 +699,12 @@ send_gate() {
     reserved_word "$line"
     # [inferred] A blank line runs nothing, so it needs no request.
     case "$line" in *[![:space:]]*) ;; *) return 0 ;; esac
-    laya_gate --screen ${flag:+"$flag"} < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line") \
-        || { refuse_laya; return; }
+    laya_gate --screen ${flag:+"$flag"} < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    case $? in
+        0) ;;
+        2) fail 'laya: bad input' 2 ;;
+        *) refuse_laya; return ;;
+    esac
     case "$GATE_LEVEL" in
         caution) printf 'laya: caution (%s)\n' "$GATE_REASON" >&2 ;;
         dangerous)
@@ -804,7 +825,8 @@ open_command() {
     LAYA_URL="${CLUX_LAYA_URL:-}"
     LAYA_KEY="${CLUX_LAYA_KEY:-}"
     if [ -z "$LAYA_URL" ]; then
-        laya_start_server || open_abort 0 'laya not available: the server did not start'
+        : > "$D/laya.log"
+        laya_start_server "$D/laya.log" 1 || open_abort 0 'laya not available: the server did not start'
     fi
     printf -v shell '%q --noprofile --rcfile %q -i' "$(command -v bash)" "$D/rc.bash"
     # [inferred] A pane or prompt failure keeps exit code 1, as in 3.9.0.
@@ -980,6 +1002,7 @@ run_command() {
         esac
     done
     [ -n "${command:-}" ] || usage
+    case "$command" in *[![:space:]]*) ;; *) fail 'run needs a command' 2 ;; esac
     positive_integer "$timeout" || usage
     positive_integer "$max" || usage
     first="${command#"${command%%[![:space:]]*}"}"
@@ -998,7 +1021,12 @@ run_command() {
     # prompt a moment after the last run reports.
     wait_for_prompt 2 || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
     # The command gate (spec section 7). When the client fails, nothing runs.
-    laya_gate < <(printf '%s' "$command") || { release_busy; refuse_laya; return; }
+    laya_gate < <(printf '%s' "$command")
+    case $? in
+        0) ;;
+        2) release_busy; fail 'laya: bad input' 2 ;;
+        *) release_busy; refuse_laya; return ;;
+    esac
     remove_stale_output
     if last_run_secret; then
         send_literal __clux_clear; send_key Enter
@@ -1243,24 +1271,19 @@ laya_download_failed() {
 # the English checkpoint. The server output goes to a temp file. The traps
 # stop the server and delete the file when the verb ends early.
 laya_download() {
-    local deadline=$(($1 + LAYA_INSTALL_BUDGET)) port key
+    local deadline=$(($1 + LAYA_INSTALL_BUDGET))
     [ "$SECONDS" -lt "$deadline" ] || laya_download_failed 'the time limit ended'
     trap laya_install_cleanup EXIT
     trap 'laya_install_cleanup; exit 1' INT TERM HUP
     LAYA_INSTALL_LOG=$(mktemp "${TMPDIR:-/tmp}/clux-laya-install.XXXXXX") \
         || laya_download_failed 'cannot make a temp file'
-    port=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" port 2>/dev/null) || laya_download_failed 'no free port'
-    key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
-    LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_API_KEY="$key" LAYA_LOG_LEVEL=warning \
-        LAYA_MODELS=english USE_TF=0 \
-        nohup "$LAYA_VENV/bin/laya-serve" >> "$LAYA_INSTALL_LOG" 2>&1 < /dev/null 3>&- &
-    LAYA_INSTALL_PID=$!
-    until CLUX_LAYA_URL="http://127.0.0.1:$port" CLUX_LAYA_KEY="$key" \
-            "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" health >/dev/null 2>&1; do
-        kill -0 "$LAYA_INSTALL_PID" 2>/dev/null || laya_download_failed 'laya-serve ended before it answered'
-        [ "$SECONDS" -lt "$deadline" ] || laya_download_failed 'the time limit ended'
-        sleep .5
-    done
+    laya_start_server "$LAYA_INSTALL_LOG" 0 || laya_download_failed 'no free port'
+    LAYA_INSTALL_PID=$LAYA_PID
+    laya_wait_health "$deadline"
+    case $? in
+        2) laya_download_failed 'laya-serve ended before it answered' ;;
+        1) laya_download_failed 'the time limit ended' ;;
+    esac
     laya_install_cleanup
     trap - EXIT INT TERM HUP
     # [inferred] A server that answers with no checkpoint in the cache is a

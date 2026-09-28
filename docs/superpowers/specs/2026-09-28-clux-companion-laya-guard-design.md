@@ -150,7 +150,7 @@ Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives
 4. It starts `laya-serve` in the background with: `LAYA_HOST=127.0.0.1`, `LAYA_PORT=<port>`, `LAYA_API_KEY=<key>`, `LAYA_LOG_LEVEL=warning`, `LAYA_MODELS=english`, `HF_HUB_OFFLINE=1`, `USE_TF=0`. stdout and stderr go to `$D/laya.log` (0600).
 5. It makes the pane. [inferred]
 6. It writes `laya_pid`, `laya_url` and `laya_key` to `state` in one call, together with the pane, mode, socket and seq fields (the file is 0600). [inferred] `laya_url` is `http://127.0.0.1:<port>`. [inferred] `write_state` and `state_load` carry these three fields on every rewrite and every read. [inferred]
-7. It calls `health` each 0.5 s for at most 60 s. Then it sends one warm-up request, because the first call takes about 1.4 s.
+7. It calls `health` each 0.5 s for at most 60 s. Then it sends a warm-up request, because the first call takes about 1.4 s. [inferred] The warm-up tries again until the same 60 s end, because on a cold machine the first request can take more than the 5 s request limit. `open` and `laya install` use one start function (with the log path and `HF_HUB_OFFLINE` as parameters) and one health-wait function.
 8. If a step fails after the pane exists, `open` stops the server, closes the pane, and deletes `$D`, then exits 6. [inferred] If a step fails before the pane exists, `open` stops the server when it started one, and deletes `$D`, then exits 6. [inferred]
 
 Each Claude Code session has its own server. Each server uses about 1–2 GB of memory.
@@ -303,6 +303,7 @@ The 3.9.0 codes stay. One code is new.
 | Code | Meaning |
 |---|---|
 | 3 | A credential prompt or a Laya confirmation is in the pane. The user must answer it in the pane. |
+| 2 | Also: `run` with a blank command (`run needs a command`), and a command that the client refuses as bad input (`laya: bad input`). |
 | 6 | Laya: not installed, not available, refused (`dangerous` on `send`), or output held because Laya did not answer. The message on stderr tells which. The skill uses the message text to select the next step. |
 
 ## 11. Skill

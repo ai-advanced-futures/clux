@@ -136,7 +136,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | The verb completed. For `run`, read `exit=<rc>`. | Continue. |
-| 1 | The time limit ended. The command continues in the pane, or it waits for the answer of the user. | Use `wait --run <n>` or `read`. |
+| 1 | The time limit ended. The command continues in the pane, or it waits for the answer of the user. | Use `wait --run <n>`. |
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. | Correct the call, or tell the user. |
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret. | Tell the user to answer in the pane. Then use `wait --run <n>`. |
 | 4 | No companion is open for this session. | Use `open`. |

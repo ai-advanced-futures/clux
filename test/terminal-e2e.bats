@@ -564,6 +564,14 @@ pane_shows() {
     [ "$(fake_laya_states destructive)" = '"true"' ]
 }
 
+@test "run refuses a blank command with exit 2" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- '   '
+    [ "$status" -eq 2 ]
+    [ "$output" = 'run needs a command' ]
+    [ ! -d "$(companion_dir)/busy" ]
+}
+
 @test "a safe-list run refuses an alias or a function of the same name" {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- "alias ls='touch $BATS_TEST_TMPDIR/alias'"

@@ -250,6 +250,14 @@ STUB
     [ ! -s "$log" ]
 }
 
+@test "laya_gate gives 2 for a client exit 2 and 6 for other failures" {
+    run bash -c "source '$TERMINAL'
+        laya_call() { return 2; }; laya_gate </dev/null; echo \$?
+        laya_call() { return 1; }; laya_gate </dev/null; echo \$?
+        laya_call() { echo nonsense; }; laya_gate </dev/null; echo \$?"
+    [ "$output" = $'2\n6\n6' ]
+}
+
 @test "interrupt_key finds only the keys that skip the Laya pane check" {
     run bash -c "source '$TERMINAL'
         for k in C-c c-C C-d C-z 'C-\\' '^C' '^d' Escape escape; do
