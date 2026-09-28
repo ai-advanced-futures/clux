@@ -250,7 +250,6 @@ def cmd_health(args):
 
 
 UNSAFE = frozenset(";|&<>$`()\n\r")
-BLOCKED_FIRST = ("sudo", "env", "xargs", "eval", "command", "builtin")
 LEVELS = ("safe", "caution", "dangerous")
 
 
@@ -259,12 +258,12 @@ def on_safe_list(command):
     if any(char in UNSAFE for char in command):
         return False
     words = command.split()
-    if not words or words[0] in BLOCKED_FIRST:
-        return False
     for line in shipped_lines("safe-commands.txt"):
         entry = line.split()
+        # A long option can write a file (git diff --output=FILE), so it
+        # ends the safe list.
         if words[:len(entry)] == entry:
-            return True
+            return not any(word.startswith("--") for word in words[len(entry):])
     return False
 
 

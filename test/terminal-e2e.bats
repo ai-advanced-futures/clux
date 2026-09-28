@@ -543,6 +543,21 @@ pane_shows() {
     [ "$(fake_laya_states destructive)" = '"true"' ]
 }
 
+@test "a safe-list run refuses an alias or a function of the same name" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- "alias ls='touch $BATS_TEST_TMPDIR/alias'"
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" run -- 'ls'
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/alias" ]
+    run "$TERMINAL" run -- "pwd() { touch '$BATS_TEST_TMPDIR/function'; }"
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" run -- 'pwd'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'refused: the first word is an alias or a function in the companion shell\nexit=126' ]] || false
+    [ ! -e "$BATS_TEST_TMPDIR/function" ]
+}
+
 # Laya 1a
 @test "send checks the full line in the shell and in python3, and refuses a dangerous line" {
     set_fake_laya '{"rules": [

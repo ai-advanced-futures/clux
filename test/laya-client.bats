@@ -93,7 +93,7 @@ PY
 @test "command: a safe-list command skips Laya" {
     start_fake_laya '{}'
     local cmd
-    for cmd in 'ls -la' 'pwd' 'git status --short' 'git log --output=x' 'cat README.md' 'echo hi'; do
+    for cmd in 'ls -la' 'pwd' 'git status -s' 'git log -3' 'cat README.md' 'echo hi'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
         [ "$output" = '{"level": "safe", "reason": "safe list"}' ] || { echo "$cmd: $output"; false; }
@@ -105,12 +105,13 @@ PY
     start_fake_laya '{}'
     local cmd
     for cmd in 'ls $(rm -rf x)' 'ls; rm x' 'ls | sh' 'ls > f' 'ls `id`' 'git' 'git push --force' \
-        'gitk' 'sudo ls' 'env ls' 'lsof'; do
+        'gitk' 'sudo ls' 'env ls' 'lsof' 'git log --output=x' 'git diff --output=/tmp/x' \
+        'git status --short' 'ls --color=always'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
         [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
     done
-    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 11 ]
+    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 15 ]
 }
 
 @test "command: the three levels and the reason" {

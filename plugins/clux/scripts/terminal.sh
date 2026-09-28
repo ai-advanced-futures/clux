@@ -417,6 +417,8 @@ unset HISTFILE
 set +o history
 PS1='clux$ '
 PROMPT_COMMAND=
+# An alias could change what a safe-list word runs (spec section 7).
+shopt -u expand_aliases
 __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
 exit() { __clux_refuse; }
 exec() { __clux_refuse; }
@@ -435,6 +437,15 @@ __clux_run() {
   fi
   __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
   command rm -f "$__clux_d/$__clux_n.cmd"
+  # A safe-list run skipped Laya because of its first word, so that word
+  # must be a program or a builtin, not an alias or a function.
+  if [ -e "$__clux_d/$__clux_n.safe" ]; then
+    __clux_i="${__clux_cmd#"${__clux_cmd%%[![:space:]]*}"}"
+    case "$(builtin type -t -- "${__clux_i%%[[:space:]]*}")" in
+      file|builtin) ;;
+      *) __clux_cmd='printf "%s\n" "refused: the first word is an alias or a function in the companion shell"; (builtin exit 126)' ;;
+    esac
+  fi
   if [ -e "$__clux_d/$__clux_n.confirm" ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
     printf 'laya: dangerous (%s)\n$ %s\n' "$__clux_reason" "$__clux_cmd"
@@ -956,6 +967,7 @@ run_command() {
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
+    [ "$GATE_REASON" != 'safe list' ] || : > "$D/$n.safe"
     case "$GATE_LEVEL" in
         caution) printf '%s\n' "$GATE_REASON" > "$D/$n.caution" ;;
         dangerous)

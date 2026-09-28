@@ -10,6 +10,7 @@ All notable changes to clux are documented here.
 - **The default time limit of `run` is 64 seconds** (it was 100 seconds), so that the Laya checks (the command gate, the pane probe and a 15 s output guard) fit in the 120-second limit of the Bash tool
 - `wait --pattern` examines the screen each second, not each 0.2 s, and tests the pattern on the guarded text
 - `send --key` with `C-c`, `C-d`, `C-z`, `C-\` or `Escape` does not go through the Laya pane check, so Claude can stop a command when Laya is not available
+- The safe list stops at a long option (`git diff --output=<file>` goes to Laya). The pane shell does not expand aliases, and a safe-list run whose first word is a function is refused with exit 126
 - Each run command runs one time: a declined command cannot run again through `__clux_run`, and `send` and `run` refuse `__clux_` names (exit code 2)
 - After a 503 from Laya, the client waits for the `Retry-After` time of the server (at most 1 s), then tries one time more
 

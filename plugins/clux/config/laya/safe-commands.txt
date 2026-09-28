@@ -1,10 +1,10 @@
 # The safe list of the Laya command gate (spec section 7).
 #
 # A command skips Laya only when its first words equal one full line of this
-# file, word for word, and it is one simple command with none of these:
-# ; | & < > $ ` ( ) and a newline. A command that starts with sudo, env,
-# xargs, eval, command or builtin never skips Laya. The safe list applies
-# only at the clux$ prompt.
+# file, word for word, no word after them starts with --, and it is one
+# simple command with none of these: ; | & < > $ ` ( ) and a newline. The
+# safe list applies only at the clux$ prompt. The pane shell does not expand
+# aliases, and a safe-list run whose first word is a function is refused.
 #
 # There is no user copy of this file. Claude does not edit it.
 ls

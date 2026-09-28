@@ -199,11 +199,12 @@ The safe list applies only at the `clux$` prompt.
 
 A command skips Laya only when all of these are true:
 
-- The command's first words equal one full line of `config/laya/safe-commands.txt`, word for word (for example `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `git status`, `git log`, `git diff`). [inferred] `git` alone does not match the `git status` line. [inferred] `git push --force` matches no line. [inferred] The rule does not check the words after the matched line. [inferred] `git log --output=<file>` still matches the `git log` line and skips Laya. [inferred]
+- The command's first words equal one full line of `config/laya/safe-commands.txt`, word for word (for example `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `git status`, `git log`, `git diff`). [inferred] `git` alone does not match the `git status` line. [inferred] `git push --force` matches no line. [inferred]
+- No word after the matched line starts with `--`. A long option can write a file (`git diff --output=<file>`), so `git log --output=<file>` and `ls --color` go to Laya. Short options (`ls -la`, `git log -3`) do not end the match.
 - It is one simple command. It contains none of these: `;` `|` `&` `<` `>` `$` `` ` `` `(` `)` newline.
-- It does not start with `sudo`, `env`, `xargs`, `eval`, `command` or `builtin`.
-
 Thus `ls -la` skips Laya, and `ls $(rm -rf x)` goes to Laya.
+
+The pane shell runs `shopt -u expand_aliases`, so an alias cannot change what a safe-list word runs. `run` writes `<n>.safe` for a safe-list command. For such a run, `__clux_run` checks the first word with `type -t`. When it is not a program or a builtin (for example a function of the same name), the run prints `refused: the first word is an alias or a function in the companion shell` and exits 126. [inferred] The safe list trusts `PATH`; a command that changes `PATH` goes to Laya.
 
 ### Levels
 
