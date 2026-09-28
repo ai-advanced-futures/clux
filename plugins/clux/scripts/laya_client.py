@@ -323,7 +323,7 @@ def cmd_pane(args):
 
 BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
 CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens
-MAX_PARALLEL = 16          # the same as LAYA_MAX_CONCURRENT
+MAX_PARALLEL = 12          # under LAYA_MAX_CONCURRENT (16), so a pane probe gets a slot
 DEFAULT_OUTPUT_LIMIT = 15.0
 
 

@@ -510,10 +510,21 @@ tmux_state() {
 # command substitution would fork a subshell each time. -S 0 keeps -J joining
 # wrapped rows, so a long prompt arrives as one logical line.
 capture_cursor_line() {
-    local cy text
+    capture_to_cursor || return 1
+    CURSOR_LINE="${CAPTURE##*$'\n'}"
+}
+
+CAPTURE=
+
+# capture_to_cursor — the screen from row 0 to the cursor row, in CAPTURE.
+# The x keeps a blank cursor line: without it, the command substitution
+# removes it, and the last line of CAPTURE is the line above the cursor.
+capture_to_cursor() {
+    local cy
     cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
-    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy") || return 1
-    CURSOR_LINE="${text##*$'\n'}"
+    CAPTURE=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy" && printf x) || return 1
+    CAPTURE="${CAPTURE%x}"
+    CAPTURE="${CAPTURE%$'\n'}"
 }
 
 # A suffix test on the line capture_cursor_line already holds, so one poll
@@ -525,6 +536,7 @@ line_at_prompt() {
 }
 
 PANE_STATE=
+PANE_TEXT=
 SCREEN_ABOVE=
 PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 
@@ -532,21 +544,46 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 # CURSOR_LINE, SCREEN_ABOVE (the 4 lines above it) and PANE_STATE. Returns 1
 # when the capture fails and 6 when the client fails. The 3.9.0 regular
 # expressions (line_is_credential) can only add "credential". This call
-# forks the client, so the poll loops call it only on each fifth step.
+# forks the client, so the poll loops call it only on each fifth step, and
+# it sends no request when the screen is the same as at the last answer.
 pane_state() {
-    local cy text window out
-    cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
-    text=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy") || return 1
-    CURSOR_LINE="${text##*$'\n'}"
-    window=$(printf '%s\n' "$text" | tail -n 5)
+    local window out
+    capture_to_cursor || return 1
+    CURSOR_LINE="${CAPTURE##*$'\n'}"
+    [ -z "$PANE_STATE" ] || [ "$CAPTURE" != "$PANE_TEXT" ] || return 0
+    window=$(printf '%s\n' "$CAPTURE" | tail -n 5)
     case "$window" in
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
     esac
+    PANE_STATE=
     out=$(printf '%s\n' "$window" | laya_call pane) || return 6
     [[ "$out" =~ $PANE_RE ]] || return 6
     PANE_STATE="${BASH_REMATCH[1]}"
     [ "$PANE_STATE" = credential ] || ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
+    PANE_TEXT="$CAPTURE"
+    return 0
+}
+
+PROBE_FAILS=0
+
+# probe_pane — one pane probe of a wait loop. Returns 3 on a credential
+# prompt and 6 after 3 failed probes in a row, else 0. One failed probe
+# (a slow machine, or a 503 while a guard uses the server) does not end the
+# wait, and it still applies the local credential patterns.
+probe_pane() {
+    pane_state
+    case $? in
+        0)
+            PROBE_FAILS=0
+            [ "$PANE_STATE" != credential ] || return 3
+            ;;
+        6)
+            PROBE_FAILS=$((PROBE_FAILS + 1))
+            ! line_is_credential "$CURSOR_LINE" || return 3
+            [ "$PROBE_FAILS" -lt 3 ] || return 6
+            ;;
+    esac
     return 0
 }
 
@@ -689,11 +726,7 @@ wait_for_prompt() {
             tick=$(( (tick + 1) % 5 ))
             if [ "$probe" -eq 1 ] && [ "$tick" -eq 1 ]; then
                 ! laya_confirm_pending || return 8
-                pane_state
-                case $? in
-                    6) return 6 ;;
-                    0) [ "$PANE_STATE" != credential ] || return 3 ;;
-                esac
+                probe_pane || return
             fi
         fi
         sleep .2
@@ -913,15 +946,10 @@ wait_for_run_files() {
         [ -f "$D/$n.rc" ] && return 0
         tick=$(( (tick + 1) % 5 ))
         if [ "$probe" -eq 1 ] && [ "$tick" -eq 1 ] && [ ! -e "$D/$n.confirm" ]; then
-            pane_state
+            probe_pane
             case $? in
                 6) return 6 ;;
-                0)
-                    if [ "$PANE_STATE" = credential ]; then
-                        : > "$D/$n.secret"
-                        return 3
-                    fi
-                    ;;
+                3) : > "$D/$n.secret"; return 3 ;;
             esac
         fi
         sleep .2
@@ -1078,7 +1106,7 @@ read_command() {
 }
 
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" now
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -1127,10 +1155,14 @@ wait_command() {
             while :; do
                 laya_confirm_pending && { refuse_confirm; return; }
                 check_pane || return
+                # The guard runs only when the screen changed and the raw
+                # screen matches: the guarded text is the raw text with
+                # some lines replaced, so it cannot match when the raw text
+                # does not. [inferred] A pattern that matches only a held
+                # marker line is not found.
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE"); then
-                    now=$(printf '%s\n' "$screen" | cksum)
-                    if [ "$now" != "$sum" ]; then
-                        sum="$now"
+                    if [ "$screen" != "$sum" ] && printf '%s\n' "$screen" | grep -Eq -- "$value"; then
+                        sum="$screen"
                         laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
                         printf '%s\n' "$GUARD_TEXT" | grep -Eq -- "$value" && return 0
                     fi

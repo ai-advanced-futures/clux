@@ -244,14 +244,14 @@ The guard applies to all text that goes from the pane to Claude:
 
 - The output of `run` and `wait --run` (in `report_run`, after the cut to `--max-lines`).
 - The screen text of `read`.
-- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time. `wait --pattern` polls each 1 s, not each 0.2 s. It keeps a hash of the last raw capture and runs the guard again only when the capture changes.
+- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time. `wait --pattern` polls each 1 s, not each 0.2 s. It keeps the last raw capture and runs the guard again only when the capture changes and the raw screen matches the pattern. [inferred] A pattern that matches only a held marker line is not found.
 
 `--secret` runs keep the 3.9.0 behavior. Their output does not go to Laya or to Claude.
 
 ### Steps
 
 1. **Blocks.** The client splits the text into blocks of complete lines. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
-2. **Block check.** The client sends all blocks with `output-block.json`, at most 16 at one time. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
+2. **Block check.** The client sends all blocks with `output-block.json`, at most 12 at one time. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
 3. **Cut text.** When `usage.input_tokens` of an answer is 512 or more, Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
 4. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
 5. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line two times with `output-line.json` (the same `secret` question): the line alone, and the line with the line above it. A line is held when:
@@ -289,8 +289,10 @@ The output guard runs inside the time of the verb. The guard limit is 15 s. When
 - The pane-state input does not go to Claude, so this text needs no output guard.
 - The result is `credential` when Laya gives `credential` or the 3.9.0 regular expressions find a credential prompt. terminal.sh applies this rule. [inferred] It calls the existing `line_is_credential` (3.9.0 bash, unchanged) on the cursor line. [inferred] It ORs that result with the client's `state`. [inferred] The client does not read `credential-patterns.txt`. [inferred]
 - The test `line_at_prompt` (the suffix `clux$`) stays a plain string test. It does not use Laya, because it is the marker of the clux shell and not a decision about content.
-- The wait loops call `pane_state` each fifth tick (each 1 s), as in 3.9.0.
-- When the client fails in a wait loop, the verb exits 6.
+- The wait loops call `pane_state` each fifth tick (each 1 s), as in 3.9.0. `pane_state` keeps the last capture and its answer. When the capture did not change, it sends no request.
+- When the client fails in a wait loop, the loop applies `line_is_credential` to the cursor line and continues. After 3 failed probes in a row, the verb exits 6. Thus one slow answer or one 503 does not stop the wait while the command continues.
+- The output guard sends at most 12 requests at one time, under `LAYA_MAX_CONCURRENT` (16), so a pane probe gets a server slot while a guard runs.
+- [inferred] The capture keeps a blank cursor line. The cursor line is then empty, not the line above it.
 
 `credential` gives exit code 3, as in 3.9.0. The other states are for the skill and for later use. `wait --idle` prints `pane=<state>` when it ends on its time limit, so Claude knows why the pane is not at the prompt.
 

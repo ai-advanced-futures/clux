@@ -404,13 +404,34 @@ pane_shows() {
     [ "$output" = 'pane=pager' ]
 }
 
-@test "wait --idle exits 6 when Laya stops during the wait" {
+@test "wait --idle exits 6 after three failed pane probes in a row, not after one" {
     "$TERMINAL" open >/dev/null
-    "$TERMINAL" send --enter -- 'sleep 3' >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
     stop_fake_laya
     run "$TERMINAL" wait --timeout 2 --idle
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" wait --timeout 10 --idle
     [ "$status" -eq 6 ]
     [[ "$output" == *'laya not available: close and open the companion'* ]] || false
+}
+
+@test "a wait sends no pane request while the screen does not change" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
+    sleep 1
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" wait --timeout 4 --idle
+    [ "$status" -eq 1 ]
+    [ "$(fake_laya_states state | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "a blank cursor line is not the line above it" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'echo abc; read -r x' >/dev/null
+    pane_shows abc
+    run "$TERMINAL" send --enter -- 'hello'
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states destructive | tail -n 1)" = '"hello"' ]
 }
 
 @test "a credential answer from Laya stops a run with exit 3" {
