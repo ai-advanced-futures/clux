@@ -249,7 +249,10 @@ def cmd_health(args):
     print(json.dumps({"ok": True}))
 
 
-UNSAFE = frozenset(";|&<>$`()\n\r")
+# Bash changes a word with quotes, a backslash, braces, a glob or ~ before
+# the command sees it (git diff '--output=FILE' is --output=FILE), so the
+# safe list examines only plain words.
+UNSAFE = frozenset(";|&<>$`()\n\r'\"\\{}*?[]~!")
 LEVELS = ("safe", "caution", "dangerous")
 
 
@@ -313,7 +316,9 @@ def cmd_pane(args):
     lines above it. [inferred] An empty screen is "other" with no request."""
     if args:
         raise Fail(2)
-    text = read_stdin().rstrip("\n")
+    # Only the last newline goes: a blank cursor line stays the last line.
+    text = read_stdin()
+    text = text[:-1] if text.endswith("\n") else text
     if not text.strip():
         state = "other"
     else:
@@ -424,7 +429,9 @@ def check_lines(pool, runner, pol, units, flagged, values):
     above the threshold and the unit above is not: not above the threshold
     alone, not held by this check, and not in `values` (the lines that
     secret-values.txt holds). [inferred] Without the last two conditions, the
-    line after `hunter2` is held because of `hunter2`."""
+    line after `hunter2` is held because of `hunter2`. The unit above is held
+    when it alone is above the threshold, also when its own block was not
+    flagged."""
     limit = threshold(pol, "secret", 0.75)
     targets, alone_ids, pairs = [], set(), []
     for position, unit in enumerate(units):
@@ -447,6 +454,10 @@ def check_lines(pool, runner, pol, units, flagged, values):
     held = set()
     for position in targets:
         line = units[position].line
+        # The unit above has its own score: hold it also when its block was
+        # not flagged.
+        if position in pair and alone[position - 1] > limit:
+            held.add(units[position - 1].line)
         if alone[position] > limit:
             held.add(line)
         elif position in pair and pair[position] > limit:

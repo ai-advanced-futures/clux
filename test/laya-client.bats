@@ -106,12 +106,13 @@ PY
     local cmd
     for cmd in 'ls $(rm -rf x)' 'ls; rm x' 'ls | sh' 'ls > f' 'ls `id`' 'git' 'git push --force' \
         'gitk' 'sudo ls' 'env ls' 'lsof' 'git log --output=x' 'git diff --output=/tmp/x' \
-        'git status --short' 'ls --color=always'; do
+        'git status --short' 'ls --color=always' "git diff '--output=/tmp/x'" 'git diff "--output=/tmp/x"' \
+        'git diff {--output=/tmp/x,}' 'git diff \--output=/tmp/x' 'cat ~/.ssh/id_rsa' 'ls *'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
         [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
     done
-    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 15 ]
+    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 21 ]
 }
 
 @test "command: the three levels and the reason" {
@@ -184,6 +185,13 @@ PY
         [ "$output" = "{\"state\": \"$state\"}" ] || { echo "$state: $output"; false; }
     done
     [ "$(fake_laya_states state | head -n 1)" = '"a\nb\nc\nd\nEnter value:"' ]
+}
+
+@test "pane: a blank cursor line stays the last line of the screen" {
+    start_fake_laya '{}'
+    run --separate-stderr client pane < <(printf 'a\nPassword:\n\n')
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states state | head -n 1)" = '"a\nPassword:\n"' ]
 }
 
 @test "pane: an empty screen is other with no request, and a bad label exits 1" {
@@ -460,4 +468,21 @@ PY
     run client scrub <<<$'keep\ntoken AKIAABCDEFGHIJKLMNOP\nboom'
     [ "$status" -eq 0 ]
     [ "$output" = $'keep\nboom' ]
+}
+
+@test "output: the unit above a flagged unit is held when it alone is above, also in a clean block" {
+    # [inferred] Round 2 finding 2: the 12th line ends the first block, and
+    # that block is not flagged. The line after it is flagged, so the line
+    # check sends the 12th line alone too, and its own score holds it.
+    start_fake_laya '{"rules": [
+        {"equals": "key: SECRET20", "answers": {"secret": 0.95}},
+        {"contains": "MARKER-21", "answers": {"secret": 0.95}}]}'
+    local filler text
+    filler=$(printf 'x%.0s' $(seq 1 52))
+    text=$(for i in $(seq 1 11); do echo "$filler"; done; echo 'key: SECRET20'; echo 'MARKER-21 token'; echo 'end')
+    run --separate-stderr client output --render <<<"$text"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *SECRET20* ]] || { echo "$output"; false; }
+    [[ "$output" != *MARKER-21* ]] || { echo "$output"; false; }
+    [[ "$output" == *$'\nend' ]] || { echo "$output"; false; }
 }
