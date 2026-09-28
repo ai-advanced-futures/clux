@@ -44,6 +44,9 @@ LAYA_PY="${CLUX_LAYA_PYTHON:-$LAYA_VENV/bin/python3}"
 # checks the sum. test/laya-live.bats measures the guard time.
 RUN_TIMEOUT_DEFAULT=64
 LAYA_GUARD_LIMIT=15
+# The guard gets at most this many bytes (the end of the text), so that a
+# large output does not use the full guard limit. About 55 blocks.
+LAYA_GUARD_BYTES=32768
 
 # laya install: venv, pip and the checkpoint download share one budget. The
 # skill runs the verb with a Bash tool timeout of 600 s.
@@ -578,14 +581,25 @@ laya_gate() {
 
 GUARD_HELD=0
 GUARD_TEXT=
+GUARD_CUT=0
 
 # laya_guard FILE — the output guard (spec section 8). Sets GUARD_TEXT (the
-# guarded text) and GUARD_HELD (the count of held lines). Returns 6 when the
+# guarded text), GUARD_HELD (the count of held lines) and GUARD_CUT (1 when
+# only the last LAYA_GUARD_BYTES went to the guard). Returns 6 when the
 # client fails or its time limit ends. [inferred] The command substitution
-# removes blank lines at the end of the text.
+# removes blank lines at the end of the text. A cut can split a UTF-8
+# character; the client decodes with "replace", so that is not an error.
 laya_guard() {
-    local out
-    out=$(laya_call output --render --limit "$LAYA_GUARD_LIMIT" < "$1") || return 6
+    local out data LC_ALL=C
+    # The x keeps the newlines at the end, so the byte count is exact.
+    data=$(tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" && printf x) || return 6
+    data="${data%x}"
+    GUARD_CUT=0
+    if [ "${#data}" -gt "$LAYA_GUARD_BYTES" ]; then
+        GUARD_CUT=1
+        data="${data: -$LAYA_GUARD_BYTES}"
+    fi
+    out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
     GUARD_HELD="${GUARD_HELD#held=}"
@@ -865,13 +879,14 @@ report_run() {
             laya_guard "$D/$n.out" || guard=6
         fi
         if [ "$guard" -ne 0 ]; then
-            printf '%s\n' 'output held: laya not available' "exit=$rc"
-            rm -f "$D/$n.out"
+            # .out stays, so wait --run gives the output when Laya answers.
+            printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
             release_busy
             refuse_laya
             return
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
+        [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
         [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
         [ "$GUARD_HELD" -eq 0 ] || printf 'laya: held %s lines\n' "$GUARD_HELD"
     fi
@@ -1058,6 +1073,7 @@ read_command() {
     check_pane || return
     screen=$(tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines") || return 1
     laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
+    [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
     [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
 }
 

@@ -103,7 +103,8 @@ terminal.sh run -- 'git status --short'
 - Laya examines all text that comes back to you from `run`, `wait --run`, `read` and `wait --pattern`. A line with a secret comes back as `[held by laya: secret]`. A group of lines comes back as `[held by laya: secret, <k> lines]` or `[held by laya: prompt_injection, <k> lines]`. After the output, `laya: held <k> lines` gives the count.
 - These lines are not errors. The command ran. The user sees the raw text in the pane.
 - Do not try to read the held text in a different way, for example with `cat` of the same file or with `grep` for the value.
-- `output held: laya not available` with exit code 6 tells you that Laya did not answer. You get no output text. The `exit=<rc>` line after it gives the exit code of the command.
+- `output held: laya not available: use wait --run <n> again` with exit code 6 tells you that Laya did not answer. You get no output text. The `exit=<rc>` line after it gives the exit code of the command. The output stays until the next `run`: when Laya answers again, `wait --run <n>` gives it.
+- `output cut: the last 32768 bytes` tells you that only the end of a large output went to Laya and to you.
 
 ## Use an interactive command
 

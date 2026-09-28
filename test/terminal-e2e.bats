@@ -653,14 +653,27 @@ pane_shows() {
     [[ "$output" != *'AKIAABCDEFGHIJKLMNOP'* ]] || false
 }
 
-@test "run holds all output and exits 6 when the guard fails" {
+@test "run holds all output and exits 6 when the guard fails, and wait --run gives it later" {
     set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'echo guard-marker'
     [ "$status" -eq 6 ]
-    [[ "$output" == *$'output held: laya not available\nexit=0'* ]] || false
+    [[ "$output" == *$'output held: laya not available: use wait --run 1 again\nexit=0'* ]] || false
     [[ "$output" != *'guard-marker'* ]] || false
     [ ! -d "$(companion_dir)/busy" ]
+    set_fake_laya '{}'
+    run "$TERMINAL" wait --run 1
+    [ "$status" -eq 0 ]
+    [ "$output" = $'guard-marker\nexit=0' ]
+}
+
+@test "the guard gets at most the last 32768 bytes of the output" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'head -c 300000 /dev/zero | tr "\0" a; echo; echo last-line'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'output cut: the last 32768 bytes\n'* ]] || false
+    [[ "$output" == *$'last-line\nexit=0' ]] || false
+    [ "${#output}" -lt 34000 ]
 }
 
 @test "laya status names the server of this companion" {

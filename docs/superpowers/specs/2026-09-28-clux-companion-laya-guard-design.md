@@ -273,7 +273,8 @@ Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and
 
 - `run` and `wait --run`: the guarded text, then `laya: held <k> lines` when lines were held, then `exit=<rc>`. The exit code stays 0.
 - `read`: the guarded text.
-- When the client fails: no output text. The line `output held: laya not available`, then `exit=<rc>`. The verb exits 6. For `read` the verb prints nothing and exits 6.
+- When the client fails: no output text. The line `output held: laya not available: use wait --run <n> again`, then `exit=<rc>`. The verb exits 6. `<n>.out` stays until the next `run`, so `wait --run <n>` gives the output when Laya answers again. For `read` the verb prints nothing and exits 6.
+- The guard gets at most the last 32768 bytes (`LAYA_GUARD_BYTES`), after the cut to `--max-lines`. Then the verb prints `output cut: the last 32768 bytes`. Thus one very long line does not use the full guard limit. A cut can start inside a PEM key: an `-----END` line with no `-----BEGIN` above it holds from the first line.
 - The raw text stays visible in the pane for the user.
 
 ### Time

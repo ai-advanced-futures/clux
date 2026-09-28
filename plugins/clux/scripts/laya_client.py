@@ -509,15 +509,21 @@ def never_secret(line, patterns):
 
 def pem_ranges(lines):
     """Step 6: -----BEGIN to -----END is one held unit. [inferred] A BEGIN with
-    no END holds to the end of the text, and the rule holds each range
-    whatever Laya answers."""
-    ranges, begin = [], None
+    no END holds to the end of the text, and an END with no BEGIN holds from
+    the first line (a cut output can start inside a key). The rule holds each
+    range whatever Laya answers."""
+    ranges, begin, seen = [], None, False
     for index, line in enumerate(lines):
         if begin is None and PEM_BEGIN in line:
             begin = index
-        if begin is not None and PEM_END in line:
-            ranges.append((begin, index, "secret"))
-            begin = None
+        if PEM_END in line:
+            if begin is not None:
+                ranges.append((begin, index, "secret"))
+            elif not seen:
+                ranges.append((0, index, "secret"))
+            begin, seen = None, True
+        elif begin is not None:
+            seen = True
     if begin is not None:
         ranges.append((begin, len(lines) - 1, "secret"))
     return ranges

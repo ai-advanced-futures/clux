@@ -393,6 +393,10 @@ PY
     [ "$output" = $'held=4\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 4 lines]\nend' ]
     run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\nstart\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n')
     [ "$output" = $'held=3\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 3 lines]' ]
+    # A cut output can start inside a key: an END with no BEGIN holds from
+    # the first line.
+    run client output --render < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
+    [ "$output" = $'held=3\n[held by laya: secret, 3 lines]\ne1\ne2\ne3\ne4\ne5\ne6\ne7' ]
 }
 
 @test "output: secret-values.txt holds an AKIA line when Laya gives 0" {
