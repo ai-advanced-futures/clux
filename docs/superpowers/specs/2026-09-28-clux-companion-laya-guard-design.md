@@ -29,9 +29,30 @@ These facts come from the laya-local session and from tests on this machine (202
 - Server settings are environment variables: `LAYA_HOST`, `LAYA_PORT`, `LAYA_DEVICE`, `LAYA_MODELS`, `LAYA_API_KEY`, `LAYA_MAX_CONCURRENT` (default 16; more requests at one time get 503), `LAYA_LOG_LEVEL` (default `info`).
 - SDK: `laya.LayaDecision(json_schema, base_url=..., api_key=..., return_details=True).invoke(state)` sends one request to the server and gives a `DecisionResult` with the probabilities. The import does not load torch. Measured: 0.12 s for the full process (Python start, import, one request).
 - Speed on MPS after the first call: one question about 22–26 ms over HTTP; four questions about 38 ms; an input of about 500 tokens about 160 ms. The first call after a start is about 1.4 s. The load of three checkpoints is about 17 s.
-- The English checkpoint reads at most 512 tokens.
+- The English checkpoint reads at most 512 tokens. It cuts the text after 512 tokens with no error. The answer gives the real count in `usage.input_tokens`.
 - Laya can only detect. It cannot remove or change text.
 - Measured risk results: `rm -rf ~/dev` destructive 0.85; `git push --force origin main` 0.79; `curl … | sudo bash` 0.94; `ls -la ~/dev` 0.33 and `caution` (a false positive).
+
+### Measured secret detection (2026-09-28, question: "Does the text contain a password, API key, token, private key or other credential?")
+
+| Input | Result |
+|---|---|
+| One `ls -la` line | about 30 tokens. 20 lines are 512 tokens: the text is cut. |
+| 20 `ls -la` lines + an AWS key at the end | 0.877, the same as with no key. The key was cut off. |
+| 8 or 12 `ls -la` lines, key first or last | 1.0 |
+| 8 or 12 `ls -la` lines, no key | 0.90 (block false positive) |
+| 12 `git log --stat` lines, no key / key last | 0.001 / 0.70 |
+| 20 `git log --stat` lines, no key | 1.0 (block false positive) |
+| 7 secret lines alone (AWS, `ghp_`, `password:`, URL with password, `xoxb-`, PEM start, PEM body) | 0.79 to 1.00 |
+| 40 clean lines alone (`ls -la`, `git log`) | 3 above 0.75: two `ls -la` lines (0.84, 0.85) and `commit <sha>` (1.00) |
+| `hunter2` alone / after the line `Password:` | 0.18 / 0.97 |
+
+Conclusions for section 8:
+
+- Blocks must be sized by the real token count, not by a character estimate.
+- The block check finds secrets well, but it flags many clean blocks. It decides only which lines get the line check. It is not a filter that makes Laya calls fewer in the usual case.
+- The line threshold is 0.75, because 0.8 misses a URL with a password (0.79).
+- The line check needs the line above as context.
 
 ## 3. Decisions
 
@@ -69,6 +90,7 @@ These decisions come from the user (2026-09-28).
 | `config/laya/output-line.json` (new) | Policy for one line of a flagged block. |
 | `config/laya/pane.json` (new) | Policy for the prompt type on the cursor line. |
 | `config/laya/safe-commands.txt` (new) | The safe list: first words that do not go to Laya. |
+| `config/laya/secret-values.txt` (new) | Regular expressions for secret values. An extra layer of the output guard (section 8). |
 
 ### Policy file format
 
@@ -135,6 +157,10 @@ Each Claude Code session has its own server. Each server uses about 1–2 GB of 
 - clux stops only a process whose pid is in `state` and whose command line contains `laya-serve`. This prevents a kill of a new process that has the same pid.
 - The reaper (3.9.0) also stops the server of an owner pane that is gone.
 
+### Who owns the server
+
+When `laya_pid` is in `state`, `open` started the server, and `close` stops it. When `laya_pid` is not in `state`, the server is external (`CLUX_LAYA_URL`), and clux does not stop it. The later verbs read the URL and the key from `state`, not from the environment, so that all verbs of one companion use the same server.
+
 ### When the server stops during a session
 
 Each verb that needs Laya calls the client. When the client exits 1, the verb fails with exit code 6 and the message `laya not available: close and open the companion`. clux does not restart the server itself.
@@ -152,8 +178,14 @@ Each verb that needs Laya calls the client. When the client exits 1, the verb fa
 
 ## 7. Command gate
 
-The gate applies to `run`, and to each `send` that ends a line at the shell prompt: `send --enter` and `send --key Enter` (also `C-m` and `C-j`).
-For `send`, the gate examines the full input line: the text after `clux$ ` on the cursor line, plus the new text. Thus a command that Claude types in parts gets the same check as a command in one part.
+The gate applies to `run`, and to each `send` that ends a line: `send --enter` and `send --key Enter` (also `C-m` and `C-j`). This is true in all pane states, not only at the `clux$` prompt. Thus a command typed into `ssh`, `python`, `psql` or another program in the pane also gets the check.
+
+For `send`, the state that goes to Laya is:
+
+- `line`: the full input line. At the `clux$` prompt this is the text after `clux$ ` on the cursor line, plus the new text. Thus a command that Claude types in parts gets the same check as a command in one part. In other states (a continuation line, a heredoc, a program prompt) there is no `clux$`, and `line` is the cursor line plus the new text.
+- `screen`: the 4 lines above the cursor line, so that Laya knows the program (for example `mysql>` or a `[y/N]` question).
+
+The safe list applies only at the `clux$` prompt.
 
 ### Safe list
 
@@ -178,7 +210,7 @@ The client gives `dangerous` when one boolean is above its threshold (default 0.
 
 ### What each level does
 
-| Level | `run` | `send` that ends a line at the shell prompt |
+| Level | `run` | `send` that ends a line |
 |---|---|---|
 | `safe` | Runs. | Sends. |
 | `caution` | Runs. The result gets the line `laya: caution (<reason>)` before `exit=<rc>`. | Sends. stderr gets the same note. |
@@ -189,8 +221,9 @@ The client gives `dangerous` when one boolean is above its threshold (default 0.
 
 - `run` writes an empty marker `<n>.confirm` and the reason to `<n>.reason`, then sends `__clux_run <n>` as in 3.9.0.
 - In `rc.bash`, `__clux_run` finds `<n>.confirm`. It shows `laya: dangerous (<reason>)`, then the command, then `run? [y/N] `. It reads one line from the terminal.
-- On `y` it deletes `<n>.confirm` and runs the command as in 3.9.0.
-- On other input it does not run the command. It writes `126` to `<n>.rc` and `declined` to `<n>.declined`.
+- It deletes `<n>.confirm` on all answers.
+- On `y` it runs the command as in 3.9.0.
+- On other input it does not run the command. It writes `declined` to `<n>.declined`, `126` to `<n>.rc`, and an empty `<n>.done`. Thus `report_run` does not wait its 1 s grace and does not print the incomplete-output note.
 - While `<n>.confirm` is present, `send` and `read` refuse with exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. Claude cannot type the answer.
 - `run` waits for the answer within its time limit. When the limit ends, the result is exit code 1 as in 3.9.0, and Claude uses `wait --run N`.
 - A declined run gives the line `laya: declined by the user` and `exit=126`.
@@ -201,21 +234,30 @@ The guard applies to all text that goes from the pane to Claude:
 
 - The output of `run` and `wait --run` (in `report_run`, after the cut to `--max-lines`).
 - The screen text of `read`.
-- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time.
+- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time. `wait --pattern` polls each 1 s, not each 0.2 s. It keeps a hash of the last raw capture and runs the guard again only when the capture changes.
 
 `--secret` runs keep the 3.9.0 behavior. Their output does not go to Laya or to Claude.
 
 ### Steps
 
-1. **Blocks.** The client splits the text into blocks of complete lines, with at most about 400 tokens in each block (the estimate is 4 characters for each token). A line longer than 400 tokens is its own block, split into pieces of 400 tokens.
+1. **Blocks.** The client splits the text into blocks of complete lines. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
 2. **Block check.** The client sends all blocks with `output-block.json`, at most 16 at one time. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
-3. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
-4. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line of the block with `output-line.json` (the same `secret` question). Only lines above the threshold (default 0.8) are held. Each held line becomes `[held by laya: secret]`.
-5. **Multi-line secrets.** Lines between `-----BEGIN` and `-----END` are held as one unit. When more than half of the lines of a block are flagged, the full block is held.
-6. **Long lines.** When a piece of a long line is flagged, the full line is held.
-7. **Extra layer.** Each line that matches the credential patterns of 3.9.0 is also held.
+3. **Cut text.** When `usage.input_tokens` of an answer is 512 or more, Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
+4. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
+5. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line two times with `output-line.json` (the same `secret` question): the line alone, and the line with the line above it. A line is held when:
+   - the line alone is above the line threshold (default 0.75), or
+   - the pair is above the threshold, and the line above alone is not. Thus the secret is in this line (for example `hunter2` after `Password:`).
 
-The block threshold is lower than the line threshold, so that a doubtful block always gets the line check.
+   Each held line becomes `[held by laya: secret]`.
+6. **Multi-line secrets.** Lines between `-----BEGIN` and `-----END` are held as one unit. When more than half of the lines of a block are held, the full block is held.
+7. **Long lines.** When a piece of a long line is flagged, the full line is held.
+8. **Extra layer.** Each line that matches a secret-value pattern in `config/laya/secret-values.txt` (new) is also held. Examples: `AKIA[0-9A-Z]{16}`, `gh[pousr]_[A-Za-z0-9]{36}`, `xox[abpr]-`, `-----BEGIN [A-Z ]*PRIVATE KEY-----`. The 3.9.0 file `credential-patterns.txt` finds credential prompts, not values, so the guard does not use it.
+
+The block threshold is lower than the line threshold, so that a doubtful block always gets the line check. Section 2 shows that most blocks of usual output go to the line check. Thus the usual cost is about 2 line requests for each line, plus the block requests. 200 lines give about 450 requests. This is an estimate: the plan must measure the real time with 16 requests at one time on MPS, before it sets the guard limit.
+
+### Known false positives
+
+Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and some `ls -la` lines. With this design they are held. This is an open decision (section 15).
 
 ### Result
 
@@ -226,7 +268,7 @@ The block threshold is lower than the line threshold, so that a doubtful block a
 
 ### Time
 
-The output guard runs inside the time of the verb. The default `--max-lines` of 200 gives about 10 blocks, which is one round of requests. The guard limit is 15 s. The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool.
+The output guard runs inside the time of the verb. The guard limit is 15 s. When the limit ends, all output is held (as when the client fails). The default time limit of `run` goes down from 100 s to 90 s, so that the verb ends before the 120 s limit of the Bash tool.
 
 ## 9. Pane state
 
@@ -248,7 +290,7 @@ The 3.9.0 codes stay. One code is new.
 | Code | Meaning |
 |---|---|
 | 3 | A credential prompt or a Laya confirmation is in the pane. The user must answer it in the pane. |
-| 6 | Laya: not installed, not available, refused (`dangerous` on `send`), or output held because Laya did not answer. |
+| 6 | Laya: not installed, not available, refused (`dangerous` on `send`), or output held because Laya did not answer. The message on stderr tells which. The skill uses the message text to select the next step. |
 
 ## 11. Skill
 
@@ -280,9 +322,13 @@ The 3.9.0 codes stay. One code is new.
   4. The fake server gives 503, then 200: the client tries one time more and gives the result.
   5. No server, a time-out, bad JSON: the client exits 1 and prints no input text to stdout or stderr.
   6. Terminal text never goes to stderr (a test sends a unique marker and greps stderr).
+  7. A block that the fake server answers with `input_tokens` 512 is split and sent again.
+  8. The pair rule: `hunter2` after `Password:` is held; the line after a held secret line is not held only because of that secret.
+  9. `secret-values.txt` holds an `AKIA…` line when the fake server gives 0 for it.
 - `test/terminal.bats`: `CLUX_LAYA_URL` with a host that is not loopback gives exit 6; `open` with no venv gives exit 6 and the install message.
 - `test/terminal-e2e.bats` (with the fake server through `CLUX_LAYA_URL`):
-  1. A `dangerous` `run`: the pane shows the question; `send` and `read` exit 3; `tmux send-keys y Enter` lets the run complete; `n` gives `exit=126` and `laya: declined by the user`.
+  1. A `dangerous` `run`: the pane shows the question; `send` and `read` exit 3; `tmux send-keys y Enter` lets the run complete; `n` gives `exit=126` and `laya: declined by the user`, and after it `send` and `read` work again.
+  1a. `send -- 'rm -rf '` then `send --enter -- '/tmp/x'` is checked as one line and refused with exit 6. `send --enter` inside `python3` in the pane is also checked.
   2. A `caution` `run` prints the note before `exit=<rc>`.
   3. `run -- 'printf "a\nAKIA…\nb\n"'` prints `a`, `[held by laya: secret]`, `b`.
   4. `read` and `wait --pattern` use the guarded text.
@@ -299,3 +345,15 @@ The 3.9.0 codes stay. One code is new.
 - Laya servers that are not on this machine.
 - Removal of secrets inside a line (a part of a line). Laya cannot find the position of a secret. The full line is held.
 - A restart of the Laya server during a session.
+
+## 15. Open decisions
+
+The user must decide these before the plan.
+
+1. **False positives in the output guard.** Laya holds some clean lines (`commit <sha>` 1.00, some `ls -la` lines 0.84). Options:
+   - (a) Accept them. The user can read the pane. This is the safest option.
+   - (b) Add `config/laya/not-secret.txt`: regular expressions for line shapes that are never secret (for example `^commit [0-9a-f]{40}$`, `ls -l` lines). A match removes a Laya hold. This breaks the rule "regular expressions can only add a hold".
+   - (c) Raise the line threshold to 0.9. This removes the `ls -la` false positives, but misses the URL with a password (0.79) and the PEM start line (0.85).
+   Recommendation: (b), with a short list that only matches lines with no `=`, `:` or `@` in them.
+2. **`send` in all pane states** (section 7). Each Enter costs one Laya call (about 0.12 s). The other option is to check `send` only at the `clux$` prompt, and to list the gap in section 14. Recommendation: all states, as written.
+3. **Version 4.0.0** (the companion does not operate without Laya) or 3.10.0.
