@@ -190,7 +190,7 @@ laya_url_is_loopback() {
     case "$rest" in *@*) return 1 ;; esac
     case "$rest" in '[::1]'|'[::1]:'*) return 0 ;; esac
     host="${rest%%:*}"
-    case "$host" in 127.0.0.1|localhost) return 0 ;; esac
+    case "$host" in 127.0.0.1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]) return 0 ;; esac
     return 1
 }
 
