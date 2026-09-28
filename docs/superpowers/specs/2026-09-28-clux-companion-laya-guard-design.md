@@ -91,6 +91,7 @@ These decisions come from the user (2026-09-28).
 | `config/laya/pane.json` (new) | Policy for the prompt type on the cursor line. |
 | `config/laya/safe-commands.txt` (new) | The safe list: first words that do not go to Laya. |
 | `config/laya/secret-values.txt` (new) | Regular expressions for secret values. An extra layer of the output guard (section 8). |
+| `config/laya/not-secret.txt` (new) | Regular expressions for line shapes that are never secret (section 15). |
 
 ### Policy file format
 
@@ -257,7 +258,7 @@ The block threshold is lower than the line threshold, so that a doubtful block a
 
 ### Known false positives
 
-Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and some `ls -la` lines. With this design they are held. This is an open decision (section 15).
+Section 2 found that some clean lines score above 0.75: `commit <sha>` lines and some `ls -la` lines. `config/laya/not-secret.txt` removes these holds (section 15).
 
 ### Result
 
@@ -346,14 +347,10 @@ The 3.9.0 codes stay. One code is new.
 - Removal of secrets inside a line (a part of a line). Laya cannot find the position of a secret. The full line is held.
 - A restart of the Laya server during a session.
 
-## 15. Open decisions
+## 15. Decisions made after review
 
-The user must decide these before the plan.
+The user started the implementation on 2026-09-28 with no change to the recommendations. Thus:
 
-1. **False positives in the output guard.** Laya holds some clean lines (`commit <sha>` 1.00, some `ls -la` lines 0.84). Options:
-   - (a) Accept them. The user can read the pane. This is the safest option.
-   - (b) Add `config/laya/not-secret.txt`: regular expressions for line shapes that are never secret (for example `^commit [0-9a-f]{40}$`, `ls -l` lines). A match removes a Laya hold. This breaks the rule "regular expressions can only add a hold".
-   - (c) Raise the line threshold to 0.9. This removes the `ls -la` false positives, but misses the URL with a password (0.79) and the PEM start line (0.85).
-   Recommendation: (b), with a short list that only matches lines with no `=`, `:` or `@` in them.
-2. **`send` in all pane states** (section 7). Each Enter costs one Laya call (about 0.12 s). The other option is to check `send` only at the `clux$` prompt, and to list the gap in section 14. Recommendation: all states, as written.
-3. **Version 4.0.0** (the companion does not operate without Laya) or 3.10.0.
+1. **False positives in the output guard: option (b).** `config/laya/not-secret.txt` (new) holds regular expressions for line shapes that are never secret (for example `^commit [0-9a-f]{40}$` and `ls -l` lines). A match removes a Laya hold only when the line has no `=`, `:` or `@`. A match never removes a hold from `secret-values.txt`. This is the one exception to the rule "regular expressions can only add a hold".
+2. **`send` in all pane states,** as section 7 says.
+3. **Version 4.0.0.**
