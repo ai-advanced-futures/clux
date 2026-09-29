@@ -1368,12 +1368,15 @@ typed_load() {
 # another way (a key, the user, or the end of the line), all of the line is
 # typed text: the rule then reads more, not less. No fork.
 typed_split() {
-    local before strict t row tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
+    local before strict t row tt line
+    rtrim "$CURSOR_LINE"
+    line="$RTRIM"
     LINE_HEAD="$CURSOR_LINE"
     LINE_TYPED="$1"
     typed_load || return 0
     before="$TYPED_BEFORE" strict="$TYPED_STRICT" t="$TYPED_TEXT" row="$TYPED_START"
-    tt="${t%"${t##*[![:space:]]}"}"
+    rtrim "$t"
+    tt="$RTRIM"
     if [ "$strict" != 1 ] && [ -n "$tt" ] && [[ "$line" == *"$tt" ]]; then
         LINE_HEAD="${line:0:$((${#line} - ${#tt}))}"
     elif typed_new_line "$row"; then

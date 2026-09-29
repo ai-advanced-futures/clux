@@ -709,7 +709,7 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     pairs = []
     for position in targets:
         above = above_of(position)
-        if units[position].line in held | late or above is None:
+        if units[position].line in held or units[position].line in late or above is None:
             continue
         if above.line in held or above.line in values:
             continue
@@ -918,7 +918,10 @@ def guard(text, limit, size=0, runs=(0,)):
     for start, end in zip(edges, edges[1:]):
         pem += [(first + start, last + start, kind)
                 for first, last, kind in pem_ranges(lines[start:end])]
-    starts = [sum(len(part) for part in parts[:index]) for index in range(len(parts))]
+    starts, offset = [], 0
+    for part in parts:
+        starts.append(offset)
+        offset += len(part)
     setup = (policy("output-block"), policy("output-line"),
              compile_lines("secret-values.txt"), compile_lines("not-secret.txt"))
     runner = remote(limit)
