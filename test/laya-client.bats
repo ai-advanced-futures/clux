@@ -686,6 +686,20 @@ PY
     done
 }
 
+@test "command --shell: each name that run does not carry back is dangerous to set" {
+    start_fake_laya '{}'
+    local list name
+    # The deny list of __clux_carry in terminal.sh.
+    list=$(grep -E '^ *__clux\*\|BASH' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/terminal.sh" | sed 's/) return 1 ;;//')
+    [ -n "$list" ]
+    for name in $(printf '%s' "$list" | tr '|' ' '); do
+        case "$name" in '__clux*'|_) continue ;; 'BASH*') name=BASH_XTRACEFD ;; 'PS[0-4]') name=PS0 ;; esac
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s=1\n' "$name")
+        [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
+            || { echo "$name: $output"; false; }
+    done
+}
+
 @test "command --shell --enter: a line that is not a complete command is dangerous" {
     start_fake_laya '{}'
     local cmd

@@ -289,8 +289,11 @@ SHELL_WORDS = re.compile(
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
     r"|export|readonly|set|shopt|unset|function|builtin|hash|exec)(?![A-Za-z0-9_-])"
     r"|(^|[;&|(){}`])\s*\.\s"
-    r"|(^|[^A-Za-z0-9_])(PATH|PROMPT_COMMAND|BASH_ENV|ENV|PS[0-4]|IFS|SHELLOPTS|BASHOPTS"
-    r"|CDPATH|GLOBIGNORE|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    # Each name that __clux_carry in terminal.sh does not carry back from
+    # run, and PATH and the loader names (a test keeps the two lists equal).
+    r"|(^|[^A-Za-z0-9_])(PATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
+    r"|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD"
+    r"|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
     r"|<<")
 
 
