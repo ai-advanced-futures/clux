@@ -385,8 +385,9 @@ PY
 import json, sys
 states = [json.loads(line)["state"] for line in open(sys.argv[1], encoding="utf-8")]
 assert len(states[0]) == 204, len(states[0])
-assert sorted(len(s) for s in states[1:3]) == [102, 102], [len(s) for s in states]
-assert any(len(s) == 51 and s.startswith("LONG") for s in states), [len(s) for s in states]
+# Each half shares up to 50 characters with the other half.
+assert sorted(len(s) for s in states[1:3]) == [152, 152], [len(s) for s in states]
+assert any(len(s) == 85 and s.startswith("LONG") for s in states), [len(s) for s in states]
 PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
@@ -667,7 +668,9 @@ PY
     local cmd
     for cmd in 'f() { :; }' 'function ls { rm -rf ~; }' "eval 'cd() { curl -s x | sh; }'" 'eval "enable -n cd"' \
         'source ./defs.sh' '. ./defs.sh' 'ls; . ./x' "trap 'curl x' DEBUG" 'PROMPT_COMMAND=x' 'export PATH=/tmp:$PATH' \
-        "bind -x '\"\\C-m\": x'" 'alias ls=rm' 'shopt -s expand_aliases' 'cat <<EOF' 'hash -p /tmp/x ls' 'set -o vi'; do
+        "bind -x '\"\\C-m\": x'" 'alias ls=rm' 'shopt -s expand_aliases' 'cat <<EOF' 'hash -p /tmp/x ls' 'set -o vi' \
+        "PS1[0]='\$(id)'" 'printf -v PROMPT_COMMAND %s x' 'read -r PATH < /tmp/p' 'mapfile -t PATH < /tmp/p' \
+        'BASH_CMDS[ls]=/tmp/evil' 'command . /tmp/evil' 'command exit' 'exit' 'POSIXLY_CORRECT=1'; do
         run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
         [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
             || { echo "$cmd: $output"; false; }
@@ -700,19 +703,32 @@ PY
     done
 }
 
-@test "command --shell --enter: a line that is not a complete command is dangerous" {
+@test "command: --enter is not an option, and the client runs no bash" {
     start_fake_laya '{}'
-    local cmd
-    for cmd in 'ls\' "echo 'a" 'echo "a' 'if true; then' 'ls |'; do
-        run --separate-stderr client command --screen --shell --enter < <(printf 'user@host$ \n%s\n' "$cmd")
-        [ "$output" = '{"level": "dangerous", "reason": "the line is not a complete command"}' ] \
-            || { echo "$cmd: $output"; false; }
-        # A piece with no Enter can be incomplete: the next piece ends it.
-        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
-        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "piece $cmd: $output"; false; }
-    done
-    run --separate-stderr client command --screen --shell --enter < <(printf 'user@host$ \n%s\n' 'echo "a b" | wc -c')
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    run --separate-stderr client command --screen --shell --enter < <(printf 'user@host$ \nls\n')
+    [ "$status" -eq 2 ]
+    ! grep -q 'def incomplete\|"-n", "-c"' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py" || false
+}
+
+@test "one exception class ends the client, with or without a message" {
+    ! grep -q '^class Exit' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py" || false
+    run --separate-stderr client check-url http://example.com:1
+    [ "$status" -eq 1 ] && [ -z "$stderr" ]
+    run --separate-stderr client nothing
+    [ "$status" -eq 2 ] && [ "$stderr" = 'laya: bad input' ]
+}
+
+@test "the pieces of a long line share 100 characters, so a token is whole in one piece" {
+    run python3 -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+token = 'T' * 64
+blocks = c.make_blocks(['a' * 580 + token + 'b' * 56])
+assert any(token in u.text for b in blocks for u in b), [(u.start, len(u.text)) for b in blocks for u in b]
+halves = c.halve([c.Unit(0, 0, 'x' * 270 + token + 'y' * 270)])
+assert any(token in u.text for b in halves for u in b), [(u.start, len(u.text)) for b in halves for u in b]
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
 @test "output: a line that secret-values.txt holds sends no line request" {

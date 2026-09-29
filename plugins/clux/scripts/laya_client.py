@@ -8,15 +8,14 @@ from CLUX_LAYA_KEY. The URL must use http and name a loopback host.
 Subcommands that ask Laya (input on stdin, one result on stdout):
 
   health                          {"ok": true}
-  command [--screen] [--shell] [--enter]
+  command [--screen] [--shell]
                                   {"level": "safe|caution|dangerous", "reason": "..."}
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
                                   screen. Each command goes to Laya.
-                                  --shell: the line is at a shell prompt; a
-                                  line that can change the shell is dangerous.
-                                  --enter: the send ends the line; with
-                                  --shell, an incomplete line is dangerous.
+                                  --shell: the line is at the prompt of a
+                                  nested shell; a line that can change that
+                                  shell is dangerous.
   output [--render] [--cut] [--limit S]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>", then the text.
@@ -52,19 +51,13 @@ MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long t
 
 
 class Fail(Exception):
-    """End the client with exit code 1 or 2 and a fixed message."""
+    """End the client with this exit code. With message (the default),
+    stderr gets the fixed message of the code; the helpers end with none."""
 
-    def __init__(self, code):
+    def __init__(self, code, message=True):
         Exception.__init__(self, code)
         self.code = code
-
-
-class Exit(Exception):
-    """End the client with this exit code and no message (the helpers)."""
-
-    def __init__(self, code):
-        Exception.__init__(self, code)
-        self.code = code
+        self.message = message
 
 
 class Busy(Exception):
@@ -278,44 +271,31 @@ def level_of(answer, pol):
     return "safe", reason
 
 
-# A line that send types at a shell prompt runs in that shell, not in the
-# subshell of run, so it can change the shell for later commands (spec
-# section 7). The gate examines each line alone, so such a line is
-# dangerous: send refuses it, and run (a subshell) can do the same work.
-# The rule reads the words anywhere in the line, also inside quotes, so
-# eval 'f() { ...; }' matches too. A false match only sends Claude to run.
+# At the clux prompt a line runs in a subshell (__clux_line in terminal.sh),
+# so it cannot change the pane shell. At the prompt of a nested shell (bash
+# in the pane) a line runs in that shell, and it can change that shell for
+# later lines (spec section 7). The gate examines each line alone, so such
+# a line is dangerous. The rule reads the words anywhere in the line, also
+# inside quotes. It is not complete: quotes can split a word (e""val), and
+# only the Laya score stops that.
 SHELL_WORDS = re.compile(
     r"\(\s*\)"
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
-    r"|export|readonly|set|shopt|unset|function|builtin|hash|exec)(?![A-Za-z0-9_-])"
+    r"|export|readonly|set|shopt|unset|function|builtin|command|hash|exec|read|mapfile"
+    r"|readarray|exit|logout)(?![A-Za-z0-9_-])"
+    r"|(^|[^A-Za-z0-9_.-])printf\s+(-\S+\s+)*-v"
     r"|(^|[;&|(){}`])\s*\.\s"
+    r"|[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?="
     # Each name that __clux_carry in terminal.sh does not carry back from
     # run, and PATH and the loader names (a test keeps the two lists equal).
     r"|(^|[^A-Za-z0-9_])(PATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
-    r"|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD"
-    r"|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
+    r"|OLDPWD|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
     r"|<<")
 
 
-def incomplete(command):
-    """A line that ends at a shell prompt but is not a complete command
-    (a last backslash, an open quote, a here-document): the next line joins
-    it, and the gate never examined the two lines as one. bash -n reads the
-    line and runs nothing."""
-    if command.rstrip().endswith("\\"):
-        return True
-    import subprocess
-    bash = "/bin/bash" if os.path.exists("/bin/bash") else "bash"
-    try:
-        done = subprocess.run([bash, "-n", "-c", command], capture_output=True, timeout=2,
-                              stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return True
-    return done.returncode != 0 or bool(done.stderr)
-
-
 def cmd_command(args):
-    if any(arg not in ("--screen", "--shell", "--enter") for arg in args):
+    if any(arg not in ("--screen", "--shell") for arg in args):
         raise Fail(2)
     text = read_stdin()
     if "--screen" in args:
@@ -345,11 +325,8 @@ def cmd_command(args):
     if is_cut(answer, pol):
         raise Fail(3)
     level, reason = level_of(answer, pol)
-    if "--shell" in args:
-        if SHELL_WORDS.search(command):
-            level, reason = "dangerous", "can change the shell for later commands"
-        elif "--enter" in args and command.strip() and incomplete(command):
-            level, reason = "dangerous", "the line is not a complete command"
+    if "--shell" in args and SHELL_WORDS.search(command):
+        level, reason = "dangerous", "can change the shell for later commands"
     print(json.dumps({"level": level, "reason": reason}))
 
 
@@ -387,6 +364,7 @@ def cmd_pane(args):
 
 
 BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
+PIECE_OVERLAP = 100        # the text that two pieces of one long line share
 CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens for each row
 ROW_MARGIN = 16            # measured: the two output-block rows differ by 9 tokens
 # laya-serve 0.3.21 runs one model request at a time (one worker thread), and
@@ -409,7 +387,9 @@ class Unit:
 def make_blocks(lines):
     """Split the lines into blocks of complete lines, at most BLOCK_CHARS
     characters each. A line longer than BLOCK_CHARS is cut into pieces, and
-    each piece is a block of its own. [inferred] A block of only blank lines
+    each piece is a block of its own. Two pieces share PIECE_OVERLAP
+    characters, so a token of up to that length is whole in one piece (a
+    held piece holds its full line). [inferred] A block of only blank lines
     is not sent.
 
     The blocks start at the last line and go up. Each cut of the text
@@ -423,7 +403,9 @@ def make_blocks(lines):
             if block:
                 blocks.append(block)
                 block, size = [], 0
-            starts = range(0, len(line), BLOCK_CHARS)
+            step = BLOCK_CHARS - PIECE_OVERLAP
+            starts = [start for start in range(0, len(line), step)
+                      if start == 0 or start + PIECE_OVERLAP < len(line)]
             for start in reversed(starts):
                 blocks.append([Unit(index, start, line[start:start + BLOCK_CHARS])])
             continue
@@ -448,7 +430,8 @@ def block_text(block):
 
 def halve(block):
     """Split a block that Laya cut in two. A block of one unit splits the
-    text of that unit into two pieces."""
+    text of that unit into two pieces that share up to PIECE_OVERLAP
+    characters at the middle."""
     if len(block) > 1:
         middle = len(block) // 2
         return [block[:middle], block[middle:]]
@@ -456,8 +439,9 @@ def halve(block):
     middle = len(unit.text) // 2
     if middle == 0:
         raise Fail(1)
-    return [[Unit(unit.line, unit.start, unit.text[:middle])],
-            [Unit(unit.line, unit.start + middle, unit.text[middle:])]]
+    share = min(PIECE_OVERLAP // 2, middle // 2)
+    return [[Unit(unit.line, unit.start, unit.text[:middle + share])],
+            [Unit(unit.line, unit.start + middle - share, unit.text[middle - share:])]]
 
 
 def is_cut(answer, pol):
@@ -755,10 +739,10 @@ def cmd_checkpoint(args):
     try:
         from huggingface_hub import try_to_load_from_cache
     except ImportError:
-        raise Exit(1)
+        raise Fail(1, message=False)
     path = try_to_load_from_cache(repo_id="convaiinnovations/laya", filename="model.safetensors")
     if not isinstance(path, str) or not os.path.isfile(path):
-        raise Exit(1)
+        raise Fail(1, message=False)
     print(path)
 
 
@@ -777,7 +761,7 @@ def cmd_check_url(args):
     if len(args) != 1:
         raise Fail(2)
     if not url_is_loopback(args[0]):
-        raise Exit(1)
+        raise Fail(1, message=False)
 
 
 def cells(text):
@@ -810,7 +794,7 @@ def cmd_version(args):
     try:
         print(version("laya"))
     except PackageNotFoundError:
-        raise Exit(1)
+        raise Fail(1, message=False)
 
 
 def cmd_pip_install(args):
@@ -826,13 +810,13 @@ def cmd_pip_install(args):
     except ValueError:
         raise Fail(2)
     if seconds <= 0:
-        raise Exit(124)
+        raise Fail(124, message=False)
     try:
         done = subprocess.run([sys.executable, "-m", "pip", "install",
                                "--disable-pip-version-check", args[1]], timeout=seconds)
     except subprocess.TimeoutExpired:
-        raise Exit(124)
-    raise Exit(done.returncode)
+        raise Fail(124, message=False)
+    raise Fail(done.returncode, message=False)
 
 
 def cmd_scrub(args):
@@ -872,10 +856,10 @@ def run(argv):
     try:
         main(argv)
         code = 0
-    except Exit as done:
-        code = done.code
     except Fail as error:
-        code, message = error.code, MESSAGES.get(error.code, MESSAGES[1])
+        code = error.code
+        if error.message:
+            message = MESSAGES.get(error.code, MESSAGES[1])
     except BaseException:
         code, message = 1, MESSAGES[1]
     try:
