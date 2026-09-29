@@ -920,7 +920,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         capture_cursor_line() { CURSOR_LINE='clux-ab12cd34\$ echo hi'; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
         send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
-    for k in M-x C-x C-o M-C-e C-r; do
+    for k in M-x C-x C-o M-C-e C-r Tab Up Down C-a C-w Space; do
         run --separate-stderr bash -c "$stubs; send_command --key $k"
         [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
         [[ "$stderr" == 'at the clux prompt, only Enter and keys that edit the line work: '* ]] || false
@@ -931,10 +931,10 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         [ "$stderr" = 'at the clux prompt, Escape is not permitted: use send --key C-c' ]
     done
     [ ! -e "$log" ]
-    run bash -c "$stubs; send_command --key C-a; send_command --key Enter"
+    run bash -c "$stubs; send_command --key Home; send_command --key Enter"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(cat "$d/line.cmd")" = 'echo hi' ]
-    [ "$(sed -n 1p "$log")" = 'key C-a' ]
+    [ "$(sed -n 1p "$log")" = 'key Home' ]
     # C-e first: C-u removes only the text to the left of the cursor.
     [ "$(sed -n 2p "$log")" = 'key C-e' ]
     [ "$(sed -n 3p "$log")" = 'key C-u' ]
@@ -1055,7 +1055,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "one helper reads key names with no case, and it keeps nocasematch" {
     [ "$(grep -c 'shopt -p nocasematch' "$TERMINAL")" -eq 0 ]
     run bash -c "source '$TERMINAL'
-        accept_key enter && edit_key c-A && nav_key pgdn && ! accept_key KPEnter && ! edit_key C-x && echo keys
+        accept_key enter && edit_key hOmE && ! edit_key C-a && ! edit_key Tab && ! edit_key Up && nav_key pgdn && ! accept_key KPEnter && ! edit_key C-x && echo keys
         shopt -q nocasematch || echo off
         shopt -s nocasematch; accept_key Enter; shopt -q nocasematch && echo on"
     [ "$output" = $'keys\noff\non' ]
@@ -1521,9 +1521,9 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         send_gate() { echo \"gate \$1\" >> '$log'; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
         send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }
         tmux_state() { return 1; }"
-    run bash -c "$stubs; send_command --key Up; send_command -- ev"
+    run bash -c "$stubs; send_command --key Left; send_command -- ev"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(tr '\n' '|' < "$log")" = 'gate |key Up|gate ev|text ev|' ]
+    [ "$(tr '\n' '|' < "$log")" = 'gate |key Left|gate ev|text ev|' ]
     [ "$(sed -n 3p "$d/typed")" = ev ]
 }
 
@@ -1561,15 +1561,15 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
         send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
-    for k in "--enter -- ls" "--key Enter" "--key C-m" "--key C-j" "--key C-x" "--key M-x" "--key F5"; do
+    for k in "--enter -- ls" "--key Enter" "--key C-m" "--key C-j" "--key C-x" "--key M-x" "--key F5" "--key Tab" "--key Up" "--key C-a" "--key C-w"; do
         run --separate-stderr bash -c "$stubs; send_command $k"
         [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
         [ "$stderr" = 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' ]
     done
     [ ! -e "$log" ]
-    run bash -c "$stubs; send_command -- 'ls -la'; send_command --key C-a; send_command --key BSpace"
+    run bash -c "$stubs; send_command -- 'ls -la'; send_command --key Home; send_command --key BSpace"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(tr '\n' '|' < "$log")" = 'text ls -la|key C-a|key BSpace|' ]
+    [ "$(tr '\n' '|' < "$log")" = 'text ls -la|key Home|key BSpace|' ]
     # A known program in front (python3) still takes Enter.
     rm -f "$log" "$d/typed"
     run bash -c "$stubs; pane_runs_program() { return 0; }; pane_nested_shell() { return 1; }; send_command --enter -- 'print(1)'"

@@ -1338,8 +1338,8 @@ typed_add() {
 }
 
 # typed_edit — send sent a key that can edit the line: the typed text can
-# be anywhere in the line now. With no typed text (Up at an empty prompt
-# shows a line from the history), all of the line is typed text.
+# be anywhere in the line now. With no typed text (the key edits text that
+# the user typed), all of the line is typed text.
 typed_edit() {
     typed_load || { typed_row; TYPED_START="$TYPED_ROW"; }
     printf '%s\n1\n%s\n%s\n' "$TYPED_BEFORE" "$TYPED_TEXT" "$TYPED_START" > "$D/typed"
@@ -1416,11 +1416,14 @@ refuse_meta_front() {
 # accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
 accept_key() { key_is "$1" Enter C-m C-j '^m' '^j'; }
 
-# edit_key KEY — a key that only moves in the line or deletes text at the
-# clux prompt (the default readline keys; history is off).
+# edit_key KEY — the only keys that send gives with no Enter at the clux
+# prompt and in a nested shell: they move in the line or delete text. It is
+# a small list on purpose: Tab runs completion (the completion of make runs
+# make -npq), Up and Down show history, M- and C-x keys run readline or zle
+# commands, and each of them can run code with no Enter. A user binding of
+# these keys (inputrc, bindkey) is out of scope (spec section 7).
 edit_key() {
-    key_is "$1" Left Right Home End Up Down BSpace DC Delete Tab Space \
-        C-a C-b C-e C-f C-h C-k C-u C-w C-l '^a' '^b' '^e' '^f' '^h' '^k' '^u' '^w' '^l'
+    key_is "$1" Left Right Home End BSpace DC Delete C-u C-k '^u' '^k'
 }
 
 # send_line LINE — end a line at the clux prompt: LINE runs in a subshell
@@ -2166,9 +2169,9 @@ send_command() {
         # (shell-expand-line) runs $(...) of the line in the pane shell. The
         # check needs tmux only, not Laya.
         # tmux reads a key name with no case (ESCAPE is Escape). In a nested
-        # shell, Escape and then C-e (an edit key) is M-C-e too. While a
-        # command of the pane shell runs, the pane shell drops the keys that
-        # wait when it shows its prompt (__clux_flush).
+        # shell, Escape and then a key that the user types there (C-e) is
+        # M-C-e too. While a command of the pane shell runs, the pane shell
+        # drops the keys that wait when it shows its prompt (__clux_flush).
         if key_is "$key" Escape; then
             if ! capture_cursor_line || prompt_input; then
                 fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2

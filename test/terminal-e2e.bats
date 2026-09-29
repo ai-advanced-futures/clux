@@ -737,7 +737,7 @@ pane_shows() {
     # A key sends the line to the gate first: any key can be bound to
     # accept-line.
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" -l '|sh'
-    run "$TERMINAL" send --key C-a
+    run "$TERMINAL" send --key Home
     [ "$status" -eq 6 ]
     run "$TERMINAL" send --key C-c
     [ "$status" -eq 0 ]
@@ -768,12 +768,12 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" send -- 'echo abc'
     [ "$status" -eq 0 ]
-    run "$TERMINAL" send --key C-a
+    run "$TERMINAL" send --key Home
     [ "$status" -eq 0 ]
     run "$TERMINAL" send -- 'rm -rf x; '
     [ "$status" -eq 2 ]
     [ "$output" = 'the cursor is not at the end of the line: send --key End or --key C-c first' ]
-    run "$TERMINAL" send --key C-e
+    run "$TERMINAL" send --key End
     [ "$status" -eq 0 ]
     run "$TERMINAL" send -- ' def'
     [ "$status" -eq 0 ]
@@ -1176,7 +1176,12 @@ pane_shows() {
     run "$TERMINAL" send --key C-x
     [ "$status" -eq 2 ]
     [[ "$output" == 'at the clux prompt, only Enter and keys that edit the line work: C-x'* ]] || false
-    run "$TERMINAL" send --key C-a
+    # Tab (completion), Up (history) and C-a are not edit keys.
+    for k in Tab Up C-a; do
+        run "$TERMINAL" send --key "$k"
+        [ "$status" -eq 2 ] || { echo "$k: $output"; false; }
+    done
+    run "$TERMINAL" send --key Home
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
