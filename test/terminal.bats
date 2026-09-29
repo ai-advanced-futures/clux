@@ -1002,7 +1002,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         report_run 4 200"
     [ "$status" -eq 0 ] || { echo "$output $stderr"; false; }
     [ "$output" = $'a\n[held by laya: not_examined, 1 lines]\nlaya: held 1 lines\nlaya: 1 lines not examined in the time limit: use wait --run 4 again\nexit=1' ] || { echo "$output"; false; }
-    [[ "$stderr" == *'use wait --run 4 again, or wait --run 4 --discard'* ]] || false
+    [[ "$stderr" == *'use wait --run 4 again (this helps only when Laya was slow for a short time), or wait --run 4 --discard and run the command again with less output'* ]] || false
     [ -e "$d/4.out" ] && [ -e "$d/4.held" ] && [ ! -e "$d/4.reading" ]
 }
 

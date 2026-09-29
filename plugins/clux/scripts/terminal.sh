@@ -2074,7 +2074,11 @@ report_run() {
         # error). .out stays and the run keeps the lock, as when Laya
         # fails: wait --run gives them when Laya examines them.
         : > "$D/$n.held"
-        printf 'laya did not examine all of the output in the time limit: it stays; use wait --run %s again, or wait --run %s --discard\n' "$n" "$n" >&2
+        # Limit: the guard starts at the last line, so the lines that are
+        # not examined are the top lines, and a retry examines all lines
+        # again from the bottom with the same time limit. A retry helps
+        # only when Laya was slow for a short time; the message says so.
+        printf 'laya did not examine all of the output in the time limit: it stays; use wait --run %s again (this helps only when Laya was slow for a short time), or wait --run %s --discard and run the command again with less output (for example | head -n 50): --max-lines keeps the last lines, which Laya examined\n' "$n" "$n" >&2
         rm -f "$D/$n.reading"
         READING=
         return 0
