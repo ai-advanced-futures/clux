@@ -854,6 +854,23 @@ PY
     done
 }
 
+@test "command --shell: for, select, getopts and the zsh prompt, sched and local set a name with no NAME=" {
+    start_fake_laya '{}'
+    local cmd
+    for cmd in "for PROMPT_COMMAND in 'curl x|sh'; do :; done" 'for PATH in /tmp/evil; do :; done' \
+        'for a PATH in x; do :; done' 'foreach PS1 (x) :; end' 'select PS1 in a; do break; done' 'getopts x PATH' \
+        "prompt='\$(id)'" 'psvar=(x)' 'sched +1 id' 'vared PATH' 'zparseopts -A PATH x' 'emulate sh' \
+        'disable cd' 'functions -c ls x' 'local PATH=/tmp' 'integer SHLVL'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
+            || { echo "$cmd: $output"; false; }
+    done
+    for cmd in 'for f in *.txt; do echo "$f"; done' 'for x in a b; do echo "$x"; done' 'ls prompt' 'grep -r localhost .'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
+    done
+}
+
 @test "command --shell: the shell rule refuses with no request, also when Laya does not answer" {
     run --separate-stderr env CLUX_LAYA_URL=http://127.0.0.1:9 "$CLUX_LAYA_PYTHON" "$LAYA_CLIENT" \
         command --screen --shell < <(printf 'user@host$ \neval x\n')

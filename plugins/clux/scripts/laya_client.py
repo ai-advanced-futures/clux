@@ -344,6 +344,8 @@ def level_of(answer, pol):
 # and PATH and the loader names (a test keeps the two lists equal); names
 # that change where later commands read or write files; the zsh prompts
 # (with prompt_subst they run $(...) at each prompt) and zsh hook arrays.
+# A name is set with no NAME= too: for NAME in, select NAME, getopts X NAME
+# and read NAME (the words below).
 SHELL_NAMES = (
     r"PATH|FPATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
     r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
@@ -356,7 +358,8 @@ SHELL_WORDS = re.compile(
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
     r"|export|readonly|set|shopt|unset|function|builtin|command|hash|exec|read|mapfile"
     r"|readarray|exit|logout|complete|compgen|bindkey|setopt|unsetopt|zle|autoload|zmodload"
-    r"|umask|ulimit|fc)"
+    r"|umask|ulimit|fc|select|getopts|sched|vared|zparseopts|emulate|disable|functions"
+    r"|local|private|integer|float)"
     r"(?![A-Za-z0-9_-])"
     r"|(^|[^A-Za-z0-9_.-])printf\s+(-\S+\s+)*-v"
     # . and the zsh r (run a history line again) at the start of a command,
@@ -367,11 +370,15 @@ SHELL_WORDS = re.compile(
     r"|!(?![\s=(]|$)|^\s*\^"
     r"|[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?="
     r"|(^|[^A-Za-z0-9_])(" + SHELL_NAMES + r")\+?="
+    # for and the zsh foreach set each name after them (zsh takes more
+    # than one name: for a PATH in x).
+    r"|(^|[^A-Za-z0-9_.-])(for|foreach)\s+([A-Za-z_][A-Za-z0-9_]*\s+)*(" + SHELL_NAMES
+    + r"|prompt|psvar|path|fpath|cdpath|manpath|module_path|mailpath)(?![A-Za-z0-9_])"
     # A default in an expansion assigns too: ${PROMPT_COMMAND:=x}.
     r"|\$\{(" + SHELL_NAMES + r"):?[=]"
-    # The zsh arrays that PATH, FPATH and CDPATH follow, as a word of their
-    # own (not --module-path=).
-    r"|(^|[\s;&|(){}`])(path|fpath|cdpath)\+?="
+    # The zsh arrays that PATH, FPATH and CDPATH follow, and the zsh prompt
+    # (the same as PS1), as a word of their own (not --module-path=).
+    r"|(^|[\s;&|(){}`])(path|fpath|cdpath|manpath|module_path|mailpath|prompt|psvar)\+?="
     r"|<<")
 
 
