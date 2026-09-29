@@ -19,10 +19,14 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   prompt), then the text that clux typed. Laya
                                   gets them as one line. Typed text that can
                                   change that shell is dangerous.
-  output [--render] [--cut] [--limit S]
+  output [--render] [--cut] [--limit S] [--pieces BYTES]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
-                                  --render prints "held=<k>", then the text.
+                                  --render prints "held=<k>" (with " not_examined=<m>"
+                                  when the time limit left <m> lines not examined),
+                                  then the text.
                                   --cut: the text can start inside a key.
+                                  --pieces: guard pieces of whole lines of at most
+                                  BYTES each, with one time limit for all.
   pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
 
 Helpers that do not ask Laya: checkpoint, ready, port, version,
@@ -568,8 +572,10 @@ def check_blocks(pool, runner, pol, blocks):
     When the mean row is within ROW_MARGIN of CUT_TOKENS, the longest row
     can be cut: send the halves of the block again. Give the list of
     (block, answer) and the list of blocks that the time limit left not
-    examined."""
-    done, late, pending = [], [], blocks
+    examined. The bottom blocks go first: they are the newest lines (the
+    last error), and when the time limit ends, the top blocks are the ones
+    that stay not examined."""
+    done, late, pending = [], [], blocks[::-1]
     while pending:
         answers = list(pool.map(
             lambda block: in_time(runner, lambda: ask(runner, pol, block_text(block))), pending))
@@ -645,7 +651,8 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
         above = above_of(position)
         if above is not None and above.line not in cleared and above.line not in values:
             alone_ids.add(position - 1)
-    order = sorted(alone_ids)
+    # The bottom lines first, as in check_blocks.
+    order = sorted(alone_ids, reverse=True)
     alone = dict(zip(order, pool.map(lambda position: score(units[position].text), order)))
     # A unit above that its block check passed and that got no alone answer
     # in time stays shown: then only the pair rule can hold the unit below.
@@ -667,9 +674,10 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
             continue
         pairs.append(position)
     texts = [units[position - 1].text[-PAIR_ABOVE:] + "\n" + units[position].text for position in pairs]
-    # In line order: a line that its pair holds stops the pair of the line
-    # below it.
-    for position, value in zip(pairs, list(pool.map(score, texts))):
+    # The bottom pairs go to Laya first, and the answers are read in line
+    # order: a line that its pair holds stops the pair of the line below it.
+    scores = list(pool.map(score, texts[::-1]))[::-1]
+    for position, value in zip(pairs, scores):
         if value is None:
             late.add(units[position].line)
         elif value > limit and units[position - 1].line not in held:
@@ -708,6 +716,9 @@ PEM_END = "-----END"
 # The END line of a private key. Only such a line holds the lines above it
 # when the text has no BEGIN: a certificate or "-----END OF REPORT-----" does not.
 PEM_KEY_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
+# The BEGIN line of a private key. Only such a line holds to the end of the
+# text when no END comes: a certificate with no END does not.
+PEM_KEY_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
 
 
 def compile_lines(name):
@@ -737,24 +748,28 @@ def never_secret(line, patterns):
 
 
 def pem_ranges(lines, cut=False):
-    """Step 6: -----BEGIN to -----END is one held unit. [inferred] A BEGIN with
-    no END holds to the end of the text. When the text is cut (it can start
-    inside a key), the END line of a private key with no BEGIN holds from
-    the first line. The rule holds each range whatever Laya answers."""
-    ranges, begin, seen = [], None, False
+    """Step 6: -----BEGIN to -----END is one held unit. [inferred] The BEGIN
+    line of a private key with no END holds to the end of the text; another
+    BEGIN with no END (a certificate) holds nothing, and Laya examines it.
+    When the text is cut (it can start inside a key), the END line of a
+    private key with no BEGIN holds from the first line. The rule holds each
+    range whatever Laya answers."""
+    ranges, begin, key, seen = [], None, None, False
     for index, line in enumerate(lines):
         if begin is None and PEM_BEGIN in line:
             begin = index
+        if key is None and PEM_KEY_BEGIN.search(line):
+            key = index
         if PEM_END in line:
             if begin is not None:
                 ranges.append((begin, index, "secret"))
             elif not seen and cut and PEM_KEY_END.search(line):
                 ranges.append((0, index, "secret"))
-            begin, seen = None, True
+            begin, key, seen = None, None, True
         elif begin is not None:
             seen = True
-    if begin is not None:
-        ranges.append((begin, len(lines) - 1, "secret"))
+    if key is not None:
+        ranges.append((key, len(lines) - 1, "secret"))
     return ranges
 
 
@@ -770,8 +785,9 @@ def half_rule(checked, ranges):
     return result
 
 
-def guard(text, limit, cut=False):
-    """The output guard (spec section 8). Give (guarded text, held)."""
+def guard(text, limit, cut=False, runner=None):
+    """The output guard (spec section 8). Give (guarded text, held). A
+    runner that the caller gives keeps its time limit (guard_pieces)."""
     if not text.strip():
         return text, []
     tail = "\n" if text.endswith("\n") else ""
@@ -779,7 +795,7 @@ def guard(text, limit, cut=False):
     block_pol, line_pol = policy("output-block"), policy("output-line")
     values = value_lines(lines, compile_lines("secret-values.txt"))
     shapes = compile_lines("not-secret.txt")
-    runner = remote(limit)
+    runner = runner or remote(limit)
     pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL)
     try:
         checked, late_blocks = check_blocks(pool, runner, block_pol, make_blocks(lines))
@@ -802,14 +818,42 @@ def guard(text, limit, cut=False):
     return "\n".join(out) + tail, summary
 
 
+def guard_pieces(text, limit, cut, size):
+    """Guard the text in pieces of whole lines, each at most SIZE bytes (one
+    line that is longer is a piece of its own), with one time limit for all
+    of them: a guard of one piece never starts inside a line, and one
+    process examines all pieces (wait --pattern). The bottom piece goes
+    first, as the bottom blocks do in check_blocks. Give (text, held)."""
+    if not text.strip():
+        return text, []
+    tail = "\n" if text.endswith("\n") else ""
+    parts, part, used = [], [], 0
+    for line in (text[:-1] if tail else text).split("\n"):
+        count = len(line.encode("utf-8")) + 1
+        if part and used + count > size:
+            parts.append(part)
+            part, used = [], 0
+        part.append(line)
+        used += count
+    parts.append(part)
+    runner = remote(limit)
+    results = [None] * len(parts)
+    for index in reversed(range(len(parts))):
+        results[index] = guard("\n".join(parts[index]), limit, cut, runner)
+    return ("\n".join(result[0] for result in results) + tail,
+            [item for result in results for item in result[1]])
+
+
 def cmd_output(args):
-    render_mode, cut, limit, rest = False, False, DEFAULT_OUTPUT_LIMIT, list(args)
+    render_mode, cut, limit, size, rest = False, False, DEFAULT_OUTPUT_LIMIT, 0, list(args)
     while rest:
         arg = rest.pop(0)
         if arg == "--render":
             render_mode = True
         elif arg == "--cut":
             cut = True
+        elif arg == "--pieces" and rest and rest[0].isdigit() and int(rest[0]) > 0:
+            size = int(rest.pop(0))
         elif arg == "--limit" and rest:
             try:
                 limit = float(rest.pop(0))
@@ -819,9 +863,16 @@ def cmd_output(args):
                 raise Fail(2)
         else:
             raise Fail(2)
-    text, held = guard(read_stdin(), limit, cut)
+    if size:
+        text, held = guard_pieces(read_stdin(), limit, cut, size)
+    else:
+        text, held = guard(read_stdin(), limit, cut)
     if render_mode:
-        sys.stdout.write("held=%d\n%s" % (sum(item["lines"] for item in held), text))
+        # not_examined=N only when the time limit left lines not examined:
+        # the caller can then try again, which it must not do for a secret.
+        late = sum(item["lines"] for item in held if item["kind"] == "not_examined")
+        sys.stdout.write("held=%d%s\n%s" % (sum(item["lines"] for item in held),
+                                             " not_examined=%d" % late if late else "", text))
     else:
         print(json.dumps({"text": text, "held": held}))
 

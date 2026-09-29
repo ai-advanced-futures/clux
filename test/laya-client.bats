@@ -302,7 +302,7 @@ PY
     start_fake_laya '{"delay": 3}'
     run --separate-stderr client output --render --limit 1 <<<'UNIQUE-MARKER-5e0b'
     [ "$status" -eq 0 ]
-    [ "$output" = $'held=1\n[held by laya: not_examined, 1 lines]' ]
+    [ "$output" = $'held=1 not_examined=1\n[held by laya: not_examined, 1 lines]' ]
     [[ "$stderr" != *'UNIQUE-MARKER-5e0b'* ]] || false
     # The line check too: the lines of a flagged block that do not get an
     # answer in time are held, and the other blocks stay.
@@ -320,6 +320,42 @@ PY
     # answer too, so all lines of that block are held.
     [[ "$output" == *$'\n[held by laya: not_examined, '*' lines]'* ]] || { echo "$output"; false; }
     [[ "$output" != *'flag-me here'* ]] || false
+}
+
+@test "output: the bottom blocks go to Laya first, and render counts the not examined lines" {
+    # Each block waits 1 s, 2 go at a time, and the limit ends after 2
+    # rounds: the 2 top blocks stay not examined, not the newest lines.
+    start_fake_laya '{"delay": 1}'
+    local text
+    text=$(for i in 1 2 3 4 5 6; do printf 'line-%s %0590d\n' "$i" 0; done)
+    run --separate-stderr client output --render --limit 2.6 < <(printf '%s\n' "$text")
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "${lines[0]}" = 'held=2 not_examined=2' ] || { echo "$output"; false; }
+    [ "${lines[1]}" = '[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
+    [ "${lines[2]}" = '[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
+    [[ "$output" == *'line-6 '* ]] || false
+    [[ "$output" != *'line-1 '* ]] || false
+    # A secret is held= with no not_examined: the caller must not try it again.
+    stop_fake_laya
+    start_fake_laya '{"rules": [{"contains": "abc123", "answers": {"secret": 0.95}}]}'
+    run client output --render < <(printf 'token abc123\n')
+    [ "$output" = $'held=1\n[held by laya: secret]' ]
+}
+
+@test "output --pieces guards pieces of whole lines in one process with one time limit" {
+    start_fake_laya '{"rules": [{"contains": "abc123", "answers": {"secret": 0.95}}]}'
+    run client output --render --pieces 20 < <(printf 'first line here\ntoken abc123\nlast line here\n')
+    [ "$status" -eq 0 ]
+    [ "$output" = $'held=1\nfirst line here\n[held by laya: secret]\nlast line here' ] || { echo "$output"; false; }
+    # Each piece is one block that waits 1 s. The limit ends after the
+    # second: the bottom pieces go first, and the top piece is not examined.
+    stop_fake_laya
+    start_fake_laya '{"delay": 1}'
+    run --separate-stderr client output --render --pieces 20 --limit 2.5 < <(printf 'top line one\nmiddle line\nbottom line\n')
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "$output" = $'held=1 not_examined=1\n[held by laya: not_examined, 1 lines]\nmiddle line\nbottom line' ] || { echo "$output"; false; }
+    run client output --render --pieces 0 <<<'x'
+    [ "$status" -eq 2 ]
 }
 
 @test "output: one request that reaches the request limit holds only its block" {
@@ -449,6 +485,12 @@ PY
     [ "$output" = $'held=1\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n[held by laya: secret]\ne1' ] || [ "$output" = $'held=0\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1' ]
     run client output --render --cut < <(printf 'r1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1\n')
     [ "$output" = $'held=0\nr1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1' ]
+    # A BEGIN with no END holds to the end only for a private key: a
+    # certificate cut at its end holds nothing, and Laya examines it.
+    run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIBszCCAV2gAwIBAgIU\nerror: the last line\n')
+    [ "$output" = $'held=0\nc1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIBszCCAV2gAwIBAgIU\nerror: the last line' ] || { echo "$output"; false; }
+    run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIB\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n')
+    [ "$output" = $'held=2\nc1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIB\n[held by laya: secret, 2 lines]' ] || { echo "$output"; false; }
 }
 
 @test "output: secret-values.txt holds an AKIA line when Laya gives 0" {
