@@ -492,7 +492,7 @@ state_load() {
             laya_key) S_LAYA_KEY="$value" ;;
             token) S_TOKEN="$value" ;;
         esac
-    done < "$dir/state"
+    done 2>/dev/null < "$dir/state"
     # A companion that an older clux opened has no token.
     PROMPT_MARK='clux$'
     CONT_MARK=
@@ -706,7 +706,7 @@ __clux_load() {
       __clux_values[${#__clux_values[@]}]="${__clux_kv#*=}"
       __clux_new="$__clux_new$__clux_k "
     done
-  } < "$1"
+  } 2>/dev/null < "$1"
   command -p rm -f "$1"
   [ "$__clux_end" -eq 1 ] || return 0
   for __clux_k in $(compgen -e); do
@@ -788,7 +788,7 @@ __clux_run() {
     printf '%s\n' 'refused: this run is not waiting to start'
     return 1
   fi
-  __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
+  { __clux_cmd=$(<"$__clux_d/$__clux_n.cmd"); } 2>/dev/null
   command -p rm -f "$__clux_d/$__clux_n.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
     __clux_cmd='printf "%s\n" "refused: the command changed after Laya examined it"; (builtin exit 126)'
@@ -801,7 +801,7 @@ __clux_run() {
   # plain run removes it now, so no verb waits for a question.
   [ "$__clux_m" = confirm ] || command -p rm -f "$__clux_d/$__clux_n.confirm"
   if [ "$__clux_m" = confirm ]; then
-    __clux_reason=$(<"$__clux_d/$__clux_n.reason")
+    { __clux_reason=$(<"$__clux_d/$__clux_n.reason"); } 2>/dev/null
     # Control characters show as ?, so the question shows the full command.
     printf 'laya: dangerous (%s)\n$ %s\n' "${__clux_reason//[[:cntrl:]]/?}" "${__clux_cmd//[[:cntrl:]]/?}"
     # The read is in a subshell: bash goes on with a read after a trapped
@@ -844,7 +844,7 @@ __clux_line() {
     printf '%s\n' 'refused: no line is waiting'
     return 1
   fi
-  __clux_cmd=$(<"$__clux_d/line.cmd")
+  { __clux_cmd=$(<"$__clux_d/line.cmd"); } 2>/dev/null
   command -p rm -f "$__clux_d/line.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
     printf '%s\n' 'refused: the line changed after Laya examined it'
@@ -1115,7 +1115,7 @@ laya_guard() {
     local out data size tmp cut="${2:-0}" args=(output --render)
     if [ "${3:-0}" -eq 1 ]; then
         GUARD_CUT=0
-        data=$(LC_ALL=C tr -d '\000' < "$1" && printf x) || return 6
+        data=$(LC_ALL=C tr -d '\000' 2>/dev/null < "$1" && printf x) || return 6
         data="${data%x}"
         args+=(--pieces "$LAYA_GUARD_BYTES")
         [ "$cut" -eq 0 ] || args+=(--cut)
@@ -1296,7 +1296,7 @@ LINE_TYPED=
 typed_load() {
     TYPED_BEFORE= TYPED_STRICT=0 TYPED_TEXT= TYPED_START=
     [ -f "$D/typed" ] || return 1
-    { IFS= read -r TYPED_BEFORE; IFS= read -r TYPED_STRICT; IFS= read -r TYPED_TEXT; IFS= read -r TYPED_START; } < "$D/typed"
+    { IFS= read -r TYPED_BEFORE; IFS= read -r TYPED_STRICT; IFS= read -r TYPED_TEXT; IFS= read -r TYPED_START; } 2>/dev/null < "$D/typed"
     return 0
 }
 
@@ -1774,7 +1774,7 @@ release_busy() { rm -f "$D/busy/owner" "$D/busy/pid"; rmdir "$D/busy" 2>/dev/nul
 busy_holder_dead() {
     local pid=
     [ -f "$D/busy/pid" ] || return 1
-    read -r pid < "$D/busy/pid" || return 1
+    read -r pid 2>/dev/null < "$D/busy/pid" || return 1
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     ! kill -0 "$pid" 2>/dev/null
 }
@@ -1886,7 +1886,7 @@ line_unchanged() {
 release_run() {
     local owner=
     [ "$1" -eq "${S_SEQ:-0}" ] || return 0
-    read -r owner < "$D/busy/owner" 2>/dev/null || owner=
+    read -r owner 2>/dev/null < "$D/busy/owner" || owner=
     [ -z "$owner" ] || [ "$owner" = "$1" ] || return 0
     release_busy
 }
@@ -1939,7 +1939,7 @@ report_run() {
     local n="$1" max="$2" rc i=0 lines last reason guard=0
     # A declined run wrote .done before .rc, so there is no grace and no note.
     if [ -e "$D/$n.declined" ]; then
-        read -r rc < "$D/$n.rc"
+        read -r rc 2>/dev/null < "$D/$n.rc"
         if [ -e "$D/$n.notstarted" ]; then
             printf 'run %s did not start: the typed line changed\nexit=%s\n' "$n" "$rc"
         else
@@ -1956,13 +1956,13 @@ report_run() {
     READING="$n"
     trap verb_exit EXIT
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
-    read -r rc < "$D/$n.rc"
+    read -r rc 2>/dev/null < "$D/$n.rc"
     GUARD_HELD=0
     GUARD_LATE=0
     GUARD_TEXT=
     if [ ! -e "$D/$n.secret" ] && [ -s "$D/$n.out" ]; then
         last=$(tail -c 1 "$D/$n.out")
-        lines=$(wc -l < "$D/$n.out")
+        lines=$(wc -l 2>/dev/null < "$D/$n.out")
         lines=$((lines + 0))
         [ -z "$last" ] || lines=$((lines + 1))
         if [ "$lines" -gt "$max" ]; then
@@ -1989,7 +1989,7 @@ report_run() {
     fi
     [ -e "$D/$n.done" ] || printf '%s\n' 'output may be incomplete: a process still holds the output'
     if [ -s "$D/$n.caution" ]; then
-        read -r reason < "$D/$n.caution"
+        read -r reason 2>/dev/null < "$D/$n.caution"
         printf 'laya: caution (%s)\n' "$reason"
     fi
     printf 'exit=%s\n' "$rc"
@@ -2424,7 +2424,7 @@ wait_command() {
         pid_link "$D/$value.reading" || fail "another verb reads the output of run $value now: try again" 5
         READING="$value"
         trap verb_exit EXIT
-        read -r rc < "$D/$value.rc"
+        read -r rc 2>/dev/null < "$D/$value.rc"
         rm -f "$D/$value.out" "$D/$value.held"
         printf 'output discarded: laya did not examine it\nexit=%s\n' "$rc"
         release_run "$value"

@@ -1012,6 +1012,27 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$output" = ok ]
 }
 
+@test "a read of a clux file that another verb removed writes no error" {
+    local d="$BATS_TEST_TMPDIR/c"
+    mkdir -p "$d"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_run 3; echo rc=\$?"
+    [ "$output" = 'rc=0' ] && [ -z "$stderr" ] || { echo "[$output] [$stderr]"; false; }
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; state_load '$d/gone'; echo rc=\$?"
+    [ "$output" = 'rc=1' ] && [ -z "$stderr" ] || { echo "[$output] [$stderr]"; false; }
+    # The rule for each read of a file that clux or the pane shell makes:
+    # 2>/dev/null comes before the input redirect (bash opens the file
+    # first when it comes after), or the read is in { } 2>/dev/null.
+    run grep -nE '(<|\$\(<) ?"\$(D|dir|__clux_d|1)[/"]' "$TERMINAL"
+    local line bad=
+    while IFS= read -r line; do
+        case "$line" in
+            *'2>/dev/null < "'*|*'} 2>/dev/null'*) ;;
+            *) bad="$bad$line"$'\n' ;;
+        esac
+    done <<< "$output"
+    [ -z "$bad" ] || { echo "$bad"; false; }
+}
+
 @test "drop_lines is the one rule that removes lines, and an empty list removes nothing" {
     run bash -c "source '$TERMINAL'; drop_lines \$'a\\nb\\nc\\nb' b"
     [ "$output" = $'a\nc' ]
