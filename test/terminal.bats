@@ -86,7 +86,7 @@ EOF
 }
 
 @test "the wrapper sets umask 077 only inside the process substitution" {
-    grep -q '> >(umask 077; tee ' "$TERMINAL"
+    grep -q '> >(umask 077; command -p tee ' "$TERMINAL"
     run sed -n '/^write_rc_file()/,/^EOF/p' "$TERMINAL"
     [[ "$output" == *'__clux_run()'* ]] || false
     ! printf '%s\n' "$output" | grep -q '^umask' || false
@@ -622,6 +622,30 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "${lines[2]}" = 'args: output --render --cut --limit 15' ]
     # report_run over --max-lines, read and wait --pattern pass 1.
     [ "$(grep -cE 'laya_guard <\(.*\) 1( 1)?( \|\||;)' "$TERMINAL")" -eq 3 ]
+}
+
+@test "rc.bash runs its external programs from the system PATH, not from a PATH that a run gave back" {
+    local d="$BATS_TEST_TMPDIR/path" evil="$BATS_TEST_TMPDIR/evil" p
+    mkdir -p "$d" "$evil"
+    for p in stty dd rm mv tee sleep cat; do
+        printf '#!/bin/sh\necho %s >> "%s/ran"\n' "$p" "$evil" > "$evil/$p"
+        chmod +x "$evil/$p"
+    done
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf 'echo hi' > "$d/1.cmd"
+    run bash -c "source '$d/rc.bash'; export PATH='$evil':\$PATH
+        __clux_flush; __clux_run 1 \$(__clux_sum 'echo hi') plain >/dev/null 2>&1; echo \"\$(<'$d/1.rc')\""
+    [ ! -e "$evil/ran" ] || { cat "$evil/ran"; false; }
+    [[ "$output" == *0 ]] || { echo "$output"; false; }
+    [ -e "$d/1.out" ]
+}
+
+@test "rc.bash names no external program without command -p" {
+    local d="$BATS_TEST_TMPDIR/ext"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    run bash -c "grep -v '^ *#' '$d/rc.bash' | grep -nE '(^|[^-_[:alnum:]])(stty|dd|rm|mv|tee|sleep|cat|mkdir|ln|touch|chmod|kill|sed|awk|grep|tr|head|tail|wc|date|mktemp|shasum|sha256sum|env)( |\$)' | grep -vE 'command -p (-v )?(stty|dd|rm|mv|tee|sleep|shasum|sha256sum)'"
+    [ -z "$output" ] || { echo "$output"; false; }
 }
 
 @test "a run command cannot change the functions, traps or options of the pane shell" {

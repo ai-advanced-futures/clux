@@ -625,10 +625,10 @@ set +o history
 # runs the line in this shell. The shell drops them before each prompt.
 __clux_flush() {
   local s
-  s=$(command stty -g 2>/dev/null) || return 0
-  command stty -icanon min 0 time 0 2>/dev/null
-  command dd bs=4096 count=64 of=/dev/null 2>/dev/null
-  command stty "$s" 2>/dev/null
+  s=$(command -p stty -g 2>/dev/null) || return 0
+  command -p stty -icanon min 0 time 0 2>/dev/null
+  command -p dd bs=4096 count=64 of=/dev/null 2>/dev/null
+  command -p stty "$s" 2>/dev/null
   return 0
 }
 PROMPT_COMMAND=__clux_flush
@@ -639,6 +639,9 @@ PS4='+ '
 # gate. Each line of Claude runs in a subshell, but a key such as M-C-e can
 # expand text in this shell.
 readonly PROMPT_COMMAND PS0 PS1 PS2 PS3 PS4
+# Each external program runs with command -p (the default PATH of the
+# system): a run can give back PATH, and this shell runs these helpers with
+# no gate (PROMPT_COMMAND at each prompt).
 # No aliases. Each run command runs in a subshell (__clux_run), so it
 # cannot change the functions, the aliases, the traps or the options of
 # this shell; only the directory and the exported variables come back.
@@ -704,7 +707,7 @@ __clux_load() {
       __clux_new="$__clux_new$__clux_k "
     done
   } < "$1"
-  command rm -f "$1"
+  command -p rm -f "$1"
   [ "$__clux_end" -eq 1 ] || return 0
   for __clux_k in $(compgen -e); do
     __clux_carry "$__clux_k" || continue
@@ -728,7 +731,7 @@ __clux_load() {
 # trap runs. A command that sets its own EXIT trap and ends with exit writes
 # no keep file: then a note says that nothing came back.
 __clux_sub() {
-  command rm -f "$2"
+  command -p rm -f "$2"
   ( unset -f exit exec logout
     readonly __clux_k="$2"
     trap "__clux_keep $(printf '%q' "$2")" EXIT
@@ -781,12 +784,12 @@ __clux_run() {
   case "$__clux_n" in ''|*[!0-9]*) printf '%s\n' 'refused: this run is not waiting to start'; return 1 ;; esac
   if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
     # A run that ended cannot ask a question: its .confirm goes.
-    [ ! -e "$__clux_d/$__clux_n.rc" ] || command rm -f "$__clux_d/$__clux_n.confirm"
+    [ ! -e "$__clux_d/$__clux_n.rc" ] || command -p rm -f "$__clux_d/$__clux_n.confirm"
     printf '%s\n' 'refused: this run is not waiting to start'
     return 1
   fi
   __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
-  command rm -f "$__clux_d/$__clux_n.cmd"
+  command -p rm -f "$__clux_d/$__clux_n.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
     __clux_cmd='printf "%s\n" "refused: the command changed after Laya examined it"; (builtin exit 126)'
     __clux_m=plain
@@ -796,7 +799,7 @@ __clux_run() {
   fi
   # Only the question removes .confirm after the answer; a refused or a
   # plain run removes it now, so no verb waits for a question.
-  [ "$__clux_m" = confirm ] || command rm -f "$__clux_d/$__clux_n.confirm"
+  [ "$__clux_m" = confirm ] || command -p rm -f "$__clux_d/$__clux_n.confirm"
   if [ "$__clux_m" = confirm ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
     # Control characters show as ?, so the question shows the full command.
@@ -807,11 +810,11 @@ __clux_run() {
     trap : INT
     __clux_answer=$(trap - INT; trap '' TSTP; builtin read -r -p 'run? [y/N] ' __clux_a && printf '%s' "$__clux_a")
     trap - INT
-    command rm -f "$__clux_d/$__clux_n.confirm"
+    command -p rm -f "$__clux_d/$__clux_n.confirm"
     if [ "$__clux_answer" != y ]; then
       (umask 077; printf 'declined\n' > "$__clux_d/$__clux_n.declined"; : > "$__clux_d/$__clux_n.done"
         printf '126\n' > "$__clux_d/$__clux_n.rc.tmp") \
-        && command mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
+        && command -p mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
       return 126
     fi
   else
@@ -820,13 +823,13 @@ __clux_run() {
   # The command runs in a subshell: it cannot change this shell for later
   # commands (a function, an alias, a trap, an option, enable). The
   # directory and the exported variables come back through __clux_load.
-  __clux_sub "$__clux_cmd" "$__clux_d/$__clux_n.keep" > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
+  __clux_sub "$__clux_cmd" "$__clux_d/$__clux_n.keep" > >(umask 077; command -p tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
   __clux_load "$__clux_d/$__clux_n.keep"
   __clux_i=0
-  while [ ! -e "$__clux_d/$__clux_n.done" ] && [ "$__clux_i" -lt 20 ]; do sleep .05; __clux_i=$((__clux_i + 1)); done
+  while [ ! -e "$__clux_d/$__clux_n.done" ] && [ "$__clux_i" -lt 20 ]; do command -p sleep .05; __clux_i=$((__clux_i + 1)); done
   (umask 077; printf '%s\n' "$__clux_rc" > "$__clux_d/$__clux_n.rc.tmp") \
-    && command mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
+    && command -p mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
 }
 # __clux_line SUM — the line that send ends at the clux prompt. terminal.sh
 # writes it to line.cmd after the Laya gate and types this call, so no line
@@ -842,7 +845,7 @@ __clux_line() {
     return 1
   fi
   __clux_cmd=$(<"$__clux_d/line.cmd")
-  command rm -f "$__clux_d/line.cmd"
+  command -p rm -f "$__clux_d/line.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
     printf '%s\n' 'refused: the line changed after Laya examined it'
     return 1
