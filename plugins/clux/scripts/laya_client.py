@@ -996,7 +996,10 @@ def cells(text):
     show that character wide. tmux 3.4 and later also join an emoji and its
     skin tone, and a ZWJ sequence, in 2 cells, and give 0 to a format
     character (U+200B); older versions do not. So these keep their full
-    count, and a row with one of them after the cursor can be refused."""
+    count, and a row with one of them after the cursor can be refused. A
+    code point that this Python does not know (category Cn, for example an
+    emoji newer than its Unicode data) is 2: tmux 3.7b shows U+1FAE9 in 2
+    cells, and 2 is never too few. A private use character is 1, as in tmux."""
     import unicodedata
     count, last = 0, 0
     for char in text:
@@ -1006,7 +1009,8 @@ def cells(text):
             continue
         if unicodedata.combining(char):
             continue
-        last = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        last = 2 if unicodedata.east_asian_width(char) in ("W", "F") \
+            or unicodedata.category(char) == "Cn" else 1
         count += last
     return count
 

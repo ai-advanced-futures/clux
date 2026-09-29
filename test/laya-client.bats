@@ -945,13 +945,17 @@ for text, width in cases.items():
 # count: older tmux versions show them wider (a false refusal, spec 7).
 assert c.cells('\U0001f44d\U0001f3fd') == 4
 assert c.cells('‍') == 1
+# A code point that the Unicode data of Python does not know (Cn) is 2,
+# never too few; a private use character is 1, as in tmux.
+assert c.cells('\U0001fae9') == 2 and c.cells('\u0378') == 2
+assert c.cells('\ue000') == 1 and c.cells('\U000f0000') == 1
 "
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     # The live check: cells is never below the cursor_x of a real tmux.
     command -v tmux >/dev/null || skip 'no tmux'
     local sock="$BATS_TEST_TMPDIR/w.sock" text x n
     tmux -S "$sock" -f /dev/null new -d -s w -x 120 -y 5 'sleep 30'
-    for text in 'a' '👍' '👍🏽' '❤️' '👍️' '☺︎' '👨‍👩‍👧' $'a​b' $'é' 'plain ascii'; do
+    for text in 'a' '👍' '👍🏽' '❤️' '👍️' '☺︎' '👨‍👩‍👧' $'a​b' $'é' 'plain ascii' $'\U0001fae9' $'\u0378' $'\ue000'; do
         tmux -S "$sock" respawn-pane -k -t w "printf '%s' '$text'; sleep 30"
         for n in 1 2 3 4 5 6 7 8 9 10; do
             x=$(tmux -S "$sock" display -p -t w '#{cursor_x}')
