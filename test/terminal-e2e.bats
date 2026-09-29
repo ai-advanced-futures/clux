@@ -647,8 +647,9 @@ pane_shows() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" send --key Escape
     [ "$status" -eq 0 ]
-    # Other keys still need Laya.
-    run "$TERMINAL" send --key Up
+    # Text still needs Laya. (At the clux prompt a key on a blank line needs
+    # no request: there is no pane request there, and a blank line runs nothing.)
+    run "$TERMINAL" send -- 'ls'
     [ "$status" -eq 6 ]
     sleep 3
     [ ! -e "$BATS_TEST_TMPDIR/never" ]

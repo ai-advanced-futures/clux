@@ -647,7 +647,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local count="$BATS_TEST_TMPDIR/count"
     run bash -c "source '$TERMINAL'
         n=0
-        capture_to_cursor() { n=\$((n + 1)); CAPTURE=\"top \$n\"\$'\\na\\nb\\nc\\nd\\nclux\$ '; }
+        capture_to_cursor() { n=\$((n + 1)); CAPTURE=\"top \$n\"\$'\\na\\nb\\nc\\nd\\nx> '; }
         laya_call() { echo x >> '$count'; echo '{\"state\": \"other\"}'; }
         pane_state; pane_state; pane_state; echo \$PANE_STATE"
     [ "$output" = other ]
@@ -786,7 +786,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local log="$BATS_TEST_TMPDIR/flags"
     run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=x
         laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
-        PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
+        PANE_STATE=shell_prompt; CURSOR_LINE='>>> '; ps() { :; }
         tmux_state() { echo python3.12; }; send_gate 'print(1)'
         tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls'
         tmux_state() { return 1; }; send_gate 'ls'
@@ -1150,8 +1150,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_gate() { printf '%s|' \"\$@\" >> '$log'; cat >> '$log'; echo = >> '$log'; GATE_LEVEL=safe; }
         PANE_STATE=shell_prompt; tmux_state() { echo bash; }
         CURSOR_LINE='user@host:~/source\$ '; send_gate 'ls'
-        printf '%s' 'echo a' > '$d/typed'; CURSOR_LINE='sh-5.2\$ echo a'; send_gate ' b'
-        printf '%s' 'zzz' > '$d/typed'; CURSOR_LINE='sh-5.2\$ ls'; send_gate ''"
+        printf 'sh-5.2\$ \n0\necho a\n' > '$d/typed'; CURSOR_LINE='sh-5.2\$ echo a'; send_gate ' b'
+        printf 'x\n0\nzzz\n' > '$d/typed'; CURSOR_LINE='sh-5.2\$ ls'; send_gate ''"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(cat "$log")" = $'--screen|--shell|top\nuser@host:~/source$ \nls\n=\n--screen|--shell|top\nsh-5.2$ \necho a b\n=\n--screen|--shell|top\n\nsh-5.2$ ls\n=' ]
 }
@@ -1166,12 +1166,13 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         send_key() { :; }; send_literal() { :; }"
     run bash -c "$stubs; send_command -- 'echo'; send_command -- ' a'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$d/typed")" = 'echo a' ]
+    [ "$(cat "$d/typed")" = $'sh$ \n0\necho a' ]
     run bash -c "$stubs; send_command --enter -- ' b'"
     [ ! -e "$d/typed" ]
     printf x > "$d/typed"; run bash -c "$stubs; send_command --key Enter"; [ ! -e "$d/typed" ]
     printf x > "$d/typed"; run bash -c "$stubs; send_command --key C-c"; [ ! -e "$d/typed" ]
-    printf x > "$d/typed"; run bash -c "$stubs; send_command --key Left"; [ -e "$d/typed" ]
+    printf 'sh$ \n0\nx\n' > "$d/typed"; run bash -c "$stubs; send_command --key Left"
+    [ "$(cat "$d/typed")" = $'sh$ \n1\nx' ]
 }
 
 @test "laya_wait_health uses laya_call with no key" {
@@ -1198,4 +1199,54 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         check_pane"
     [ "$status" -eq 2 ]
     [ "$stderr" = 'laya: the cursor line is too long to examine: send --key C-c' ]
+}
+
+@test "a program named Python with no case gets no shell rule, and a shell inside a program gets it" {
+    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 Python'; }
+        ps() { printf '100 1 -bash\n200 100 bash\n300 200 /opt/homebrew/bin/python3\n'; }
+        pane_runs_program"
+    [ "$status" -eq 0 ]
+    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 python3'; }
+        ps() { printf '100 1 -bash\n200 100 bash\n300 200 python3\n400 300 /bin/bash\n'; }
+        pane_runs_program"
+    [ "$status" -eq 1 ]
+    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 nvim'; }
+        ps() { printf '100 1 -bash\n300 100 nvim\n400 300 zsh\n'; }
+        pane_runs_program"
+    [ "$status" -eq 1 ]
+}
+
+@test "text that a program did not show goes to the gate with the next text" {
+    local log="$BATS_TEST_TMPDIR/hid" d="$BATS_TEST_TMPDIR/hd"
+    mkdir -p "$d"
+    run bash -c "source '$TERMINAL'; D='$d'; SCREEN_ABOVE=top
+        laya_gate() { cat > '$log'; GATE_LEVEL=safe; }
+        pane_runs_program() { return 0; }
+        PANE_STATE=other; CURSOR_LINE='cmd> '
+        typed_add 'cmd> ' 'rm -rf'; send_gate ' ~'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tail -n 1 "$log")" = 'cmd> rm -rf ~' ]
+}
+
+@test "the key of laya-serve is not an argument of a process" {
+    local body
+    body=$(sed -n '/^laya_start_server() {/,/^}/p' "$TERMINAL")
+    [[ "$body" == *'LAYA_API_KEY="$key" env LAYA_HOST'* ]] || false
+    ! printf '%s\n' "$body" | grep -E ' env .*LAYA_API_KEY' || false
+}
+
+@test "laya_call sends nothing when the server that open started ended" {
+    local mark="$BATS_TEST_TMPDIR/ran"
+    run bash -c "source '$TERMINAL'; LAYA_PY=/bin/sh; LAYA_CLIENT=-c
+        S_LAYA_PID=999999; laya_call 'touch $mark'; echo rc=\$?
+        S_LAYA_PID=\$\$; laya_call 'touch $mark'; echo rc=\$?"
+    [ "$output" = $'rc=1\nrc=0' ]
+    [ -e "$mark" ]
+}
+
+@test "at the clux prompt pane_state sends no request" {
+    run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'
+        capture_to_cursor() { CAPTURE=\$'out\nclux-ab12cd34\$ ls'; }; laya_call() { echo CALLED; return 1; }
+        pane_state; echo \"rc=\$? \$PANE_STATE\""
+    [ "$output" = 'rc=0 shell_prompt' ]
 }

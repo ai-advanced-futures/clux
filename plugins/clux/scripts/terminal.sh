@@ -189,6 +189,9 @@ refuse_laya_run() {
 # from state, not from the environment, so all verbs of one companion use one
 # server. The client stderr has only fixed messages; each verb prints its own.
 laya_call() {
+    # [inferred] When the server that open started ended, another process
+    # can take its port: that process must not get the key or the text.
+    [ -z "$S_LAYA_PID" ] || kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
     CLUX_LAYA_URL="$S_LAYA_URL" CLUX_LAYA_KEY="$S_LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" "$@" 2>/dev/null
 }
 
@@ -304,7 +307,9 @@ laya_start_server() {
     key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
     [ "${#key}" -eq 64 ] || return 1
     [ "$2" -eq 0 ] || offline=HF_HUB_OFFLINE=1
-    env LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_API_KEY="$key" LAYA_LOG_LEVEL=warning \
+    # The key goes in the environment of env, not in its arguments: ps
+    # shows the arguments of a process to each local user.
+    LAYA_API_KEY="$key" env LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_LOG_LEVEL=warning \
         LAYA_MODELS=english USE_TF=0 ${offline:+"$offline"} \
         nohup "$LAYA_VENV/bin/laya-serve" >> "$1" 2>&1 < /dev/null 3>&- &
     LAYA_PID=$!
@@ -317,7 +322,7 @@ laya_start_server() {
 # server process ends, 1 when the time ends. health sends no key: the key
 # goes only to a server that laya_owns_port found.
 laya_wait_health() {
-    until S_LAYA_URL="$LAYA_URL" S_LAYA_KEY= laya_call health >/dev/null; do
+    until S_LAYA_PID="$LAYA_PID" S_LAYA_URL="$LAYA_URL" S_LAYA_KEY= laya_call health >/dev/null; do
         kill -0 "$LAYA_PID" 2>/dev/null || return 2
         [ "$SECONDS" -lt "$1" ] || return 1
         sleep .5
@@ -890,6 +895,14 @@ pane_state() {
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
     esac
+    # At the clux prompt the state is known: it is not a credential prompt,
+    # a pager or a menu. No request; the local patterns still apply.
+    if prompt_input; then
+        PANE_STATE=shell_prompt
+        ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
+        PANE_TEXT="$window"
+        return 0
+    fi
     PANE_STATE=
     out=$(printf '%s\n' "$window" | laya_call pane)
     case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
@@ -1064,7 +1077,9 @@ send_gate() {
         prompt=1
         line="${line#"${line%%[![:space:]]*}"}"
     else
-        line="$CURSOR_LINE$1"
+        # Text that clux typed and the pane does not show is in the line too.
+        typed_split "$1"
+        line="$LINE_HEAD$LINE_TYPED"
     fi
     reserved_word "$line"
     # [inferred] A blank line at the clux$ prompt runs nothing, so it needs
@@ -1092,7 +1107,6 @@ send_gate() {
         # The shell rule reads only the text that clux typed in this line,
         # not the prompt: the client gets the start of the line and the
         # typed text as two lines, and Laya gets them as one line.
-        typed_split "$1"
         laya_gate --screen --shell < <(printf '%s\n%s\n%s\n' "$SCREEN_ABOVE" "$LINE_HEAD" "$LINE_TYPED")
     else
         laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
@@ -1122,24 +1136,50 @@ send_gate() {
 LINE_HEAD=
 LINE_TYPED=
 
-# typed_split TEXT — split the cursor line plus TEXT for the shell rule.
-# LINE_TYPED is the text that clux typed in this line ($D/typed, which send
-# keeps) plus TEXT. LINE_HEAD is the start of the line before it: the
-# prompt, and text that the user typed. When the line does not end with the
-# typed text (the user or a key changed the line, or the line ended), all
-# of the line is typed text, so the rule reads more, not less. No fork.
+# $D/typed holds three lines: the cursor line before the last text that
+# send typed, 1 when send sent a key that can edit the line after it typed
+# (else 0), and the text that send typed in this line. send writes it; Enter
+# and C-c remove it.
+#
+# typed_split TEXT — split the cursor line plus TEXT for the gate. LINE_TYPED
+# is the text that clux typed in this line plus TEXT; LINE_HEAD is the start
+# of the line before it (the prompt, and text that the user typed). When the
+# cursor line is still the line before the last text, the pane did not show
+# that text (echo off), so it goes to the gate too. When the line changed in
+# another way (a key, the user, or the end of the line), all of the line is
+# typed text: the rule then reads more, not less. No fork.
 typed_split() {
-    local t="" line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
-    [ ! -f "$D/typed" ] || IFS= read -r -d '' t < "$D/typed" || true
-    t="${t%"${t##*[![:space:]]}"}"
-    if [ -z "$t" ]; then
-        LINE_HEAD="$CURSOR_LINE"
-    elif [[ "$line" == *"$t" ]]; then
-        LINE_HEAD="${line:0:$((${#line} - ${#t}))}"
+    local before="" strict=0 t="" tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
+    [ ! -f "$D/typed" ] || { IFS= read -r before; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
+    LINE_HEAD="$CURSOR_LINE"
+    LINE_TYPED="$1"
+    [ -n "$t" ] || return 0
+    tt="${t%"${t##*[![:space:]]}"}"
+    if [ "$strict" != 1 ] && [ -n "$tt" ] && [[ "$line" == *"$tt" ]]; then
+        LINE_HEAD="${line:0:$((${#line} - ${#tt}))}"
+    elif [ "$CURSOR_LINE" = "$before" ]; then
+        LINE_TYPED="$t$1"
+        [ "$strict" != 1 ] || LINE_HEAD=
     else
         LINE_HEAD=
     fi
-    LINE_TYPED="${CURSOR_LINE:${#LINE_HEAD}}$1"
+    LINE_TYPED="${CURSOR_LINE:${#LINE_HEAD}}$LINE_TYPED"
+}
+
+# typed_add BEFORE TEXT — send typed TEXT when the cursor line was BEFORE.
+typed_add() {
+    local b="" strict=0 t=""
+    [ ! -f "$D/typed" ] || { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
+    printf '%s\n%s\n%s\n' "$1" "${strict:-0}" "$t$2" > "$D/typed"
+}
+
+# typed_edit — send sent a key that can edit the line: the typed text can
+# be anywhere in the line now.
+typed_edit() {
+    local b="" strict t=""
+    [ -f "$D/typed" ] || return 0
+    { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
+    printf '%s\n1\n%s\n' "$b" "$t" > "$D/typed"
 }
 
 # key_is KEY PATTERN... — KEY matches one of the glob PATTERNs, with no case
@@ -1187,14 +1227,35 @@ send_line() {
 # other process (a shell, ssh, docker, kubectl, or a name that tmux cannot
 # give) gets the shell rules: they only refuse more.
 pane_runs_program() {
-    local name
-    name=$(tmux_state display-message -p -t "$S_PANE" '#{pane_current_command}') || return 1
-    case "${name##*/}" in
-        python*|ipython*|bpython*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh) return 0 ;;
-        node|deno|bun|irb|pry|ghci|lua*|R|julia|erl|iex|scala|sbcl|gdb|lldb|php) return 0 ;;
-        vi|vim|nvim|view|nano|pico|emacs|less|more|most|man|top|htop|btop|tig|fzf) return 0 ;;
-    esac
-    return 1
+    local out name
+    out=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid} #{pane_current_command}') || return 1
+    # tmux gives the name with no fixed case: Python on macOS.
+    name="${out#* }"
+    key_is "${name##*/}" 'python*' 'ipython*' 'bpython*' psql mysql mariadb sqlite3 redis-cli mongo mongosh \
+        node deno bun irb pry ghci 'lua*' R julia erl iex scala sbcl gdb lldb php \
+        vi vim nvim view nano pico emacs less more most man top htop btop tig fzf || return 1
+    # A program can run a shell on a pty of its own (pty.spawn in python,
+    # :terminal in vim, term in emacs). Then the line goes to that shell.
+    ! program_runs_shell "${out%% *}"
+}
+
+# program_runs_shell PID — a shell (or ssh) runs under a process that is not a
+# shell, below PID (the pane shell). The subshells of __clux_sub are shells
+# under shells, so they do not count. One ps for all processes.
+program_runs_shell() {
+    ps -A -o pid= -o ppid= -o comm= 2>/dev/null | awk -v root="$1" '
+        function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|fish|tcsh|csh|ash|ssh)$/ }
+        { c = $3; for (i = 4; i <= NF; i++) c = c " " $i
+          sub(/.*\//, "", c); sub(/^-/, "", c); up[$1] = $2; name[$1] = c }
+        END {
+            for (p in up) {
+                if (!shell(name[p])) continue
+                other = 0; q = up[p]; n = 0
+                while (q in up && q != root && n < 64) { if (!shell(name[q])) other = 1; q = up[q]; n++ }
+                if (q == root && other) exit 0
+            }
+            exit 1
+        }'
 }
 
 # wait_for_echo TEXT BEFORE — after a send with no Enter, wait at most 2 s
@@ -1850,7 +1911,7 @@ send_command() {
         send_gate "" || return
         line_unchanged || return
         send_key "$key"
-        ! accept_key "$key" || rm -f "$D/typed"
+        if accept_key "$key"; then rm -f "$D/typed"; else typed_edit; fi
         return
     fi
     [ -n "$text" ] || [ -n "$key" ] || usage
@@ -1881,8 +1942,9 @@ send_command() {
         rm -f "$D/typed"
         return
     fi
-    # The text that clux typed in this line, for the shell rule (typed_split).
-    printf '%s' "$text" >> "$D/typed"
+    # The text that clux typed in this line, for the gate (typed_split). A
+    # pager or a menu takes it as keys.
+    case "$PANE_STATE" in pager|menu) ;; *) typed_add "$before" "$text" ;; esac
     # Text that the pane does not show (after stty -echo) cannot be examined
     # by the next gate, so each later send and run refuses until C-c. Only a
     # shell line must show the text: a pager or a menu takes a key and can
