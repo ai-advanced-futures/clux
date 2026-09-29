@@ -1012,6 +1012,20 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$output" = ok ]
 }
 
+@test "drop_lines is the one rule that removes lines, and an empty list removes nothing" {
+    run bash -c "source '$TERMINAL'; drop_lines \$'a\\nb\\nc\\nb' b"
+    [ "$output" = $'a\nc' ]
+    # An empty list keeps a blank line: printf of an empty list is one
+    # blank line, and it must not remove the blank lines of the text.
+    run bash -c "source '$TERMINAL'; drop_lines \$'a\\n\\nb' ''"
+    [ "$output" = $'a\n\nb' ]
+    run bash -c "source '$TERMINAL'; visible_lines \$'a\\n\\n[held by laya: secret]\\nb' ''"
+    [ "$output" = $'a\n\nb' ]
+    # No other copy of the rule: guard_fresh, the seen update of
+    # wait_command and visible_lines use drop_lines.
+    [ "$(grep -c "next } !(\$0 in [a-z]*)'" "$TERMINAL")" -eq 1 ]
+}
+
 @test "wait --pattern keeps a line held that an earlier guard held by the pair rule" {
     run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
         ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }

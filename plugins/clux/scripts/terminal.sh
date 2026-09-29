@@ -2339,11 +2339,17 @@ held_lines() {
         }' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
+# drop_lines TEXT REMOVE — the lines of TEXT that are not lines of REMOVE,
+# in order. An empty REMOVE removes nothing.
+drop_lines() {
+    [ -n "$2" ] || { printf '%s\n' "$1"; return; }
+    awk 'NR == FNR { drop[$0]; next } !($0 in drop)' <(printf '%s\n' "$2") <(printf '%s\n' "$1")
+}
+
 # visible_lines GUARDED HELD — the lines of GUARDED that the pattern can
 # see: no marker line, and no line that an earlier guard of the wait held.
 visible_lines() {
-    awk 'NR == FNR { h[$0]; next } !($0 in h)' <(printf '%s\n' "$2") <(printf '%s\n' "$1") \
-        | grep -vE "$HELD_MARK_RE"
+    drop_lines "$1" "$2" | grep -vE "$HELD_MARK_RE"
 }
 
 # add_seen_lines SEEN SCREEN — SEEN with each line of SCREEN that it does
@@ -2374,8 +2380,7 @@ guard_fresh() {
     lines=$(held_lines "$1" "$GUARD_TEXT")
     if [ "$GUARD_LATE" -gt 0 ]; then
         FRESH_LATE=$(held_lines "$1" "$GUARD_TEXT" not_examined)
-        lines=$(awk 'NR == FNR { late[$0]; next } !($0 in late)' \
-            <(printf '%s\n' "$FRESH_LATE") <(printf '%s\n' "$lines"))
+        lines=$(drop_lines "$lines" "$FRESH_LATE")
     fi
     held=$(add_seen_lines "$held" "$lines")
     # The marker lines of held text are not pane text: the pattern does
@@ -2515,8 +2520,7 @@ wait_command() {
                                         # examined are not seen: the next
                                         # tick sends them again, from the
                                         # same capture start.
-                                        seen=$(awk 'NR == FNR { late[$0]; next } !($0 in late)' \
-                                            <(printf '%s\n' "$FRESH_LATE") <(printf '%s\n' "$seen"))
+                                        seen=$(drop_lines "$seen" "$FRESH_LATE")
                                     else
                                         sum="$screen"
                                         [ -z "$hist_now" ] || hist="$hist_now"
