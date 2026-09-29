@@ -54,6 +54,13 @@ All notable changes to clux are documented here.
 - `wait --pattern` keeps a line held that an earlier guard of the wait held
 - `open` on a live companion exits 6 when the companion has no Laya server (clux 3.x), or when the server at `CLUX_LAYA_URL` does not answer
 - `run` takes the busy lock of a `run` that stopped before it typed its line
+- With `CLUX_LAYA_URL`, `open` sends one request to check `CLUX_LAYA_KEY` (`/health` does not check it), and names the key when the server refuses it (client exit code 4)
+- The secret value `sk-...` needs no letter or digit before `sk-`, so names such as `flask-app-...` and `task-runner-...` are not held
+- `send --key C-c` ends a plain run whose typed line the pane shell never read, as it does for a run with a question
+- The shell rules of `send` apply by the process in the pane (a shell, `ssh` or an unknown name), not by the Laya class of the prompt
+- A `run` command that sets its own EXIT trap still gives back its directory and exported variables; when it also ends with `exit`, a note says that they did not come back
+- One guard request that reaches the 5 s request limit holds only its own text as not examined; the guard goes on
+- `open` starts a new Laya server only under the typing lock
 - A dangerous `send` outside the clux prompt says `ask the user to type this line in the pane`, not `use run`
 - Only one verb reads the output of a run at a time: a second reader exits 5 (`another verb reads the output of run <n> now: try again`)
 - `laya install` makes a venv again when its Python cannot import `laya`, and exits 2 when `CLUX_LAYA_PYTHON` names a Python with no `laya`

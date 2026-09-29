@@ -229,9 +229,22 @@ laya_open_check() {
         S_LAYA_URL="$CLUX_LAYA_URL"
         S_LAYA_KEY="${CLUX_LAYA_KEY:-}"
         laya_call health >/dev/null || fail 'laya not available at CLUX_LAYA_URL' 6
+        laya_key_check
         return 0
     fi
     laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
+}
+
+# laya_key_check — /health of laya-serve does not check the API key, so one
+# POST (a pane request) tells whether the server takes CLUX_LAYA_KEY. The
+# client exits 4 when the server refuses the key (401 or 403).
+laya_key_check() {
+    printf '%s\n' 'clux$' | laya_call pane >/dev/null
+    case $? in
+        0) return 0 ;;
+        4) fail 'laya not available: the server at CLUX_LAYA_URL refused CLUX_LAYA_KEY: set the key of that server' 6 ;;
+        *) fail 'laya not available at CLUX_LAYA_URL' 6 ;;
+    esac
 }
 
 # clux stops only a process whose pid is in state and whose command line
@@ -344,8 +357,18 @@ laya_wait_ready() {
 laya_restart_if_down() {
     # A companion that clux 3.x opened has no Laya server and an old rc.bash.
     [ -n "$S_LAYA_URL" ] || fail 'laya not available: this companion has no Laya server: use close, then open' 6
-    laya_call health >/dev/null && return 0
+    if laya_call health >/dev/null; then
+        [ -n "$S_LAYA_PID" ] || laya_key_check
+        return 0
+    fi
     [ -n "$S_LAYA_PID" ] || fail 'laya not available: the server at CLUX_LAYA_URL does not answer' 6
+    # The typing lock, so no run writes state (its seq) at the same time,
+    # then the state again: another open can have started a server.
+    lock_and_load || return 5
+    if laya_call health >/dev/null; then
+        release_typing_lock
+        return 0
+    fi
     laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
     laya_stop_server "$S_LAYA_PID"
     LAYA_PID=
@@ -356,6 +379,7 @@ laya_restart_if_down() {
         laya_stop_server "$LAYA_PID"
         fail 'laya not available: the server did not answer' 6
     fi
+    release_typing_lock
 }
 
 # open_abort PANE_MADE MESSAGE [CODE] — undo a failed open and exit CODE
@@ -628,15 +652,25 @@ __clux_load() {
 # __clux_sub CMD KEEP — run CMD in a subshell, then take back the directory
 # and the exported variables. In the subshell, exit, exec and logout are the
 # builtins again: exit ends the command (cd dir || exit 1), not only this
-# shell. The EXIT trap writes the keep file also after exit, and keeps the
-# exit code. The path goes into the trap now: the locals are gone when the
-# trap runs.
+# shell. The keep file is written after the command, and by the EXIT trap
+# after exit. The path goes into the trap now: the locals are gone when the
+# trap runs. A command that sets its own EXIT trap and ends with exit writes
+# no keep file: then a note says that nothing came back.
 __clux_sub() {
   command rm -f "$2"
   ( unset -f exit exec logout
+    readonly __clux_k="$2"
     trap "__clux_keep $(printf '%q' "$2")" EXIT
     __clux_c="$1"; set --
-    eval "$__clux_c" )
+    eval "$__clux_c"
+    set -- "$?"
+    # A DEBUG, ERR or RETURN trap of the command must not run in the keep step.
+    trap - DEBUG ERR RETURN
+    __clux_keep "$__clux_k"
+    exit "$1" )
+  set -- "$?" "$2"
+  [ -f "$2" ] || printf '%s\n' 'clux: the directory and the exported variables did not come back: the command set an EXIT trap and ended with exit'
+  return "$1"
 }
 __clux_sum() {
   local __clux_o
@@ -833,10 +867,13 @@ pane_state() {
     local window out
     capture_to_cursor || return 1
     CURSOR_LINE="${CAPTURE##*$'\n'}"
-    # The x keeps a blank cursor line through the command substitution.
-    window=$(printf '%s\n' "$CAPTURE" | tail -n 5 && printf x)
-    window="${window%x}"
-    window="${window%$'\n'}"
+    # The last 5 lines, with no fork: the poll loops call this each second.
+    local rest="$CAPTURE" i=0
+    while [ "$i" -lt 4 ] && [[ "$rest" == *$'\n'* ]]; do
+        rest="${rest%$'\n'*}"
+        i=$((i + 1))
+    done
+    window="${rest##*$'\n'}${CAPTURE:${#rest}}"
     [ -z "$PANE_STATE" ] || [ "$window" != "$PANE_TEXT" ] || return 0
     case "$window" in
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
@@ -933,7 +970,7 @@ HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 # removes blank lines at the end of the text. A cut can split a UTF-8
 # character; the client decodes with "replace", so that is not an error.
 laya_guard() {
-    local out data size tmp cut="${2:-0}"
+    local out data size tmp cut="${2:-0}" args=(output --render)
     # A file, because $1 can be a pipe and is read two times: the size, then
     # the text. Bash drops NUL bytes from a command substitution with a
     # warning, so tr removes them first, and the size comes from wc. LC_ALL=C
@@ -949,11 +986,8 @@ laya_guard() {
     rm -f "$tmp"
     data="${data%x}"
     [ "$GUARD_CUT" -eq 0 ] || cut=1
-    if [ "$cut" -eq 1 ]; then
-        out=$(printf '%s' "$data" | laya_call output --render --cut --limit "$LAYA_GUARD_LIMIT") || return 6
-    else
-        out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
-    fi
+    [ "$cut" -eq 0 ] || args+=(--cut)
+    out=$(printf '%s' "$data" | laya_call "${args[@]}" --limit "$LAYA_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
     GUARD_HELD="${GUARD_HELD#held=}"
@@ -978,34 +1012,22 @@ reserved_word() {
 # types any other argument as text, with no echo check, so send refuses it
 # (exit 2). One character alone is text too: send it with send -- TEXT.
 key_name() {
-    local k="$1" mods=0 rc=1 was=0
-    # tmux reads a key name with no case (enter is Enter).
-    ! shopt -q nocasematch || was=1
-    shopt -s nocasematch
-    while :; do
-        case "$k" in
-            [CcMmSs]-?*) k="${k#??}"; mods=1 ;;
-            *) break ;;
-        esac
+    local k="$1" mods=0
+    while key_is "$k" '[CMS]-?*'; do
+        k="${k#??}"
+        mods=1
     done
+    key_is "$k" Enter Escape Tab BTab Space BSpace Up Down Left Right Home End \
+        PageUp PgUp PageDown PgDn NPage PPage Insert IC Delete DC 'F[1-9]' 'F1[0-2]' && return 0
     case "$k" in
-        Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|End) rc=0 ;;
-        PageUp|PgUp|PageDown|PgDn|NPage|PPage|Insert|IC|Delete|DC) rc=0 ;;
-        F[1-9]|F1[0-2]) rc=0 ;;
-        '^'?) [ "$mods" -ne 0 ] || rc=0 ;;
-        ?) [ "$mods" -ne 1 ] || rc=0 ;;
+        '^'?) [ "$mods" -eq 0 ] ;;
+        ?) [ "$mods" -eq 1 ] ;;
+        *) return 1 ;;
     esac
-    [ "$was" -eq 1 ] || shopt -u nocasematch
-    return "$rc"
 }
 
 # interrupt_key KEY — C-c, C-d, C-z, C-\ or Escape (spec section 7).
-interrupt_key() {
-    case "$1" in
-        [Cc]-[CcDdZz]|[Cc]-'\'|'^'[CcDdZz]|'^\'|[Ee]scape) return 0 ;;
-    esac
-    return 1
-}
+interrupt_key() { key_is "$1" C-c C-d C-z 'C-\\' '^c' '^d' '^z' '^\\' Escape; }
 
 # nav_key KEY — a key that only moves in a pager or a menu: Up, Down, Left,
 # Right, Home, End and the page keys, with no modifier. In a pager or a menu
@@ -1041,13 +1063,13 @@ send_gate() {
             ;;
     esac
     # At the clux prompt a line runs in a subshell (__clux_line), so it
-    # cannot change the pane shell. At a prompt that Laya calls
-    # shell_prompt in another shell process (a nested bash) the line runs
-    # in that shell: a line that can change it for later lines is
-    # dangerous. This is also true in ssh, docker or kubectl: the shell is
-    # on the other side. python3 or psql can also be shell_prompt, and the
-    # shell rules do not apply there.
-    if [ "$prompt" -eq 0 ] && [ "$PANE_STATE" = shell_prompt ] && ! pane_runs_program; then
+    # cannot change the pane shell. In another shell process (a nested bash
+    # or zsh, with any prompt that Laya can call other) the line runs in
+    # that shell: a line that can change it for later lines is dangerous.
+    # This is also true in ssh, docker or kubectl: the shell is on the other
+    # side. The process decides, not the Laya class of the prompt: only a
+    # known program that is not a shell (python3, psql, vim) has no rules.
+    if [ "$prompt" -eq 0 ] && ! pane_runs_program; then
         shell=1
     fi
     flags=--screen
@@ -1116,8 +1138,8 @@ send_line() {
 }
 
 # pane_runs_program — the process in the front of the pane is a known
-# program that is not a shell (python3, psql, node and others). Laya can
-# call its prompt shell_prompt, and the shell rules do not apply there. Any
+# program that is not a shell (python3, psql, node, vim, less and others).
+# The shell rules do not apply there. Any
 # other process (a shell, ssh, docker, kubectl, or a name that tmux cannot
 # give) gets the shell rules: they only refuse more.
 pane_runs_program() {
@@ -1126,6 +1148,7 @@ pane_runs_program() {
     case "${name##*/}" in
         python*|ipython*|bpython*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh) return 0 ;;
         node|deno|bun|irb|pry|ghci|lua*|R|julia|erl|iex|scala|sbcl|gdb|lldb|php) return 0 ;;
+        vi|vim|nvim|view|nano|pico|emacs|less|more|most|man|top|htop|btop|tig|fzf) return 0 ;;
     esac
     return 1
 }
@@ -1271,7 +1294,7 @@ open_command() {
     check_tmux_version
     mkdir -p "$ROOT"; chmod 700 "$ROOT"; reap_companions
     if current_companion_alive; then
-        laya_restart_if_down
+        laya_restart_if_down || return
         report_open
         return
     fi
@@ -1378,14 +1401,15 @@ verb_exit() {
     [ -z "$READING" ] || rm -f "$D/$READING.reading"
 }
 
-# run_not_started — after C-c: when the question of the last run is open
-# but its .cmd is still there, the pane shell never read the typed line
-# (text came before it). The run ends as not started, so the verbs do not
-# wait for a question that is not in the pane. A __clux_run that comes
-# later finds the .rc and refuses.
+# run_not_started — after C-c: when the .cmd of the last run is still there,
+# the pane shell never read the typed line (text came before it, or C-c
+# came before its Enter), in plain and in confirm mode. The run ends as not
+# started, so the verbs do not wait for a run that is not in the pane and a
+# new run can take the busy lock. A __clux_run that comes later finds the
+# .rc and refuses.
 run_not_started() {
     local n="${S_SEQ:-0}"
-    [ "$n" -gt 0 ] && [ -e "$D/$n.confirm" ] && [ -e "$D/$n.cmd" ] && [ ! -e "$D/$n.rc" ] || return 0
+    [ "$n" -gt 0 ] && [ -e "$D/$n.cmd" ] && [ ! -e "$D/$n.rc" ] || return 0
     sleep .3
     [ -e "$D/$n.cmd" ] && [ ! -e "$D/$n.rc" ] || return 0
     rm -f "$D/$n.cmd" "$D/$n.confirm"

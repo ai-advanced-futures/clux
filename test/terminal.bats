@@ -794,9 +794,11 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'
         CURSOR_LINE='user@remote\$ '; tmux_state() { echo ssh; }; send_gate 'ls'
         tmux_state() { echo kubectl; }; send_gate 'ls'
-        CURSOR_LINE='> '; tmux_state() { echo node; }; send_gate '1'"
+        CURSOR_LINE='> '; tmux_state() { echo node; }; send_gate '1'
+        PANE_STATE=other; CURSOR_LINE='➜ proj '; tmux_state() { echo zsh; }; send_gate 'ls'
+        PANE_STATE=pager; CURSOR_LINE=':'; tmux_state() { echo less; }; send_gate 'q'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen\n--screen --shell\n--screen --shell\n--screen' ]
+    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen --shell\n--screen\n--screen --shell\n--screen --shell\n--screen\n--screen --shell\n--screen' ]
 }
 
 @test "at the clux prompt a line that ends goes through __clux_line, and only edit keys go raw" {
@@ -919,6 +921,53 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         shopt -q nocasematch || echo off
         shopt -s nocasematch; accept_key Enter; shopt -q nocasematch && echo on"
     [ "$output" = $'keys\noff\non' ]
+}
+
+@test "open checks the key of an external server with one POST" {
+    run --separate-stderr bash -c "source '$TERMINAL'; laya_call() { cat >/dev/null; return 4; }; laya_key_check; echo SUCCESS"
+    [ "$status" -eq 6 ]
+    [ "$stderr" = 'laya not available: the server at CLUX_LAYA_URL refused CLUX_LAYA_KEY: set the key of that server' ]
+    run --separate-stderr bash -c "source '$TERMINAL'; S_LAYA_URL=http://127.0.0.1:9; S_LAYA_PID=
+        laya_call() { [ \"\$1\" = health ] && return 0; cat >/dev/null; return 4; }; laya_restart_if_down; echo SUCCESS"
+    [ "$status" -eq 6 ]
+    [[ "$stderr" == *'refused CLUX_LAYA_KEY'* ]] || false
+}
+
+@test "open restarts the laya server only under the typing lock" {
+    run --separate-stderr bash -c "source '$TERMINAL'; S_LAYA_URL=http://127.0.0.1:9; S_LAYA_PID=4242
+        laya_call() { return 1; }; lock_and_load() { echo LOCKED; }; laya_installed() { return 1; }
+        laya_restart_if_down"
+    [ "$status" -eq 6 ]
+    [ "$output" = LOCKED ]
+}
+
+@test "C-c ends a plain run whose typed line the pane shell never read" {
+    local d="$BATS_TEST_TMPDIR/ns"
+    mkdir -p "$d"
+    printf 'ls' > "$d/3.cmd"
+    run bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; run_not_started"
+    [ "$(cat "$d/3.rc")" = 126 ]
+    [ ! -e "$d/3.cmd" ] && [ -e "$d/3.notstarted" ]
+}
+
+@test "a run command that sets its own EXIT trap still gives back its directory, or a note" {
+    local d="$BATS_TEST_TMPDIR/tr"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '%s' 'cd /tmp && trap "echo CLEAN" EXIT && export BUILD_ID=7' > "$d/1.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_run 1 \$(__clux_sum \"\$(cat '$d/1.cmd')\") plain >/dev/null 2>&1
+        echo \"\$PWD|\${BUILD_ID-}\""
+    # tee shows CLEAN in the pane too.
+    [ "${lines[${#lines[@]}-1]}" = '/tmp|7' ] || { echo "$output"; false; }
+    printf '%s' 'trap "echo CLEAN" EXIT; exit 3' > "$d/2.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_run 2 \$(__clux_sum \"\$(cat '$d/2.cmd')\") plain >/dev/null 2>&1; cat '$d/2.out'; cat '$d/2.rc'"
+    [[ "$output" == *$'CLEAN\nclux: the directory and the exported variables did not come back: the command set an EXIT trap and ended with exit\n3' ]] || { echo "$output"; false; }
+}
+
+@test "pane_state, laya_guard and the key checks have no copies and no forks" {
+    ! grep -q 'tail -n 5' "$TERMINAL" || false
+    [ "$(grep -c 'laya_call output\|laya_call \"\${args' "$TERMINAL")" -eq 1 ]
+    [ "$(grep -c 'shopt -s nocasematch' "$TERMINAL")" -eq 1 ]
 }
 
 @test "wait --pattern starts no guard after its time limit" {
