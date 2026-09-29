@@ -1834,6 +1834,31 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$output" = 'clux-ab$ abc' ]
 }
 
+@test "capture_to_cursor makes the second capture only when the cursor line can go on below the cursor row" {
+    local log="$BATS_TEST_TMPDIR/caps"
+    # probe CY W H LINE — the number of captures for the cursor line LINE.
+    probe() {
+        : > "$log"
+        CY="$1" W="$2" H="$3" L="$4" bash -c "source '$TERMINAL'
+            tmux_state() {
+                case \"\$1\" in
+                    display-message) echo \"\$CY \$W \$H\" ;;
+                    capture-pane) echo cap >> '$log'; printf 'top\n%s\n' \"\$L\" ;;
+                esac
+            }
+            capture_cursor_line"
+        wc -l < "$log" | tr -d ' '
+    }
+    # A short prompt line in the middle of the pane: one capture.
+    [ "$(probe 1 80 24 'clux-ab$ ls')" = 1 ]
+    # A line with the characters to fill a row of 80 cells: two captures.
+    [ "$(probe 1 80 24 "clux-ab\$ $(printf 'x%.0s' {1..32})")" = 2 ]
+    # 20 wide characters can fill 40 cells of a pane 40 cells wide.
+    [ "$(probe 1 40 24 'clux-ab$ 中中中中中中中中中中中中中中中中')" = 2 ]
+    # The cursor on the last row: no row below, one capture for a long line.
+    [ "$(probe 23 80 24 "clux-ab\$ $(printf 'x%.0s' {1..100})")" = 1 ]
+}
+
 @test "in a nested shell Escape is refused, and the pane shell drops typeahead before its prompt" {
     local d="$BATS_TEST_TMPDIR/esc"
     mkdir -p "$d"

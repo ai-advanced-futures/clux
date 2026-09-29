@@ -917,13 +917,25 @@ CAPTURE=
 # The cursor line goes to its end: after Home on a long line, the rows below
 # the cursor row are part of the line, and a line that ends goes whole. A
 # second capture to the last row gives them; the lines above the cursor line
-# are the same in the two captures.
+# are the same in the two captures. The second capture is only made when the
+# line can go on below: the cursor row is not the last row, and the line has
+# the characters to fill a row (a character uses at most 2 cells). This
+# keeps the 0.2 s poll paths at one capture for a short line. With no width
+# or height, the second capture is made.
 capture_to_cursor() {
-    local cy all head line
-    cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
+    local pos cy w h all head line
+    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y} #{pane_width} #{pane_height}') || return 1
+    cy="${pos%% *}"
+    w=; h=
+    case "$pos" in *' '*' '*) w="${pos#* }"; h="${w#* }"; w="${w%% *}" ;; esac
     CAPTURE=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy" && printf x) || return 1
     CAPTURE="${CAPTURE%x}"
     CAPTURE="${CAPTURE%$'\n'}"
+    if positive_integer "$w" && positive_integer "$h"; then
+        [ "$cy" -lt "$((h - 1))" ] || return 0
+        line="${CAPTURE##*$'\n'}"
+        [ "$(( ${#line} * 2 ))" -ge "$((w - 1))" ] || return 0
+    fi
     all=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E - && printf x) || return 1
     all="${all%x}"
     head=
