@@ -811,62 +811,70 @@ def half_rule(checked, ranges):
     return result
 
 
-def guard(text, limit, cut=False, runner=None):
-    """The output guard (spec section 8). Give (guarded text, held). A
-    runner that the caller gives keeps its time limit (guard_pieces)."""
-    if not text.strip():
-        return text, []
-    tail = "\n" if text.endswith("\n") else ""
-    lines = (text[:-1] if tail else text).split("\n")
-    block_pol, line_pol = policy("output-block"), policy("output-line")
-    values = value_lines(lines, compile_lines("secret-values.txt"))
-    shapes = compile_lines("not-secret.txt")
-    runner = runner or remote(limit)
-    pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL)
-    try:
-        checked, late_blocks = check_blocks(pool, runner, block_pol, make_blocks(lines))
-        ranges, flagged = block_ranges(checked, block_pol)
-        units = sorted((unit for block, _answer in checked for unit in block),
-                       key=lambda unit: (unit.line, unit.start))
-        # not-secret.txt runs before the pair rule and before the half rule
-        # counts, and it removes only holds of the line check.
-        cleared = {index for index, line in enumerate(lines) if never_secret(line, shapes)}
-        held, late = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+def guard_lines(lines, pem, runner, pool, setup):
+    """The output guard of one piece (spec section 8). setup holds the
+    policies and the patterns, which guard reads one time. pem holds the
+    ranges of pem_ranges in this piece. Give (guarded lines, held)."""
+    if not any(line.strip() for line in lines):
+        return lines, []
+    block_pol, line_pol, value_patterns, shapes = setup
+    values = value_lines(lines, value_patterns)
+    checked, late_blocks = check_blocks(pool, runner, block_pol, make_blocks(lines))
+    ranges, flagged = block_ranges(checked, block_pol)
+    units = sorted((unit for block, _answer in checked for unit in block),
+                   key=lambda unit: (unit.line, unit.start))
+    # not-secret.txt runs before the pair rule and before the half rule
+    # counts, and it removes only holds of the line check.
+    cleared = {index for index, line in enumerate(lines) if never_secret(line, shapes)}
+    held, late = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
     ranges += [(line, line, "secret") for line in sorted(held | values)]
     # Text that the time limit left not examined is held (spec section 8).
     ranges += [(block[0].line, block[-1].line, "not_examined") for block in late_blocks]
     ranges += [(line, line, "not_examined") for line in sorted(late - values)]
-    ranges += pem_ranges(lines, cut)
+    ranges += pem
     ranges += half_rule(checked, ranges)
-    out, summary = render(lines, ranges)
-    return "\n".join(out) + tail, summary
+    return render(lines, ranges)
 
 
-def guard_pieces(text, limit, cut, size):
-    """Guard the text in pieces of whole lines, each at most SIZE bytes (one
-    line that is longer is a piece of its own), with one time limit for all
-    of them: a guard of one piece never starts inside a line, and one
-    process examines all pieces (wait --pattern). The bottom piece goes
-    first, as the bottom blocks do in check_blocks. Give (text, held)."""
+def guard(text, limit, cut=False, size=0):
+    """The output guard (spec section 8). Give (guarded text, held).
+
+    With SIZE, the text goes in pieces of whole lines, each at most SIZE
+    bytes (one line that is longer is a piece of its own), so a guard of
+    one piece never starts inside a line (wait --pattern). All pieces share
+    one time limit, one pool and one read of the policies. The bottom
+    piece goes first, as the bottom blocks do in check_blocks. The PEM rule
+    runs one time on the full text, because a key can go over the edge of
+    a piece; each piece gets its part of the ranges."""
     if not text.strip():
         return text, []
     tail = "\n" if text.endswith("\n") else ""
+    lines = (text[:-1] if tail else text).split("\n")
     parts, part, used = [], [], 0
-    for line in (text[:-1] if tail else text).split("\n"):
+    for line in lines if size else ():
         count = len(line.encode("utf-8")) + 1
         if part and used + count > size:
             parts.append(part)
             part, used = [], 0
         part.append(line)
         used += count
-    parts.append(part)
+    parts.append(part if size else lines)
+    pem = pem_ranges(lines, cut)
+    starts = [sum(len(part) for part in parts[:index]) for index in range(len(parts))]
+    setup = (policy("output-block"), policy("output-line"),
+             compile_lines("secret-values.txt"), compile_lines("not-secret.txt"))
     runner = remote(limit)
+    pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL)
     results = [None] * len(parts)
-    for index in reversed(range(len(parts))):
-        results[index] = guard("\n".join(parts[index]), limit, cut, runner)
-    return ("\n".join(result[0] for result in results) + tail,
+    try:
+        for index in reversed(range(len(parts))):
+            first, last = starts[index], starts[index] + len(parts[index]) - 1
+            own = [(max(start, first) - first, min(end, last) - first, kind)
+                   for start, end, kind in pem if start <= last and end >= first]
+            results[index] = guard_lines(parts[index], own, runner, pool, setup)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return ("\n".join(line for result in results for line in result[0]) + tail,
             [item for result in results for item in result[1]])
 
 
@@ -889,10 +897,7 @@ def cmd_output(args):
                 raise Fail(2)
         else:
             raise Fail(2)
-    if size:
-        text, held = guard_pieces(read_stdin(), limit, cut, size)
-    else:
-        text, held = guard(read_stdin(), limit, cut)
+    text, held = guard(read_stdin(), limit, cut, size)
     if render_mode:
         # not_examined=N only when the time limit left lines not examined:
         # the caller can then try again, which it must not do for a secret.

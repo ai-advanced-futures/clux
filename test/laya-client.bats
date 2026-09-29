@@ -383,6 +383,46 @@ assert c.half_rule(block, [(0, 2, 'secret')]) == [(0, 3, 'secret')]
     [ "$output" = $'held=2 not_examined=1\n[held by laya: secret]\n[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
 }
 
+@test "output --pieces: the PEM rule sees the full text, so a key over the edge of a piece is held" {
+    start_fake_laya '{}'
+    # At 40 bytes each line of the key is a piece of its own.
+    local key=$'-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAkeybodyone\nMIIEowIBAAKCAQEAkeybodytwo\n-----END RSA PRIVATE KEY-----\nafter the key'
+    run --separate-stderr client output --render --pieces 40 < <(printf '%s\n' "$key")
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [[ "$output" != *keybody* ]] || { echo "$output"; false; }
+    [[ "$output" == *'after the key'* ]] || { echo "$output"; false; }
+    # An END with no BEGIN at the top of the full text holds nothing when
+    # the text is not cut (the neighbor state, no --cut).
+    run client output --render --pieces 400 < <(printf 'plain top\n-----END RSA PRIVATE KEY-----\n')
+    [[ "$output" == *'plain top'* ]] || { echo "$output"; false; }
+    # With --cut, it holds the lines above it.
+    run client output --render --pieces 400 --cut < <(printf 'plain top\n-----END RSA PRIVATE KEY-----\n')
+    [[ "$output" != *'plain top'* ]] || { echo "$output"; false; }
+}
+
+@test "output --pieces reads the policies one time and makes one pool for all pieces" {
+    start_fake_laya '{}'
+    run "$CLUX_LAYA_PYTHON" -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+calls = {'policy': 0, 'compile': 0, 'pool': 0}
+policy, compile_lines, pool = c.policy, c.compile_lines, c.ThreadPoolExecutor
+def count(name, fn):
+    def inner(*a, **k):
+        calls[name] += 1
+        return fn(*a, **k)
+    return inner
+c.policy = count('policy', policy)
+c.compile_lines = count('compile', compile_lines)
+c.ThreadPoolExecutor = count('pool', pool)
+text = ''.join('line %d of the text\n' % i for i in range(12))
+out, held = c.guard(text, 5, size=40)
+assert out == text, out
+assert calls == {'policy': 2, 'compile': 2, 'pool': 1}, calls
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "output: one request that reaches the request limit holds only its block" {
     start_fake_laya '{"rules": [{"contains": "slow-block", "delay": 6}]}'
     local text
