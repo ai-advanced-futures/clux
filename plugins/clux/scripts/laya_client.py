@@ -8,11 +8,15 @@ from CLUX_LAYA_KEY. The URL must use http and name a loopback host.
 Subcommands that ask Laya (input on stdin, one result on stdout):
 
   health                          {"ok": true}
-  command [--screen] [--shell]    {"level": "safe|caution|dangerous", "reason": "..."}
+  command [--screen] [--shell] [--enter]
+                                  {"level": "safe|caution|dangerous", "reason": "..."}
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
                                   screen. Each command goes to Laya.
-                                  --shell: the line is at the clux prompt.
+                                  --shell: the line is at a shell prompt; a
+                                  line that can change the shell is dangerous.
+                                  --enter: the send ends the line; with
+                                  --shell, an incomplete line is dangerous.
   output [--render] [--cut] [--limit S]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>", then the text.
@@ -274,15 +278,41 @@ def level_of(answer, pol):
     return "safe", reason
 
 
-# A shell command that changes what later commands run: a function
-# definition (name() or function name) or enable. The gate examines each
-# command alone, so such a command always asks the user (spec section 7).
-SHELL_STATE = re.compile(
-    r"(^|[\s;&|(){}])(function\s+[^\s;&|(){}]+|[^\s;&|(){}=$`\"'<>]+\s*\(\s*\)|enable(\s|$))")
+# A line that send types at a shell prompt runs in that shell, not in the
+# subshell of run, so it can change the shell for later commands (spec
+# section 7). The gate examines each line alone, so such a line is
+# dangerous: send refuses it, and run (a subshell) can do the same work.
+# The rule reads the words anywhere in the line, also inside quotes, so
+# eval 'f() { ...; }' matches too. A false match only sends Claude to run.
+SHELL_WORDS = re.compile(
+    r"\(\s*\)"
+    r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
+    r"|export|readonly|set|shopt|unset|function|builtin|hash|exec)(?![A-Za-z0-9_-])"
+    r"|(^|[;&|(){}`])\s*\.\s"
+    r"|(^|[^A-Za-z0-9_])(PATH|PROMPT_COMMAND|BASH_ENV|ENV|PS[0-4]|IFS|SHELLOPTS|BASHOPTS"
+    r"|CDPATH|GLOBIGNORE|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    r"|<<")
+
+
+def incomplete(command):
+    """A line that ends at a shell prompt but is not a complete command
+    (a last backslash, an open quote, a here-document): the next line joins
+    it, and the gate never examined the two lines as one. bash -n reads the
+    line and runs nothing."""
+    if command.rstrip().endswith("\\"):
+        return True
+    import subprocess
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else "bash"
+    try:
+        done = subprocess.run([bash, "-n", "-c", command], capture_output=True, timeout=2,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return done.returncode != 0 or bool(done.stderr)
 
 
 def cmd_command(args):
-    if any(arg not in ("--screen", "--shell") for arg in args):
+    if any(arg not in ("--screen", "--shell", "--enter") for arg in args):
         raise Fail(2)
     text = read_stdin()
     if "--screen" in args:
@@ -312,8 +342,11 @@ def cmd_command(args):
     if is_cut(answer, pol):
         raise Fail(3)
     level, reason = level_of(answer, pol)
-    if ("--screen" not in args or "--shell" in args) and SHELL_STATE.search(command):
-        level, reason = "dangerous", "changes the shell for later commands"
+    if "--shell" in args:
+        if SHELL_WORDS.search(command):
+            level, reason = "dangerous", "can change the shell for later commands"
+        elif "--enter" in args and command.strip() and incomplete(command):
+            level, reason = "dangerous", "the line is not a complete command"
     print(json.dumps({"level": level, "reason": reason}))
 
 
@@ -757,13 +790,13 @@ def cells(text):
 
 
 def cmd_after_cursor(args):
-    """after-cursor X < ROW: exit 0 when the row has text that is not a
-    space at cell X or after it, else 1. tmux gives cursor_x in cells."""
+    """after-cursor X < ROW: print "mid" when the row has text that is not a
+    space at cell X or after it, else "end". tmux gives cursor_x in cells.
+    A word, not an exit code: a failure must not read as "end"."""
     if len(args) != 1 or not args[0].isdigit():
         raise Fail(2)
     row = read_stdin().rstrip("\n").rstrip()
-    if cells(row) <= int(args[0]):
-        raise Exit(1)
+    print("end" if cells(row) <= int(args[0]) else "mid")
 
 
 def cmd_version(args):

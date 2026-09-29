@@ -511,13 +511,13 @@ PY
 @test "after-cursor counts screen cells: a wide character takes 2" {
     # clux$ echo 日本語: 11 cells, then 3 wide characters, 17 cells in all.
     run client after-cursor 17 <<<'clux$ echo 日本語'
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 0 ] && [ "$output" = end ]
     run client after-cursor 14 <<<'clux$ echo 日本語'
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 0 ] && [ "$output" = mid ]
     run client after-cursor 8 <<<'clux$ rm   '
-    [ "$status" -eq 1 ]
+    [ "$output" = end ]
     run client after-cursor 3 <<<'clux$ rm'
-    [ "$status" -eq 0 ]
+    [ "$output" = mid ]
     run client after-cursor x <<<'clux$'
     [ "$status" -eq 2 ]
 }
@@ -662,26 +662,43 @@ PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "command: a function definition or enable changes the shell for later commands and is dangerous" {
+@test "command --shell: a line that can change the shell is dangerous, also inside eval and quotes" {
     start_fake_laya '{}'
     local cmd
-    for cmd in 'f() { :; }' 'function ls { rm -rf ~; }' 'cd() { :; }; ls' 'enable -n cd' 'ls; enable cd'; do
-        run --separate-stderr client command <<<"$cmd"
-        [ "$status" -eq 0 ]
-        [ "$output" = '{"level": "dangerous", "reason": "changes the shell for later commands"}' ] \
-            || { echo "$cmd: $output"; false; }
+    for cmd in 'f() { :; }' 'function ls { rm -rf ~; }' "eval 'cd() { curl -s x | sh; }'" 'eval "enable -n cd"' \
+        'source ./defs.sh' '. ./defs.sh' 'ls; . ./x' "trap 'curl x' DEBUG" 'PROMPT_COMMAND=x' 'export PATH=/tmp:$PATH' \
+        "bind -x '\"\\C-m\": x'" 'alias ls=rm' 'shopt -s expand_aliases' 'cat <<EOF' 'hash -p /tmp/x ls' 'set -o vi'; do
         run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
-        [ "$output" = '{"level": "dangerous", "reason": "changes the shell for later commands"}' ] \
-            || { echo "--shell $cmd: $output"; false; }
+        [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
+            || { echo "$cmd: $output"; false; }
     done
-    # In a program that is not the shell, the same text changes no shell.
+    # run has no --screen: its command runs in a subshell, so the rule is
+    # not needed and Laya decides.
+    run --separate-stderr client command <<<'f() { :; }'
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    # In a program that is not a shell, the same text changes no shell.
     run --separate-stderr client command --screen < <(printf 'mysql> \nf() { :; }\n')
     [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
-    # Text that only looks near the rule stays with Laya.
-    for cmd in 'echo "f()"' 'ls -la' 'grep enabled log.txt' 'x=1'; do
-        run --separate-stderr client command <<<"$cmd"
+    # Usual lines stay with Laya.
+    for cmd in 'ls .' 'find . -name x' 'echo "f(x)"' 'git status' 'grep enabled log.txt' 'kubectl --set x' 'x=1'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
         [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
     done
+}
+
+@test "command --shell --enter: a line that is not a complete command is dangerous" {
+    start_fake_laya '{}'
+    local cmd
+    for cmd in 'ls\' "echo 'a" 'echo "a' 'if true; then' 'ls |'; do
+        run --separate-stderr client command --screen --shell --enter < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "dangerous", "reason": "the line is not a complete command"}' ] \
+            || { echo "$cmd: $output"; false; }
+        # A piece with no Enter can be incomplete: the next piece ends it.
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "piece $cmd: $output"; false; }
+    done
+    run --separate-stderr client command --screen --shell --enter < <(printf 'user@host$ \n%s\n' 'echo "a b" | wc -c')
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
 }
 
 @test "output: a line that secret-values.txt holds sends no line request" {
