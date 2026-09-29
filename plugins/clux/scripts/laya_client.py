@@ -137,6 +137,15 @@ def url_is_loopback(url):
             and not parts.username and not parts.password)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse each redirect: a redirect would send the key (Authorization) and
+    the terminal text to the host of Location, which can be remote. The
+    answer stays an HTTPError, so the client exits 1."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Remote:
     """The runner that laya.structured.decide calls: one POST to laya-serve.
 
@@ -151,7 +160,7 @@ class Remote:
         self.url = url.rstrip("/")
         self.key = key
         self.deadline = deadline
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def limit(self):
         left = self.deadline - time.monotonic()
@@ -331,6 +340,17 @@ def level_of(answer, pol):
 # inside quotes. It is not complete: quotes can split a word (e""val), and
 # only the Laya score stops that. It reads only the text that clux typed,
 # not the prompt (a directory named source in the prompt is not a word).
+# Each name that __clux_carry in terminal.sh does not carry back from run,
+# and PATH and the loader names (a test keeps the two lists equal); names
+# that change where later commands read or write files; the zsh prompts
+# (with prompt_subst they run $(...) at each prompt) and zsh hook arrays.
+SHELL_NAMES = (
+    r"PATH|FPATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
+    r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
+    r"|OLDPWD|MAIL|MAILPATH|MAILCHECK|FUNCNEST|LD_[A-Z_]*|DYLD_[A-Z_]*"
+    r"|HOME|TMPDIR|INPUTRC|ZDOTDIR"
+    r"|PROMPT[234]?|RPROMPT2?|RPS[12]|SPROMPT"
+    r"|(precmd|preexec|chpwd|periodic|zshaddhistory|zshexit)_functions")
 SHELL_WORDS = re.compile(
     r"\(\s*\)"
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
@@ -339,18 +359,16 @@ SHELL_WORDS = re.compile(
     r"|umask|ulimit|fc)"
     r"(?![A-Za-z0-9_-])"
     r"|(^|[^A-Za-z0-9_.-])printf\s+(-\S+\s+)*-v"
-    # . and the zsh r (run a history line again) at the start of a command.
-    r"|(^|[;&|(){}`!]|(^|\s)(then|do|else|elif|if|while|until|time|coproc))\s*(\.\s|r(\s|$))"
+    # . and the zsh r (run a history line again) at the start of a command,
+    # also after assignments (X=1 . f) and with a backslash (\. f).
+    r"|(^|[;&|(){}`!]|(^|\s)(then|do|else|elif|if|while|until|time|coproc))"
+    r"\s*([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\\?(\.\s|r(\s|$))"
     # History expansion (!!, !rm, !?x?, !-2) and ^old^new run an earlier line.
     r"|!(?![\s=(]|$)|^\s*\^"
     r"|[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?="
-    # Each name that __clux_carry in terminal.sh does not carry back from
-    # run, and PATH and the loader names (a test keeps the two lists equal).
-    r"|(^|[^A-Za-z0-9_])(PATH|FPATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
-    r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
-    r"|OLDPWD|MAIL|MAILPATH|MAILCHECK|FUNCNEST|LD_[A-Z_]*|DYLD_[A-Z_]*"
-    # Names that change where later commands read or write files.
-    r"|HOME|TMPDIR|INPUTRC|ZDOTDIR)\+?="
+    r"|(^|[^A-Za-z0-9_])(" + SHELL_NAMES + r")\+?="
+    # A default in an expansion assigns too: ${PROMPT_COMMAND:=x}.
+    r"|\$\{(" + SHELL_NAMES + r"):?[=]"
     # The zsh arrays that PATH, FPATH and CDPATH follow, as a word of their
     # own (not --module-path=).
     r"|(^|[\s;&|(){}`])(path|fpath|cdpath)\+?="
@@ -622,7 +640,10 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
             alone_ids.add(position - 1)
     order = sorted(alone_ids)
     alone = dict(zip(order, pool.map(lambda position: score(units[position].text), order)))
-    late = {units[position].line for position, value in alone.items() if value is None}
+    # A unit above that its block check passed and that got no alone answer
+    # in time stays shown: then only the pair rule can hold the unit below.
+    late = {units[position].line for position, value in alone.items()
+            if value is None and position in targets}
     held = set()
     for position in targets:
         if alone[position] is not None and alone[position] > limit:

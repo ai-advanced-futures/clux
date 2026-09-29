@@ -27,8 +27,8 @@ two verbs:
   }
 
 A rule matches when all of its conditions are true: "equals" (the full state
-text), "contains", "min_lines", "min_length", and "asks" (a question name in
-the request). A state that is a JSON object is matched as its sorted JSON text.
+text), "contains", "min_lines", "min_length", "asks" (a question name in
+the request) and "not_asks" (a question name not in the request). A state that is a JSON object is matched as its sorted JSON text.
 
 Environment: LAYA_HOST (default 127.0.0.1), LAYA_PORT (0 selects a free port),
 LAYA_API_KEY, CLUX_FAKE_LAYA_ANSWERS, CLUX_FAKE_LAYA_PORT_FILE (gets the
@@ -85,6 +85,8 @@ def matches(rule, text, questions):
     if len(text) < rule.get("min_length", 0):
         return False
     if "asks" in rule and rule["asks"] not in questions:
+        return False
+    if "not_asks" in rule and rule["not_asks"] in questions:
         return False
     return True
 
