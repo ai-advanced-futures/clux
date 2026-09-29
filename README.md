@@ -212,6 +212,7 @@ From 4.0.0, the companion needs Laya, a local model. Laya examines each command 
 
 - A dangerous command runs only after you type `y` in the pane.
 - A line with a secret goes back to Claude as `[held by laya: secret]`. The raw text stays in the pane.
+- Text that Laya cannot examine in its time limit goes back as `[held by laya: not_examined, <k> lines]`. On a machine with no GPU (no MPS or CUDA), a large output takes more time, so more lines can be held this way.
 - When Laya does not answer, the companion stops with exit code 6 and sends no pane text to Claude.
 
 Install Laya one time. Claude asks you before it runs the install:
@@ -223,7 +224,7 @@ Install Laya one time. Claude asks you before it runs the install:
 
 The install makes a Python venv in `~/.local/share/clux/laya` with `laya` 0.3.21 and PyTorch, and downloads the English checkpoint to the Hugging Face cache. Each Claude session starts its own Laya server, which uses about 1–2 GB of memory. To use a server that you start, set `CLUX_LAYA_URL` (a loopback host only) and `CLUX_LAYA_KEY`.
 
-The policies are in `plugins/clux/config/laya/`. A copy in `~/.config/clux/laya/<name>.json` replaces the shipped policy of that name.
+The policies are in `plugins/clux/config/laya/`. There is no user copy: a command in the companion can write the files of the user, so a user copy could turn off the checks.
 
 ## Troubleshooting
 

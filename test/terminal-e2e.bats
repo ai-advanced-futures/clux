@@ -1051,3 +1051,57 @@ pane_shows() {
     [ "$status" -eq 0 ]
     [[ "$output" == *$'\nserver=external health=failed' ]] || false
 }
+
+@test "run refuses when text came on the prompt line while Laya examined the command" {
+    set_fake_laya '{"rules": [{"contains": "clux-slow", "delay": 2}]}'
+    "$TERMINAL" open >/dev/null
+    local out="$BATS_TEST_TMPDIR/run.out" mark="$BATS_TEST_TMPDIR/typed" pid rc
+    "$TERMINAL" run -- 'echo clux-slow' > "$out" 2>&1 3>&- &
+    pid=$!
+    sleep 1
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" -l "touch '$mark'"
+    rc=0; wait "$pid" || rc=$?
+    [ "$rc" -eq 5 ] || { cat "$out"; false; }
+    [ "$(cat "$out")" = 'the pane is not at an empty prompt: use read, then run again' ]
+    sleep .5
+    [ ! -e "$mark" ]
+    [ ! -e "$(companion_dir)/1.cmd" ]
+    [ ! -d "$(companion_dir)/busy" ]
+    # The user text stays on the line: run typed nothing after it.
+    pane_shows "touch '$mark'"
+    ! "$REAL_TMUX" -S "$TMUX_SOCKET" capture-pane -p -t "$(companion_pane)" | grep -q '__clux_run' || false
+}
+
+@test "C-c ends a run whose typed line the pane shell never read" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'true'
+    [ "$status" -eq 0 ]
+    local d
+    d=$(companion_dir)
+    # Run 2 as it is after a typed line that the shell did not read: the
+    # question is open and the .cmd is still there.
+    mkdir "$d/busy"; printf '2\n' > "$d/busy/owner"
+    printf 'echo never' > "$d/2.cmd"; printf 'destructive 0.95\n' > "$d/2.reason"; : > "$d/2.confirm"
+    sed -i.bak 's/^seq=.*/seq=2/' "$d/state" && rm -f "$d/state.bak"
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$d/2.cmd" ] && [ ! -e "$d/2.confirm" ]
+    run "$TERMINAL" wait --timeout 5 --run 2
+    [ "$status" -eq 0 ]
+    [ "$output" = $'run 2 did not start: the typed line changed\nexit=126' ]
+    run "$TERMINAL" run -- 'echo next'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" == *'next'* ]] || false
+}
+
+@test "wait --pattern does not match the held-by-laya marker" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'echo AKIAABCDEFGHIJKLMNOP' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    run "$TERMINAL" read
+    [[ "$output" == *'[held by laya: secret'* ]] || { echo "$output"; false; }
+    run "$TERMINAL" wait --timeout 2 --pattern 'held'
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" wait --timeout 2 --pattern 'laya'
+    [ "$status" -eq 1 ]
+}

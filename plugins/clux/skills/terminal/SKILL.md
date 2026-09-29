@@ -100,10 +100,13 @@ terminal.sh run -- 'git status --short'
 - `run` waits for the answer until its time limit ends. Then you get exit code 1. Tell the user to answer the question in the pane. Then use `terminal.sh wait --run <n>` with a long `--timeout`.
 - While the question is open, `send`, `read`, `wait --idle` and `wait --pattern` give exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. You cannot type the answer. Only the interrupt keys work: `send --key C-c` declines the run.
 - When the user does not answer `y`, you get `laya: declined by the user` and `exit=126`. Do not try the same command in a different form. Ask the user what to do.
+- A command that makes a function (`name() { ... }` or `function name`) or uses `enable` changes the shell for the commands after it. Laya gives `dangerous (changes the shell for later commands)`, and the user must answer. Do not change `PATH`, a variable or an alias of the pane shell, and do not use `eval` or `source` to change how a later command works: Laya examines each command alone and cannot see such a change.
+- When you get `run <n> did not start: the typed line changed` and `exit=126`, text in the pane came before the typed line, and `send --key C-c` ended the run. Nothing ran. Use `read`, then run again.
 
 ## Held output
 
 - Laya examines all text that comes back to you from `run`, `wait --run`, `read` and `wait --pattern`. A line with a secret comes back as `[held by laya: secret]`. A group of lines comes back as `[held by laya: secret, <k> lines]` or `[held by laya: prompt_injection, <k> lines]`. After the output, `laya: held <k> lines` gives the count.
+- `[held by laya: not_examined, <k> lines]` tells you that Laya did not examine these lines in its time limit. They are held, and the other lines are correct. To get them, run again with a smaller `--max-lines`, or read a smaller part of the output (for example with `sed -n` on a file).
 - These lines are not errors. The command ran. The user sees the raw text in the pane.
 - Do not try to read the held text in a different way, for example with `cat` of the same file or with `grep` for the value.
 - `laya not available: the output stays; use wait --run <n> when Laya answers, or wait --run <n> --discard` with exit code 6 tells you that Laya did not answer. You get no output text. The `exit=<rc>` line after it gives the exit code of the command. Until you use `wait --run <n>` (when Laya answers again, it gives the output) or `wait --run <n> --discard` (it deletes the output), each `run` gives exit code 5.
@@ -125,6 +128,7 @@ Laya examines each `send` before it goes to the pane: text with or without `--en
 - When Laya finds a risk, `send` prints `laya: caution (<reason>)` and sends the line.
 - A line that is too long for Laya gives exit code 2 and `laya: the line is too long to examine: make it shorter`. Nothing goes to the pane.
 - When the cursor line changes while Laya examines it, `send` types nothing. You get exit code 5 and `the line changed while Laya examined it: read, then send again`. A program that draws its line again and again (for example a spinner) can cause this. Use `read`, then send again.
+- When the user types in the pane while Laya examines a `run` command, `run` types nothing. You get exit code 5 and `the pane is not at an empty prompt: use read, then run again`. Use `read`, then run again or tell the user.
 - Only one `send` or `run` types at a time. When another one types, you get exit code 5 and `another send or run is typing in the pane: try again`. Do not start two `send` or `run` calls in parallel.
 - When Laya finds the line dangerous, `send` does not send the text or the key. You get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`. At the shell prompt, use `run`: it asks the user. In another program, tell the user.
 
@@ -147,12 +151,12 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. Also a line or a command that is too long for Laya. | Correct the call, or tell the user. |
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
 | 4 | No companion is open for this session. | Use `open`. |
-| 5 | Busy: a run is not complete, the pane is not at its prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`), another `send` or `run` types (`another send or run is typing in the pane`), or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
+| 5 | Busy: a run is not complete, the pane is not at its prompt or not at an empty prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`), another `send` or `run` types (`another send or run is typing in the pane`), or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
 | 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. Other `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
 
 ## Laya settings
 
-Do not edit the files in `config/laya/`, or the user copies in `~/.config/clux/laya/`. Only the user changes the Laya policies.
+Do not edit the files in `config/laya/`. Only the user changes the Laya policies. A copy in `~/.config/clux/laya/` has no effect.
 
 ## Close the companion
 

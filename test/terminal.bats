@@ -428,6 +428,24 @@ STUB
     [ ! -e "$BATS_TEST_TMPDIR/data/clux/laya" ]
 }
 
+@test "laya install with the venv and no checkpoint needs no base python3" {
+    require_laya_python
+    local venv="$BATS_TEST_TMPDIR/data/clux/laya" name
+    make_fake_venv "$venv"
+    rm "$venv/bin/laya-serve"
+    printf '#!/usr/bin/env bash\necho boom\nexit 1\n' > "$venv/bin/laya-serve"
+    chmod +x "$venv/bin/laya-serve"
+    for name in python3.12 python3.13 python3.11 python3.10 python3; do
+        printf '#!/usr/bin/env bash\nexit 1\n' > "$BATS_TEST_TMPDIR/stubs/$name"
+        chmod +x "$BATS_TEST_TMPDIR/stubs/$name"
+    done
+    run env -u TMUX -u TMUX_PANE XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" \
+        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" laya install
+    [ "$status" -eq 1 ] || { echo "$output"; false; }
+    [[ "$output" == *'laya install: the checkpoint download failed: laya-serve ended before it answered'* ]] || false
+    [ -f "$venv/.clux-installed" ]
+}
+
 @test "a failed checkpoint download keeps the venv and removes secret lines from the log" {
     require_laya_python
     local venv="$BATS_TEST_TMPDIR/data/clux/laya" tmp="$BATS_TEST_TMPDIR/tmp"
@@ -515,6 +533,77 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [[ "$output" == *'rc=126' ]] || false
     [ ! -e "$mark" ]
     ! grep -q 'safe list' "$BATS_TEST_TMPDIR/rc/rc.bash" || false
+}
+
+@test "__clux_run removes the .confirm of a run that has an .rc" {
+    local d="$BATS_TEST_TMPDIR/rc" sum
+    sum=$(rc_sum 'true')
+    RC_CMD='true' RC_SETUP=": > '$d/1.confirm'; printf '126\\n' > '$d/1.rc'" run rc_run "$sum" confirm
+    [[ "$output" == *'refused: this run is not waiting to start'* ]] || false
+    [ ! -e "$d/1.confirm" ]
+    # A plain run that starts removes .confirm too.
+    RC_CMD='true' RC_SETUP=": > '$d/1.confirm'" run rc_run "$sum" plain
+    [[ "$output" == *'rc=0' ]] || false
+    [ ! -e "$d/1.confirm" ]
+}
+
+@test "run_not_started ends a run whose typed line the pane shell never read" {
+    local d="$BATS_TEST_TMPDIR/ns"
+    mkdir -p "$d"
+    : > "$d/2.cmd"; : > "$d/2.confirm"
+    run bash -c "source '$TERMINAL'; D='$d'; S_SEQ=2; run_not_started"
+    [ "$status" -eq 0 ]
+    [ ! -e "$d/2.cmd" ] && [ ! -e "$d/2.confirm" ]
+    [ -e "$d/2.notstarted" ] && [ -e "$d/2.declined" ] && [ -e "$d/2.done" ]
+    [ "$(cat "$d/2.rc")" = 126 ]
+    # A run that the pane shell started (no .cmd) or that ended stays.
+    rm -f "$d"/2.*
+    : > "$d/3.confirm"
+    run bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; run_not_started"
+    [ -e "$d/3.confirm" ] && [ ! -e "$d/3.rc" ]
+}
+
+@test "release_run frees the lock only when busy/owner names that run or no run" {
+    local d="$BATS_TEST_TMPDIR/own" o
+    for o in pending 4 3 ''; do
+        rm -rf "$d"; mkdir -p "$d/busy"
+        printf '%s\n' "$o" > "$d/busy/owner"
+        bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_run 3"
+        case "$o" in
+            3|'') [ ! -d "$d/busy" ] || { echo "owner '$o' kept the lock"; false; } ;;
+            *) [ -d "$d/busy" ] || { echo "owner '$o' lost the lock"; false; } ;;
+        esac
+    done
+}
+
+@test "a live reader keeps the lock and the output of its run" {
+    local d="$BATS_TEST_TMPDIR/rd"
+    mkdir -p "$d/busy"
+    printf '3\n' > "$d/busy/owner"
+    printf '0\n' > "$d/3.rc"; : > "$d/3.out"
+    sleep 30 3>&- & local live=$!
+    ln -s "$live" "$d/3.reading"
+    bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_if_done; remove_stale_output"
+    [ -d "$d/busy" ]
+    [ -e "$d/3.out" ]
+    kill "$live"; wait "$live" 2>/dev/null || true
+    bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_if_done; remove_stale_output"
+    [ ! -d "$d/busy" ]
+    [ ! -e "$d/3.out" ]
+}
+
+@test "laya_guard sends --cut only for cut text" {
+    local d="$BATS_TEST_TMPDIR/cut"
+    mkdir -p "$d"
+    printf 'a\n' > "$d/in"
+    run bash -c "source '$TERMINAL'; D='$d'
+        laya_call() { echo \"args: \$*\" >&2; printf 'held=0\\na'; }
+        laya_guard '$d/in'; laya_guard '$d/in' 1; LAYA_GUARD_BYTES=1; laya_guard '$d/in'"
+    [ "${lines[0]}" = 'args: output --render --limit 15' ]
+    [ "${lines[1]}" = 'args: output --render --cut --limit 15' ]
+    [ "${lines[2]}" = 'args: output --render --cut --limit 15' ]
+    # report_run over --max-lines, read and wait --pattern pass 1.
+    [ "$(grep -cE 'laya_guard <\(.*\) 1( \|\||;)' "$TERMINAL")" -eq 3 ]
 }
 
 @test "rc.bash sets ignoreeof, so C-d at the prompt does not end the pane shell" {

@@ -36,6 +36,12 @@ All notable changes to clux are documented here.
 - One failed pane probe does not stop a wait (also `wait --pattern`): the wait ends with exit code 6 after 3 failed probes in a row. For `run` and `wait --run` the message says that the command continues. A probe sends no request when the screen did not change
 - Each run command runs one time: a declined command cannot run again through `__clux_run`, and `send` and `run` refuse `__clux_` names (exit code 2)
 - After a 503 from Laya, the client waits for the `Retry-After` time of the server (at most 1 s), then tries one time more
+- When the output guard reaches its time limit, only the text that Laya did not examine is held (`[held by laya: not_examined, <k> lines]`); the other lines stay and the verb exits 0
+- `run` refuses with exit code 5 (`the pane is not at an empty prompt`) when text came on the prompt line while Laya examined the command, and types `C-u` before its line. `send --key C-c` ends a run whose typed line the pane shell never read (`run <n> did not start: the typed line changed`, `exit=126`)
+- A function definition or `enable` in a command is `dangerous` (`changes the shell for later commands`), so the user must answer
+- A reader of a run keeps the lock and the output of that run, and an older run cannot free the lock of a newer run
+- `wait --pattern` does not match a `[held by laya: ...]` marker line
+- `send` cuts each screen line of the gate to its last 200 characters. An `-----END ... PRIVATE KEY-----` line with no start holds from the first line only in cut text. A line that `secret-values.txt` holds sends no request. `laya install` with a venv and no checkpoint needs no base `python3`
 
 ### Added
 
@@ -45,7 +51,7 @@ All notable changes to clux are documented here.
 - **Pane state.** `credential_on_cursor` becomes `pane_state`: Laya gives `credential`, `yes_no`, `menu`, `pager`, `shell_prompt` or `other`, and the 3.9.0 patterns can still add `credential`. `wait --idle` prints `pane=<state>` when its time limit ends
 - **Exit code 6** for Laya: not installed, not available, a dangerous `send`, or output held
 - `terminal.sh laya install` (Python 3.10 or later, a venv in `~/.local/share/clux/laya`, `pip install laya[serve]==0.3.21` and the checkpoint download, in one 540 s budget) and `terminal.sh laya status`
-- `config/laya/`: the four policies (`command.json`, `output-block.json`, `output-line.json`, `pane.json`). A user copy in `~/.config/clux/laya/<name>.json` replaces the shipped policy
+- `config/laya/`: the four policies (`command.json`, `output-block.json`, `output-line.json`, `pane.json`). There is no user copy: a command in the companion could write it and turn off the checks
 
 ### Internal
 

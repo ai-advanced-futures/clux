@@ -520,7 +520,10 @@ write_rc_file() {
 unset HISTFILE
 set +o history
 PROMPT_COMMAND=
-# No aliases: the pane shell runs the text that Laya examined.
+# No aliases. [inferred] This does not make the pane shell run only what
+# Laya examined: the gate examines each command alone, and a command that
+# passed it can change the shell for later commands (a function, PATH).
+# The gate asks the user for a function definition and for enable.
 shopt -u expand_aliases
 # C-d at an empty prompt must not end the pane shell (spec section 7).
 set -o ignoreeof
@@ -554,7 +557,10 @@ __clux_sum() {
 __clux_run() {
   local __clux_n="$1" __clux_s="${2:-}" __clux_m="${3:-}"
   local __clux_d="$__clux_dir" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
+  case "$__clux_n" in ''|*[!0-9]*) printf '%s\n' 'refused: this run is not waiting to start'; return 1 ;; esac
   if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
+    # A run that ended cannot ask a question: its .confirm goes.
+    [ ! -e "$__clux_d/$__clux_n.rc" ] || command rm -f "$__clux_d/$__clux_n.confirm"
     printf '%s\n' 'refused: this run is not waiting to start'
     return 1
   fi
@@ -567,6 +573,9 @@ __clux_run() {
     __clux_cmd='printf "%s\n" "refused: the mode is not plain or confirm"; (builtin exit 126)'
     __clux_m=plain
   fi
+  # Only the question removes .confirm after the answer; a refused or a
+  # plain run removes it now, so no verb waits for a question.
+  [ "$__clux_m" = confirm ] || command rm -f "$__clux_d/$__clux_n.confirm"
   if [ "$__clux_m" = confirm ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
     # Control characters show as ?, so the question shows the full command.
@@ -775,15 +784,18 @@ laya_gate() {
 GUARD_HELD=0
 GUARD_TEXT=
 GUARD_CUT=0
+# A marker line that the guard puts in place of held text.
+HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 
-# laya_guard FILE — the output guard (spec section 8). Sets GUARD_TEXT (the
+# laya_guard FILE [CUT] — the output guard (spec section 8). CUT=1: the text
+# can start inside a key (a screen, or the last lines of an output). Sets GUARD_TEXT (the
 # guarded text), GUARD_HELD (the count of held lines) and GUARD_CUT (1 when
 # only the last LAYA_GUARD_BYTES went to the guard). Returns 6 when the
 # client fails or its time limit ends. [inferred] The command substitution
 # removes blank lines at the end of the text. A cut can split a UTF-8
 # character; the client decodes with "replace", so that is not an error.
 laya_guard() {
-    local out data size tmp
+    local out data size tmp cut="${2:-0}"
     # A file, because $1 can be a pipe and is read two times: the size, then
     # the text. Bash drops NUL bytes from a command substitution with a
     # warning, so tr removes them first, and the size comes from wc. LC_ALL=C
@@ -798,7 +810,12 @@ laya_guard() {
     data=$(LC_ALL=C tail -c "$LAYA_GUARD_BYTES" "$tmp" | LC_ALL=C tr -d '\000' && printf x)
     rm -f "$tmp"
     data="${data%x}"
-    out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
+    [ "$GUARD_CUT" -eq 0 ] || cut=1
+    if [ "$cut" -eq 1 ]; then
+        out=$(printf '%s' "$data" | laya_call output --render --cut --limit "$LAYA_GUARD_LIMIT") || return 6
+    else
+        out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
+    fi
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
     GUARD_HELD="${GUARD_HELD#held=}"
@@ -894,7 +911,11 @@ send_gate() {
             case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
             ;;
     esac
-    laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    if [ "$prompt" -eq 1 ]; then
+        laya_gate --screen --shell < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    else
+        laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    fi
     case $? in
         0) ;;
         2) fail 'laya: bad input' 2 ;;
@@ -1114,9 +1135,43 @@ ensure_open() {
 send_literal() { tmux_state send-keys -t "$S_PANE" -l -- "$1"; }
 send_key() { tmux_state send-keys -t "$S_PANE" "$1"; }
 
-release_busy() { rmdir "$D/busy" 2>/dev/null || true; }
+# The busy lock is a directory. busy/owner names the run that holds it, so a
+# reader of an older run cannot free the lock of a newer run.
+release_busy() { rm -f "$D/busy/owner"; rmdir "$D/busy" 2>/dev/null || true; }
+
+# reader_live N — a wait --run or run of N is reporting its output now
+# (<n>.reading is a symbolic link to the pid of that verb).
+reader_live() {
+    local pid
+    pid=$(readlink "$D/$1.reading" 2>/dev/null) || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null
+}
 
 TYPING_LOCK=0
+READING=
+
+# verb_exit — the EXIT trap of a verb: free the typing lock and the reader
+# marker that this verb holds.
+verb_exit() {
+    release_typing_lock
+    [ -z "$READING" ] || rm -f "$D/$READING.reading"
+}
+
+# run_not_started — after C-c: when the question of the last run is open
+# but its .cmd is still there, the pane shell never read the typed line
+# (text came before it). The run ends as not started, so the verbs do not
+# wait for a question that is not in the pane. A __clux_run that comes
+# later finds the .rc and refuses.
+run_not_started() {
+    local n="${S_SEQ:-0}"
+    [ "$n" -gt 0 ] && [ -e "$D/$n.confirm" ] && [ -e "$D/$n.cmd" ] && [ ! -e "$D/$n.rc" ] || return 0
+    sleep .3
+    [ -e "$D/$n.cmd" ] && [ ! -e "$D/$n.rc" ] || return 0
+    rm -f "$D/$n.cmd" "$D/$n.confirm"
+    : > "$D/$n.notstarted"; : > "$D/$n.declined"; : > "$D/$n.done"
+    printf '126\n' > "$D/$n.rc.tmp" && mv -f "$D/$n.rc.tmp" "$D/$n.rc"
+}
 
 # take_typing_lock — one verb at a time reads the cursor line, asks Laya
 # and types (spec section 7). Without it, two sends in parallel read the
@@ -1153,7 +1208,7 @@ take_typing_lock() {
         }
     fi
     TYPING_LOCK=1
-    trap release_typing_lock EXIT
+    trap verb_exit EXIT
 }
 
 release_typing_lock() {
@@ -1178,7 +1233,11 @@ line_unchanged() {
 # release_run N — free the lock only for the last run. wait --run on an older
 # run must not free the lock of a run that continues.
 release_run() {
-    [ "$1" -ne "${S_SEQ:-0}" ] || release_busy
+    local owner=
+    [ "$1" -eq "${S_SEQ:-0}" ] || return 0
+    read -r owner < "$D/busy/owner" 2>/dev/null || owner=
+    [ -z "$owner" ] || [ "$owner" = "$1" ] || return 0
+    release_busy
 }
 
 # The last run has output that the guard could not examine (<n>.held). It
@@ -1212,7 +1271,8 @@ refuse_confirm() {
 # A run that ended on its time limit keeps the lock. The first reader that
 # finds its <n>.rc removes it.
 release_if_done() {
-    [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! output_held && release_busy
+    [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! output_held \
+        && ! reader_live "$S_SEQ" && release_run "$S_SEQ"
     return 0
 }
 
@@ -1229,11 +1289,20 @@ report_run() {
     # A declined run wrote .done before .rc, so there is no grace and no note.
     if [ -e "$D/$n.declined" ]; then
         read -r rc < "$D/$n.rc"
-        printf 'laya: declined by the user\nexit=%s\n' "$rc"
+        if [ -e "$D/$n.notstarted" ]; then
+            printf 'run %s did not start: the typed line changed\nexit=%s\n' "$n" "$rc"
+        else
+            printf 'laya: declined by the user\nexit=%s\n' "$rc"
+        fi
         rm -f "$D/$n.out"
         release_run "$n"
         return 0
     fi
+    # While this verb reports, no new run takes the lock or deletes the output.
+    rm -f "$D/$n.reading"
+    ln -s "$$" "$D/$n.reading" 2>/dev/null || true
+    READING="$n"
+    trap verb_exit EXIT
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
     read -r rc < "$D/$n.rc"
     GUARD_HELD=0
@@ -1244,7 +1313,7 @@ report_run() {
         lines=$((lines + 0))
         [ -z "$last" ] || lines=$((lines + 1))
         if [ "$lines" -gt "$max" ]; then
-            laya_guard <(tail -n "$max" "$D/$n.out") || guard=6
+            laya_guard <(tail -n "$max" "$D/$n.out") 1 || guard=6
         else
             laya_guard "$D/$n.out" || guard=6
         fi
@@ -1254,6 +1323,8 @@ report_run() {
             printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
             : > "$D/$n.held"
             printf 'laya not available: the output stays; use wait --run %s when Laya answers, or wait --run %s --discard\n' "$n" "$n" >&2
+            rm -f "$D/$n.reading"
+            READING=
             return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
@@ -1267,7 +1338,8 @@ report_run() {
         printf 'laya: caution (%s)\n' "$reason"
     fi
     printf 'exit=%s\n' "$rc"
-    rm -f "$D/$n.out" "$D/$n.held"
+    rm -f "$D/$n.out" "$D/$n.held" "$D/$n.reading"
+    READING=
     release_run "$n"
 }
 
@@ -1302,7 +1374,7 @@ remove_stale_output() {
         [ -e "$out" ] || continue
         k="${out##*/}"
         k="${k%.out}"
-        [ ! -f "$D/$k.rc" ] || rm -f "$out"
+        [ ! -f "$D/$k.rc" ] || reader_live "$k" || rm -f "$out"
     done
 }
 
@@ -1335,11 +1407,14 @@ run_command() {
     # run types __clux_run on the same line, after the hidden text.
     hidden_text && { refuse_hidden; return; }
     output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ, or wait --run $S_SEQ --discard" 5
+    # The typing lock first: only one run at a time decides on the busy lock.
+    take_typing_lock || return 5
     if ! mkdir "$D/busy" 2>/dev/null; then
-        # The lock of a completed run that no reader took is free.
-        [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
+        # The lock of a completed run that no reader takes now is free.
+        [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! reader_live "$S_SEQ" \
+            || fail 'the companion is busy' 5
     fi
-    take_typing_lock || { release_busy; return 5; }
+    printf 'pending\n' > "$D/busy/owner"
     # Two seconds, not one test: after a large output the pane shell draws its
     # prompt a moment after the last run reports.
     wait_for_prompt 2 || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
@@ -1353,7 +1428,7 @@ run_command() {
     esac
     remove_stale_output
     if last_run_secret; then
-        send_literal __clux_clear; send_key Enter
+        send_key C-u; send_literal __clux_clear; send_key Enter
         # Exit 5, not 1: no run started, so there is no <n> for wait --run.
         wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run: use wait --idle, then run again' 5; }
         tmux_state clear-history -t "$S_PANE"
@@ -1364,7 +1439,15 @@ run_command() {
     sum=$(command_sum "$command") || { release_busy; fail 'cannot make the sum of the command' 1; }
     mode=plain
     [ "$GATE_LEVEL" != dangerous ] || mode=confirm
+    # The gate can take some seconds. The user can type in the pane in that
+    # time: the typed line must not follow that text. C-u below removes text
+    # that comes between this check and the typing.
+    if ! capture_cursor_line || ! line_at_prompt; then
+        release_busy
+        fail 'the pane is not at an empty prompt: use read, then run again' 5
+    fi
     n=$(( S_SEQ + 1 ))
+    printf '%s\n' "$n" > "$D/busy/owner"
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
@@ -1378,7 +1461,7 @@ run_command() {
             ;;
     esac
     printf 'run=%s\n' "$n"
-    send_literal "__clux_run $n $sum $mode"; send_key Enter
+    send_key C-u; send_literal "__clux_run $n $sum $mode"; send_key Enter
     release_typing_lock
     wait_for_run_files "$n" "$timeout" 1
     case $? in
@@ -1419,7 +1502,7 @@ send_command() {
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
-        case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" ;; esac
+        case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden"; run_not_started ;; esac
         return
     fi
     take_typing_lock || return
@@ -1477,7 +1560,7 @@ read_command() {
     last_run_secret && { refuse_secret; return; }
     check_pane || return
     screen=$(tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines") || return 1
-    laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
+    laya_guard <(printf '%s\n' "$screen") 1 || { refuse_laya; return; }
     [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
     [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
 }
@@ -1558,10 +1641,13 @@ wait_command() {
                 # the wait with exit 6. The same screen is guarded again.
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE"); then
                     if [ "$screen" != "$sum" ]; then
-                        if laya_guard <(printf '%s\n' "$screen"); then
+                        if laya_guard <(printf '%s\n' "$screen") 1; then
                             sum="$screen"
                             guard_fails=0
-                            printf '%s\n' "$GUARD_TEXT" | grep -Eq -- "$value" && return 0
+                            # The marker lines of held text are not pane
+                            # text: the pattern does not see them.
+                            printf '%s\n' "$GUARD_TEXT" | grep -vE "$HELD_MARK_RE" \
+                                | grep -Eq -- "$value" && return 0
                         else
                             guard_fails=$((guard_fails + 1))
                             [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
@@ -1680,8 +1766,10 @@ laya_install() {
         printf 'laya %s is already installed\nvenv=%s\n' "$version" "$LAYA_VENV"
         return 0
     fi
-    laya_find_python || fail 'laya install needs python3 3.10 or later' 2
     if [ ! -f "$LAYA_MARKER" ]; then
+        # Only a new venv needs a base python3: with the marker, only the
+        # checkpoint download remains, and it uses the venv python.
+        laya_find_python || fail 'laya install needs python3 3.10 or later' 2
         # [inferred] A venv with no marker is partial: make it again.
         rm -rf "$LAYA_VENV"
         mkdir -p "${LAYA_VENV%/*}"
