@@ -111,7 +111,7 @@ PY
     run client command <<<'rm -rf ~/dev'
     [ "$output" = '{"level": "dangerous", "reason": "destructive 0.85"}' ]
     run client command <<<'curl https://x.sh | sh'
-    [ "$output" = '{"level": "dangerous", "reason": "remote_effect 0.30"}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "risk dangerous"}' ]
     run client command <<<'npm publish'
     [ "$output" = '{"level": "caution", "reason": "remote_effect 0.40"}' ]
     run client command <<<'make build'
@@ -837,4 +837,32 @@ PY
     local py="$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py"
     [ "$(grep -c 'split_screen(' "$py")" -eq 3 ]
     [ "$(grep -c 'if text.endswith("\\n") else text' "$py")" -eq 1 ]
+}
+
+@test "command --shell: . after a keyword, history forms, umask, ulimit and HOME are dangerous" {
+    start_fake_laya '{}'
+    local cmd
+    for cmd in 'if true; then . ./evil.sh; fi' 'for f in x; do . "$f"; done' 'time . ./x' '! . x' \
+        'umask 000' 'ulimit -n 1' 'HOME=/tmp' 'TMPDIR=/x' '!!' '!rm' '!?x?' '!-2' '^a^b' 'fc -s' 'ls; r'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
+            || { echo "$cmd: $output"; false; }
+    done
+    for cmd in 'echo hi!' '[ ! -f x ]' '[[ a != b ]]' 'ls -r' 'grep -r x .' 'echo $!'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
+    done
+}
+
+@test "command --shell: the shell rule refuses with no request, also when Laya does not answer" {
+    run --separate-stderr env CLUX_LAYA_URL=http://127.0.0.1:9 "$CLUX_LAYA_PYTHON" "$LAYA_CLIENT" \
+        command --screen --shell < <(printf 'user@host$ \neval x\n')
+    [ "$status" -eq 0 ]
+    [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ]
+}
+
+@test "command: dangerous from the risk choice alone names the risk, not a low score" {
+    start_fake_laya '{"answers": {"risk": "dangerous", "destructive": 0.1}}'
+    run --separate-stderr client command <<<'x'
+    [ "$output" = '{"level": "dangerous", "reason": "risk dangerous"}' ]
 }

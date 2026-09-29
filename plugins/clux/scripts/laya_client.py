@@ -304,15 +304,20 @@ def split_screen(text, cursor_keep, above_keep, rows=1):
 def level_of(answer, pol):
     """dangerous: a boolean above its threshold, or risk dangerous.
     caution: risk caution. Otherwise safe. The reason names the highest
-    boolean (the first one in the schema on a tie)."""
+    boolean (the first one in the schema on a tie), or "risk dangerous" when
+    only the risk choice gives dangerous."""
     names = [name for name, prop in pol["schema"]["properties"].items()
              if prop.get("type") == "boolean"]
     scores = [(answer.p(name), name) for name in names]
     risk = answer.choice("risk", LEVELS)
     top, top_name = max(scores, key=lambda score: score[0]) if scores else (0.0, "risk")
     reason = "%s %.2f" % (top_name, top)
-    if risk == "dangerous" or any(p > threshold(pol, name, 0.8) for p, name in scores):
+    if any(p > threshold(pol, name, 0.8) for p, name in scores):
         return "dangerous", reason
+    if risk == "dangerous":
+        # No boolean is above its threshold: a boolean score would tell the
+        # user that the command is not a risk.
+        return "dangerous", "risk dangerous"
     if risk == "caution":
         return "caution", reason
     return "safe", reason
@@ -330,16 +335,22 @@ SHELL_WORDS = re.compile(
     r"\(\s*\)"
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
     r"|export|readonly|set|shopt|unset|function|builtin|command|hash|exec|read|mapfile"
-    r"|readarray|exit|logout|complete|compgen|bindkey|setopt|unsetopt|zle|autoload|zmodload)"
+    r"|readarray|exit|logout|complete|compgen|bindkey|setopt|unsetopt|zle|autoload|zmodload"
+    r"|umask|ulimit|fc)"
     r"(?![A-Za-z0-9_-])"
     r"|(^|[^A-Za-z0-9_.-])printf\s+(-\S+\s+)*-v"
-    r"|(^|[;&|(){}`])\s*\.\s"
+    # . and the zsh r (run a history line again) at the start of a command.
+    r"|(^|[;&|(){}`!]|(^|\s)(then|do|else|elif|if|while|until|time|coproc))\s*(\.\s|r(\s|$))"
+    # History expansion (!!, !rm, !?x?, !-2) and ^old^new run an earlier line.
+    r"|!(?![\s=(]|$)|^\s*\^"
     r"|[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?="
     # Each name that __clux_carry in terminal.sh does not carry back from
     # run, and PATH and the loader names (a test keeps the two lists equal).
     r"|(^|[^A-Za-z0-9_])(PATH|FPATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
     r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
-    r"|OLDPWD|MAIL|MAILPATH|MAILCHECK|FUNCNEST|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    r"|OLDPWD|MAIL|MAILPATH|MAILCHECK|FUNCNEST|LD_[A-Z_]*|DYLD_[A-Z_]*"
+    # Names that change where later commands read or write files.
+    r"|HOME|TMPDIR|INPUTRC|ZDOTDIR)\+?="
     # The zsh arrays that PATH, FPATH and CDPATH follow, as a word of their
     # own (not --module-path=).
     r"|(^|[\s;&|(){}`])(path|fpath|cdpath)\+?="
@@ -371,6 +382,11 @@ def cmd_command(args):
         state = command
         if not command.strip():
             raise Fail(2)
+    # The shell rule needs no request: a line that it refuses is refused
+    # also when Laya is slow or does not answer.
+    if shell and SHELL_WORDS.search(typed):
+        print(json.dumps({"level": "dangerous", "reason": "can change the shell for later commands"}))
+        return
     # Each command goes to Laya: no safe list (spec section 7). Laya cuts a
     # long state and examines only its start, so a cut state is refused.
     # When Laya cuts the line and the screen, the line goes alone: a long
@@ -381,8 +397,6 @@ def cmd_command(args):
     pol = policy("command")
     answer = ask_whole_or_alone(remote(GATE_LIMIT), pol, state, *shorter)
     level, reason = level_of(answer, pol)
-    if shell and SHELL_WORDS.search(typed):
-        level, reason = "dangerous", "can change the shell for later commands"
     print(json.dumps({"level": level, "reason": reason}))
 
 
