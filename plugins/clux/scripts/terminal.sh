@@ -680,7 +680,9 @@ __clux_carry() {
 # each exported variable, then an end record, NUL-separated.
 __clux_keep() {
   local __clux_v
-  (umask 077
+  # The options that the command set (set -e, set -u, noclobber) must not
+  # stop the write; they change only this subshell.
+  (set +e +u +C; umask 077
    { printf '%s\0' "$PWD"
      # One name on each line, read with no word split: the command can
      # leave any IFS.
@@ -735,13 +737,16 @@ __clux_sub() {
   ( unset -f exit exec logout
     readonly __clux_k="$2"
     trap "__clux_keep $(printf '%q' "$2")" EXIT
+    readonly __clux_t="$(trap -p EXIT)"
     __clux_c="$1"; set --
     eval "$__clux_c"
     set -- "$?"
     # A DEBUG, ERR or RETURN trap of the command must not run in the keep step.
     trap - DEBUG ERR RETURN
-    __clux_keep "$__clux_k"
-    trap - EXIT
+    __clux_keep "$__clux_k" || :
+    # Only the trap of clux goes: an EXIT trap that the command set runs
+    # at exit, as in a plain subshell (trap "rm -rf $tmp" EXIT).
+    [ "$(trap -p EXIT)" != "$__clux_t" ] || trap - EXIT
     exit "$1" )
   set -- "$?" "$2"
   [ -f "$2" ] || printf '%s\n' 'clux: the directory and the exported variables did not come back: the command set an EXIT trap and ended with exit'

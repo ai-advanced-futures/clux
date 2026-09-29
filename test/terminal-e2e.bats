@@ -127,6 +127,17 @@ pane_shows() {
     [[ "$output" == *$'1\nexit=0' ]] || false
 }
 
+@test "an EXIT trap of the command runs, and set -u in the command does not stop the keep file" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'trap "echo trap-ran" EXIT; set -u; cd /tmp; export Y=2'
+    [[ "$output" == *$'trap-ran\nexit=0' ]] || false
+    run "$TERMINAL" run -- 'echo "$(pwd) $Y"'
+    [[ "$output" == *$'/tmp 2\nexit=0' ]] || false
+    # The trap of the command ran one time: it is not in the pane shell.
+    run "$TERMINAL" run -- 'echo next'
+    [[ "$output" != *trap-ran* ]] || false
+}
+
 # 5
 @test "the output file is deleted and the private files are private" {
     "$TERMINAL" open >/dev/null

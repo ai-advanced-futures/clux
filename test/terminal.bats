@@ -1861,8 +1861,24 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
 }
 
-@test "__clux_sub writes the keep file one time: no EXIT trap after the direct call" {
-    local body
-    body=$(sed -n '/^__clux_sub() {/,/^}/p' "$TERMINAL")
-    [[ "$body" == *$'__clux_keep "$__clux_k"\n    trap - EXIT\n    exit "$1" )'* ]] || false
+@test "__clux_sub keeps the EXIT trap of the command and the options of the command do not stop the keep file" {
+    local d="$BATS_TEST_TMPDIR/sub" c
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    # The trap of the command runs one time at exit, as in a plain
+    # subshell, and the directory and the variables come back.
+    run /bin/bash -c "source '$d/rc.bash'; __clux_sub 'cd /tmp; trap \"echo CLEAN\" EXIT; export A=1' '$d/k' 2>&1; __clux_load '$d/k'
+        echo \"\$PWD|\${A-}\""
+    [ "$output" = $'CLEAN\n/tmp|1' ] || { echo "$output"; false; }
+    # With no trap of the command, the trap of clux does not write the
+    # keep file a second time (a second write after __clux_load would be
+    # left in the directory).
+    run /bin/bash -c "source '$d/rc.bash'; __clux_sub 'cd /tmp' '$d/k2'; __clux_load '$d/k2'; [ ! -e '$d/k2' ] && echo gone"
+    [ "$output" = gone ] || { echo "$output"; false; }
+    # set -u with an exported name that has no value, set -e and
+    # noclobber do not stop the keep file.
+    for c in 'set -u; export NOVAL; cd /tmp; export B=2' 'set -e; cd /tmp; export B=2; false' 'set -C; cd /tmp; export B=2'; do
+        run /bin/bash -c "source '$d/rc.bash'; __clux_sub '$c' '$d/k3' >/dev/null 2>&1; __clux_load '$d/k3'; echo \"\$PWD|\${B-}\""
+        [ "$output" = '/tmp|2' ] || { echo "$c: $output"; false; }
+    done
 }
