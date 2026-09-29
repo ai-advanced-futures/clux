@@ -606,6 +606,70 @@ PY
     [ "$output" = $'held=2\nc1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIB\n[held by laya: secret, 2 lines]' ] || { echo "$output"; false; }
 }
 
+@test "each pattern of secret-values.txt and not-secret.txt has a row that it holds or frees, and one that it does not" {
+    # The tokens are built when the test runs, so the source holds no key.
+    python3 - "$(dirname "$LAYA_CLIENT")" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import laya_client as c
+def t(prefix, chars, n):
+    return prefix + (chars * n)[:n]
+A, a, d = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", "0123456789"
+secret = {
+    "AKIA[0-9A-Z]{16}": ([t("AK" + "IA", A + d, 16)], [t("AK" + "IA", "a", 16)]),
+    "ASIA[0-9A-Z]{16}": ([t("AS" + "IA", A + d, 16)], [t("AS" + "IA", A, 15)]),
+    "gh[pousr]_[A-Za-z0-9]{36}": ([t("gh" + x + "_", a + A + d, 36) for x in "pousr"], [t("gh" + "p_", a, 35), t("gh" + "x_", a, 36)]),
+    "github_pat_[A-Za-z0-9_]{22,}": ([t("github" + "_pat_", a + "_" + d, 82)], [t("github" + "_pat_", a, 21)]),
+    "xox[abpr]-[A-Za-z0-9-]+": ([t("xo" + "x" + x + "-", d + "-", 30) for x in "abpr"], ["xoxz-123"]),
+    "(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}": (["key=" + t("s" + "k-", a, 20), t("s" + "k-proj-", A, 20)], [t("task" + "-", a, 30), t("s" + "k-", a, 19)]),
+    "(?<![A-Za-z0-9])[rs]k_(live|test)_[A-Za-z0-9]{20,}": ([t(x + "k_" + m + "_", a + A + d, 24) for x in "rs" for m in ("live", "test")], [t("s" + "k_prod_", a, 24), t("disk" + "_live_", a, 24), t("s" + "k_live_", a, 19)]),
+    "glpat-[A-Za-z0-9_-]{20}": ([t("gl" + "pat-", a + "_-" + d, 20)], [t("gl" + "pat-", a, 19)]),
+    "AIza[0-9A-Za-z_-]{35}": ([t("AI" + "za", a + A + d + "_-", 35)], [t("AI" + "za", a, 34)]),
+    "[a-zA-Z][a-zA-Z0-9+.-]*://[^/\\s:@]+:[^/\\s@]+@": (["postgres://user:" + "pw" + "@db/x", "git+https://u:t@host/r"], ["https://host/a:b@c", "https://user@host/"]),
+}
+free = {
+    "^commit [0-9a-f]{40}$": (["commit " + t("", "0123456789abcdef", 40)], ["commit " + t("", "g", 40)]),
+    "^[-bcdlps][-rwxsStT]{9}[@+.]?\\s+\\d+\\s+[^\\s=:@]+\\s+[^\\s=:@]+\\s+\\d+\\s+[A-Z][a-z]{2}\\s+\\d{1,2}\\s+(\\d{1,2}:\\d{2}|\\d{4})\\s+[^=:@]*$": (["-rw-r--r--@ 1 me staff 120 Sep 29 12:01 notes.txt"], ["-rw-r--r-- 1 me staff 120 Sep 29 12:01 x=y"]),
+    "^total \\d+$": (["total 48"], ["total 48 KEY=1"]),
+    "^\\s*\\d+ files? changed": ([" 3 files changed, 10 insertions(+)"], [" 3 files changed token=x", "files changed"]),
+    "^Date:\\s+[A-Z][a-z]{2} [A-Z][a-z]{2} +\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\d{4} [+-]\\d{4}$": (["Date:   Tue Sep 29 12:01:02 2026 +0200"], ["Date: tomorrow"]),
+    "^Author: [^<>:=@]+ <[^<>\\s:=]+@[^<>\\s:=]+>$": (["Author: Ada L <ada@example.com>"], ["Author: Ada <ada:pw@example.com>"]),
+    "^ [^\\s=:@]+\\s+\\|\\s+\\d+ [+-]*$": ([" src/a.py | 4 ++--"], [" KEY=x | 4 ++--"]),
+}
+patterns = c.compile_lines("secret-values.txt")
+shipped = [p.pattern for p in patterns]
+assert set(shipped) == set(secret), ("a pattern with no row", set(shipped) ^ set(secret))
+for pattern in patterns:
+    good, bad = secret[pattern.pattern]
+    for line in good:
+        assert pattern.search(line) and c.value_lines([line], patterns) == {0}, (pattern.pattern, line)
+    for line in bad:
+        assert not pattern.search(line), (pattern.pattern, line)
+never = c.compile_lines("not-secret.txt")
+assert set(p.pattern for p in never) == set(free), ("a pattern with no row", set(p.pattern for p in never) ^ set(free))
+for pattern in never:
+    good, bad = free[pattern.pattern]
+    for line in good:
+        assert pattern.search(line) and c.never_secret(line, [pattern]), (pattern.pattern, line)
+    for line in bad:
+        assert not c.never_secret(line, [pattern]), (pattern.pattern, line)
+# The PEM key lines: one pattern for BEGIN (also in value_lines) and one
+# for END, with the names of each key kind, a digit, and PGP BLOCK.
+names = ["RSA", "EC", "DSA", "OPENSSH", "ENCRYPTED", "ED25519", "PGP", ""]
+for name in names:
+    kind = (name + " " if name else "") + "PRIVATE KEY" + (" BLOCK" if name == "PGP" else "")
+    begin, end = "-----BEGIN " + kind + "-----", "-----END " + kind + "-----"
+    assert c.PEM_KEY_BEGIN.search(begin) and c.value_lines([begin], patterns) == {0}, begin
+    assert c.PEM_KEY_END.search(end), end
+    assert c.pem_ranges(["x", begin, "body"]) == [(1, 2, "secret")], begin
+    assert c.pem_ranges(["body", "body", end, "after"]) == [(0, 2, "secret")], end
+for line in ["-----BEGIN CERTIFICATE-----", "-----BEGIN PGP PUBLIC KEY BLOCK-----", "-----BEGIN PUBLIC KEY-----", "-----END OF REPORT-----"]:
+    assert not c.PEM_KEY_BEGIN.search(line) and not c.PEM_KEY_END.search(line), line
+    assert c.value_lines([line], patterns) == set(), line
+assert c.pem_ranges(["body", "-----END PGP PUBLIC KEY BLOCK-----"]) == []
+PY
+}
+
 @test "output: secret-values.txt holds an AKIA line when Laya gives 0" {
     start_fake_laya '{}'
     run client output --render < <(printf 'a\nkey AKIAIOSFODNN7EXAMPLE\nb\nc\n')

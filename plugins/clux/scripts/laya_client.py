@@ -768,8 +768,10 @@ def compile_lines(name):
 
 
 def value_lines(lines, patterns):
-    """Step 8: the lines that match secret-values.txt."""
-    return {index for index, line in enumerate(lines) if any(p.search(line) for p in patterns)}
+    """Step 8: the lines that match secret-values.txt, or the BEGIN line of
+    a private key (PEM_KEY_BEGIN, the one pattern for that line)."""
+    return {index for index, line in enumerate(lines)
+            if PEM_KEY_BEGIN.search(line) or any(p.search(line) for p in patterns)}
 
 
 def never_secret(line, patterns):
