@@ -1566,18 +1566,36 @@ front_kinds() {
         }
         # A shell reads commands from the terminal when it has no script
         # file and no -c, or when it has -i or -s. sh -c "read -p x" of npm,
-        # make or a git hook, and bash ./x.sh, are not nested shells. An
-        # option that takes a value (-o, -O, --rcfile, --init-file) skips
-        # it. -c with no text is an error: it counts as reading (fail closed).
-        function reads(p,   w, n, i, c) {
-            n = split(args[p], w, " "); c = 0
+        # make or a git hook, and bash ./x.sh, are not nested shells. The
+        # parse knows the options of the POSIX shells (bash, sh, dash, zsh,
+        # ksh, mksh, yash, ash): a group of short letters (-euo), o and O
+        # take the next word as a value (also in a group: -euo pipefail),
+        # - and -- end the options, and a few long options (--rcfile,
+        # --init-file and --emulate take a value). Any other form (an unknown
+        # letter or long option, -c with no text, a value that is not there)
+        # reads the terminal: fail closed. Another shell (fish, tcsh) runs no
+        # script only when its first word is a script file.
+        function posix(n) { return n ~ /^(r?bash|zsh|sh|dash|ksh.*|mksh|oksh|yash|ash)$/ }
+        function reads(p,   w, n, i, j, ch, skip) {
+            n = split(args[p], w, " ")
+            if (!posix(name[p])) return !(name[p] != "busybox" && n >= 2 && w[2] !~ /^[-+]/)
             for (i = 2; i <= n; i++) {
-                if (w[i] == "--") return (i == n && !c)
-                if (w[i] ~ /^[-+][oO]$/ || w[i] == "--rcfile" || w[i] == "--init-file") { i++; continue }
-                if (w[i] ~ /^--/) continue
+                if (w[i] == "--" || w[i] == "-") return (i == n)
+                if (w[i] ~ /^--/) {
+                    if (w[i] == "--rcfile" || w[i] == "--init-file" || w[i] == "--emulate") { i++; continue }
+                    if (w[i] ~ /^--(login|noprofile|norc|no-rcs|noediting|posix|restricted|verbose|debugger|dump-strings|dump-po-strings|pretty-print)$/) continue
+                    return 1
+                }
                 if (w[i] !~ /^[-+]/) return 0
-                if (w[i] ~ /^-[a-zA-Z]*[is]/) return 1
-                if (w[i] ~ /^-[a-zA-Z]*c/) c = 1
+                if (w[i] !~ /^[-+][A-Za-z]+$/) return 1
+                skip = 0
+                for (j = 2; j <= length(w[i]); j++) {
+                    ch = substr(w[i], j, 1)
+                    if (ch == "o" || ch == "O") skip++
+                    else if (ch == "c" && w[i] ~ /^-/) continue
+                    else if (index("abefhklmnprtuvxBCDEHIPT", ch) == 0) return 1
+                }
+                i += skip
             }
             return 1
         }

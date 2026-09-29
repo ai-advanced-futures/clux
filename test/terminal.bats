@@ -1849,6 +1849,31 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     check '300 200 200 S+ bash -o vi\n' 1
     # A nested shell under sh -c is still a nested shell.
     check '300 200 200 S+ sh -c bash\n400 300 200 S+ bash\n' 1
+    # o and O take a value, also at the end of a group of letters.
+    check '300 200 200 S+ bash -euo pipefail\n' 1
+    check '300 200 200 S+ sh -xo posix\n' 1
+    check '300 200 200 S+ bash -o errexit -o nounset\n' 1
+    check '300 200 200 S+ bash +o history\n' 1
+    check '300 200 200 S+ bash -O\n' 1
+    check '300 200 200 S+ bash -euo pipefail ./x.sh\n' 0
+    check '300 200 200 S+ bash +O extglob ./x.sh\n' 0
+    check '300 200 200 S+ bash -euxo pipefail -c read x\n' 0
+    # - alone ends the options, as -- does.
+    check '300 200 200 S+ bash -\n' 1
+    check '300 200 200 S+ bash - ./x.sh\n' 0
+    # Known long options; an unknown one, or a form with =, reads (fail closed).
+    check '300 200 200 S+ bash --login\n' 1
+    check '300 200 200 S+ bash --norc -c read x\n' 0
+    check '300 200 200 S+ zsh --emulate sh ./x.sh\n' 0
+    check '300 200 200 S+ bash --unknown ./x.sh\n' 1
+    check '300 200 200 S+ bash --rcfile=/tmp/x ./x.sh\n' 1
+    # An unknown letter, or a letter with a digit, reads (fail closed).
+    check '300 200 200 S+ zsh -Z ./x.sh\n' 1
+    check '300 200 200 S+ bash -e1 ./x.sh\n' 1
+    # Other shells: only a first word that is a script file.
+    check '300 200 200 S+ fish ./x.fish\n' 0
+    check '300 200 200 S+ fish -C x\n' 1
+    check '300 200 200 S+ busybox sh -c read x\n' 1
 }
 
 @test "send refuses all but an interrupt key when the clux shell is in front and no clux prompt shows" {

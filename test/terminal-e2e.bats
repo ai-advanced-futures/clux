@@ -1336,6 +1336,23 @@ pane_shows() {
     [ ! -e "$BATS_TEST_TMPDIR/ran" ]
 }
 
+@test "a nested shell with a group of options that ends in o is a nested shell" {
+    "$TERMINAL" open >/dev/null
+    # A shell that a script starts (as npm or make do) with no job control
+    # (+m) does not lead a process group: only the option parse can find
+    # that it reads the terminal. The ; true keeps sh from an exec of zsh.
+    # (An interactive bash leads a group of its own, also with +m.)
+    "$TERMINAL" send --enter -- "sh -c 'zsh -f +m -euo pipefail; true'" >/dev/null
+    pane_shows '%'
+    run --separate-stderr "$TERMINAL" send --enter -- "touch '$BATS_TEST_TMPDIR/ran'"
+    [ "$status" -eq 2 ] || { echo "$status $stderr"; false; }
+    [[ "$stderr" == 'at a nested shell prompt, only the user ends a line'* ]] || false
+    "$TERMINAL" send --key C-c >/dev/null
+    "$TERMINAL" send --key C-d >/dev/null
+    sleep .5
+    [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+}
+
 @test "a bash with a name that is not a shell name is a nested shell too" {
     ln -s "$(command -v bash)" "$BATS_TEST_TMPDIR/xq"
     "$TERMINAL" open >/dev/null
