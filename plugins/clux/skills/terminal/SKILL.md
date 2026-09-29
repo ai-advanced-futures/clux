@@ -5,7 +5,7 @@ description: Use when a command must run where the user can see it, when a comma
 
 # clux companion terminal
 
-The companion is one tmux pane for this Claude Code session. You send commands to it, and the user sees them run. The pane shell keeps its current directory and its exported variables from one command to the next.
+The companion is one tmux pane for this Claude Code session. You send commands to it, and the user sees them run. The pane shell keeps its current directory and its exported variables from one command to the next. Each `run` command runs in a subshell: a function, an alias, an option or a variable that is not exported does not persist to the next command. Use `export NAME=value` for a value that a later command needs.
 
 A local Laya model examines each command before it runs, each line that you send with Enter, the prompt in the pane, and all pane text that comes back to you. The companion does not operate without Laya.
 
@@ -61,6 +61,8 @@ When `open` gives exit code 6 and `laya not installed: run terminal.sh laya inst
 3. When the user agrees, run it with the Bash tool `timeout` parameter set to 600000. The install can take more time than the default time limit of the Bash tool.
 4. Run `open` again.
 
+When `laya install` gives exit code 2 and `CLUX_LAYA_PYTHON cannot import laya`, tell the user: the Python that `CLUX_LAYA_PYTHON` names needs `laya`, or the user unsets `CLUX_LAYA_PYTHON`.
+
 `terminal.sh laya status` shows the venv, the installed version, the checkpoint and the Laya server of this companion.
 
 ## Open the companion
@@ -100,7 +102,7 @@ terminal.sh run -- 'git status --short'
 - `run` waits for the answer until its time limit ends. Then you get exit code 1. Tell the user to answer the question in the pane. Then use `terminal.sh wait --run <n>` with a long `--timeout`.
 - While the question is open, `send`, `read`, `wait --idle` and `wait --pattern` give exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. You cannot type the answer. Only the interrupt keys work: `send --key C-c` declines the run.
 - When the user does not answer `y`, you get `laya: declined by the user` and `exit=126`. Do not try the same command in a different form. Ask the user what to do.
-- A command that makes a function (`name() { ... }` or `function name`) or uses `enable` changes the shell for the commands after it. Laya gives `dangerous (changes the shell for later commands)`, and the user must answer. Do not change `PATH`, a variable or an alias of the pane shell, and do not use `eval` or `source` to change how a later command works: Laya examines each command alone and cannot see such a change.
+- Use `run` for `cd`, `export` and `source`: the directory and the exported variables persist. Do not change `PATH` or another exported variable to change how a later command works: Laya examines each command alone and cannot see such a change.
 - When you get `run <n> did not start: the typed line changed` and `exit=126`, text in the pane came before the typed line, and `send --key C-c` ended the run. Nothing ran. Use `read`, then run again.
 
 ## Held output
@@ -121,7 +123,9 @@ terminal.sh run -- 'git status --short'
 
 Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. In a pager or a menu, the keys `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp` and `PageDown` also go to the pane with no Laya check of the line. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 
-- At a shell prompt, the cursor must be at the end of the line. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`.
+- The cursor must be at the end of the line, in the shell and in other programs. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. When the script cannot read the cursor, you get exit code 5 and `cannot read the cursor position: try again`.
+- At a shell prompt, `send` does not send a line that can change the shell (for example `eval`, `source`, `export`, `alias`, `trap`, `set`, a function, or an assignment to `PATH`), or a line that is not a complete command. You get exit code 6 and `laya: dangerous (can change the shell for later commands): use run, it asks the user` or `laya: dangerous (the line is not a complete command): use run, it asks the user`. Use `run` for these commands.
+- When the pane shell waits for the rest of a command (its continuation prompt), `send` gives exit code 5 and `the pane shell waits for the rest of a command: send --key C-c, then send the full command on one line`.
 - At a shell prompt, text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 
 - The text of `send` must not contain a control character, for example a newline, a carriage return or a tab (exit code 2). Send one line at a time with `--enter` or `--key` (for example `--key Tab`).
@@ -130,7 +134,7 @@ Laya examines each `send` before it goes to the pane: text with or without `--en
 - When the cursor line changes while Laya examines it, `send` types nothing. You get exit code 5 and `the line changed while Laya examined it: read, then send again`. A program that draws its line again and again (for example a spinner) can cause this. Use `read`, then send again.
 - When the user types in the pane while Laya examines a `run` command, `run` types nothing. You get exit code 5 and `the pane is not at an empty prompt: use read, then run again`. Use `read`, then run again or tell the user.
 - Only one `send` or `run` types at a time. When another one types, you get exit code 5 and `another send or run is typing in the pane: try again`. Do not start two `send` or `run` calls in parallel.
-- When Laya finds the line dangerous, `send` does not send the text or the key. You get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`. At the shell prompt, use `run`: it asks the user. In another program, tell the user.
+- When Laya finds the line dangerous, `send` does not send the text or the key. At the clux prompt, you get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`: use `run`, it asks the user. In another program (for example `ssh` or `python3`), you get `laya: dangerous (<reason>): ask the user to type this line in the pane`: tell the user.
 
 Answer plain prompts yourself, for example `[y/N]` or a menu.
 
@@ -151,8 +155,8 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 | 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. Also a line or a command that is too long for Laya. | Correct the call, or tell the user. |
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
 | 4 | No companion is open for this session. | Use `open`. |
-| 5 | Busy: a run is not complete, the pane is not at its prompt or not at an empty prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`), another `send` or `run` types (`another send or run is typing in the pane`), or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
-| 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. Other `laya not available`: use `close`, then `open`. `laya: dangerous`: use `run`. |
+| 5 | Busy: a run is not complete, the pane is not at its prompt or not at an empty prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`) or the cursor (`cannot read the cursor position: try again`), another `send` or `run` types (`another send or run is typing in the pane`), another verb reads the output of the same run (`another verb reads the output of run <n> now: try again`), the pane shell waits for the rest of a command, or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
+| 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. Other `laya not available`: use `close`, then `open`. `laya: dangerous ...: use run`: use `run`. `laya: dangerous ...: ask the user to type this line`: tell the user. |
 
 ## Laya settings
 

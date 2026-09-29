@@ -206,7 +206,7 @@ clux supplies this tool. Use it if you want it. `/clux:setup` does not change yo
 
 ## Companion terminal (clux:terminal)
 
-The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it, and the pane shell keeps its directory and its variables from one command to the next.
+The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it, and the pane shell keeps its directory and its exported variables from one command to the next.
 
 From 4.0.0, the companion needs Laya, a local model. Laya examines each command before it runs, each line that Claude sends with Enter, the prompt in the pane, and all pane text that goes back to Claude:
 

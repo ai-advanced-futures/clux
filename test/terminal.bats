@@ -606,6 +606,95 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(grep -cE 'laya_guard <\(.*\) 1( \|\||;)' "$TERMINAL")" -eq 3 ]
 }
 
+@test "a run command cannot change the functions, traps or options of the pane shell" {
+    local d="$BATS_TEST_TMPDIR/sub" c
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    c="cd /tmp; export FOO=bar; BAR=1; eval 'cd() { echo HIJACKED; }'; f() { :; }; trap 'echo T' DEBUG"
+    c="$c; export PROMPT_COMMAND=evil BASH_ENV=/x; alias ls=rm; shopt -s expand_aliases; enable -n echo"
+    printf '%s' "$c" > "$d/1.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_run 1 \$(__clux_sum \"\$(cat '$d/1.cmd')\") plain >/dev/null 2>&1
+        echo \"\$PWD|\${FOO-}|\${BAR-}|\${PROMPT_COMMAND-}|\${BASH_ENV-none}\"
+        declare -F | grep -c ' cd\$\| f\$'; trap -p DEBUG | wc -l | tr -d ' '
+        shopt -q expand_aliases && echo aliases-on || echo aliases-off
+        enable -n | wc -l | tr -d ' '; cd /; echo \$PWD"
+    [ "$output" = $'/tmp|bar|||none\n0\n0\naliases-off\n0\n/' ] || { echo "$output"; false; }
+    [ ! -e "$d/1.keep" ]
+}
+
+@test "__clux_load takes only an end-marked file and only permitted names" {
+    local d="$BATS_TEST_TMPDIR/load"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '/tmp\0KEEP=1\0BASH_ENV=/x\0__clux_dir=/y\0bad name=1\0' > "$d/k"
+    run bash -c "source '$d/rc.bash'; export OLD=1; __clux_load '$d/k'; echo \"\$PWD|\${KEEP-}|\${OLD-}\""
+    [ "$output" = "$(pwd)||1" ]
+    printf '/tmp\0KEEP=$(touch %s)\0BASH_ENV=/x\0=\0' "$d/ran" > "$d/k"
+    run bash -c "source '$d/rc.bash'; export OLD=1; __clux_load '$d/k'; echo \"\$PWD|\${KEEP-}|\${OLD-}|\${BASH_ENV-none}\""
+    [ "$output" = "/tmp|\$(touch $d/ran)||none" ]
+    [ ! -e "$d/ran" ]
+}
+
+@test "cursor_mid_line gives 2 when it cannot read the cursor" {
+    run bash -c "source '$TERMINAL'
+        tmux_state() { return 1; }; cursor_mid_line; echo \$?
+        tmux_state() { case \"\$1\" in display-message) echo '3 0' ;; capture-pane) printf 'ab\\xc3\\n' ;; esac; }
+        LAYA_PY=/bin/false; cursor_mid_line; echo \$?"
+    [ "$output" = $'2\n2' ]
+}
+
+@test "pane_state sends no request when only rows above the last 5 change" {
+    local count="$BATS_TEST_TMPDIR/count"
+    run bash -c "source '$TERMINAL'
+        n=0
+        capture_to_cursor() { n=\$((n + 1)); CAPTURE=\"top \$n\"\$'\\na\\nb\\nc\\nd\\nclux\$ '; }
+        laya_call() { echo x >> '$count'; echo '{\"state\": \"other\"}'; }
+        pane_state; pane_state; pane_state; echo \$PANE_STATE"
+    [ "$output" = other ]
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
+}
+
+@test "a second reader of the same run exits 5 and leaves the output" {
+    local d="$BATS_TEST_TMPDIR/two"
+    mkdir -p "$d"
+    printf '0\n' > "$d/3.rc"; printf 'out\n' > "$d/3.out"; : > "$d/3.done"
+    sleep 30 3>&- & local live=$!
+    ln -s "$live" "$d/3.reading"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; report_run 3 200"
+    [ "$status" -eq 5 ]
+    [ "$stderr" = 'another verb reads the output of run 3 now: try again' ]
+    [ -e "$d/3.out" ] && [ ! -e "$d/3.held" ]
+    [ "$(readlink "$d/3.reading")" = "$live" ]
+    kill "$live"; wait "$live" 2>/dev/null || true
+}
+
+@test "each failure path of open goes through open_abort" {
+    ! grep -q 'rm -rf "$D"; fail' "$TERMINAL" || false
+    [ "$(grep -c "open_abort [01] 'cannot open\|open_abort 1 'the companion shell did not reach its prompt' 1" "$TERMINAL")" -eq 3 ]
+}
+
+@test "laya install makes a broken venv again, and names a CLUX_LAYA_PYTHON with no laya" {
+    require_laya_python
+    local venv="$BATS_TEST_TMPDIR/data/clux/laya" name
+    make_fake_venv "$venv"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    # A Python upgrade broke the venv python; the marker stays.
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$venv/bin/python3"
+    for name in python3.12 python3.13 python3.11 python3.10 python3; do
+        printf '#!/usr/bin/env bash\nexit 1\n' > "$BATS_TEST_TMPDIR/stubs/$name"
+        chmod +x "$BATS_TEST_TMPDIR/stubs/$name"
+    done
+    run env -u TMUX -u TMUX_PANE XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" \
+        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" laya install
+    [ "$status" -eq 2 ] || { echo "$output"; false; }
+    [[ "$output" == *'laya install needs python3 3.10 or later'* ]] || false
+    [ ! -f "$venv/.clux-installed" ]
+    run env -u TMUX -u TMUX_PANE CLUX_LAYA_PYTHON=/usr/bin/false XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" \
+        "$TERMINAL" laya install
+    [ "$status" -eq 2 ]
+    [[ "$output" == *'CLUX_LAYA_PYTHON cannot import laya'* ]] || false
+}
+
 @test "rc.bash sets ignoreeof, so C-d at the prompt does not end the pane shell" {
     local d="$BATS_TEST_TMPDIR/rc"
     mkdir -p "$d"

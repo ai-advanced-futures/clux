@@ -210,6 +210,13 @@ laya_installed() {
     [ -f "$LAYA_MARKER" ] && laya_checkpoint_present && laya_client_ready
 }
 
+# laya_venv_ready — the venv python runs and imports laya. A Python upgrade
+# (Homebrew) can break a venv and keep its marker.
+laya_venv_ready() {
+    [ -x "$LAYA_VENV/bin/python3" ] || return 1
+    "$LAYA_VENV/bin/python3" -c 'import laya.structured' >/dev/null 2>&1
+}
+
 # laya_client_ready — LAYA_PY (the venv, or CLUX_LAYA_PYTHON) runs and can
 # import the laya package that the client uses.
 laya_client_ready() {
@@ -335,13 +342,13 @@ laya_wait_ready() {
     done
 }
 
-# open_abort PANE_MADE MESSAGE — undo a failed open and exit 6 (spec section
-# 6, step 8). PANE_MADE is 1 when the pane exists.
+# open_abort PANE_MADE MESSAGE [CODE] — undo a failed open and exit CODE
+# (default 6, spec section 6, step 8). PANE_MADE is 1 when the pane exists.
 open_abort() {
     laya_stop_server "$LAYA_PID"
     [ "$1" -eq 0 ] || kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
-    fail "$2" 6
+    fail "$2" "${3:-6}"
 }
 
 resolve_root() {
@@ -370,6 +377,7 @@ S_LAYA_URL=
 S_LAYA_KEY=
 S_TOKEN=
 PROMPT_MARK='clux$'
+CONT_MARK=
 
 # The ONE state-file reader. $1 defaults to the current companion's directory;
 # reap_companions and list_command pass a foreign one. Fails when there is no
@@ -399,7 +407,8 @@ state_load() {
     done < "$dir/state"
     # A companion that an older clux opened has no token.
     PROMPT_MARK='clux$'
-    [ -z "$S_TOKEN" ] || PROMPT_MARK="clux-$S_TOKEN\$"
+    CONT_MARK=
+    [ -z "$S_TOKEN" ] || { PROMPT_MARK="clux-$S_TOKEN\$"; CONT_MARK="clux-$S_TOKEN> "; }
     return 0
 }
 
@@ -516,14 +525,17 @@ write_rc_file() {
     {
         printf 'readonly __clux_dir=%q\n' "$D"
         printf "PS1='clux-%s\$ '\n" "$S_TOKEN"
+        # A continuation line has its own mark, so send finds it (spec
+        # section 7) and does not add text to a command that the gate did
+        # not examine in full.
+        printf "PS2='clux-%s> '\n" "$S_TOKEN"
         cat <<'EOF'
 unset HISTFILE
 set +o history
 PROMPT_COMMAND=
-# No aliases. [inferred] This does not make the pane shell run only what
-# Laya examined: the gate examines each command alone, and a command that
-# passed it can change the shell for later commands (a function, PATH).
-# The gate asks the user for a function definition and for enable.
+# No aliases. Each run command runs in a subshell (__clux_run), so it
+# cannot change the functions, the aliases, the traps or the options of
+# this shell; only the directory and the exported variables come back.
 shopt -u expand_aliases
 # C-d at an empty prompt must not end the pane shell (spec section 7).
 set -o ignoreeof
@@ -533,6 +545,58 @@ exit() { __clux_refuse; }
 exec() { __clux_refuse; }
 logout() { __clux_refuse; }
 __clux_clear() { printf '\033[2J\033[H'; }
+# __clux_carry NAME — an exported variable that a run can give back to this
+# shell. Names that change how the shell reads or runs later commands stay.
+__clux_carry() {
+  case "$1" in
+    ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
+    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|_) return 1 ;;
+  esac
+  return 0
+}
+# __clux_keep FILE — in the subshell of a run: write the directory, then
+# each exported variable, then an end record, NUL-separated.
+__clux_keep() {
+  local __clux_v
+  (umask 077
+   { printf '%s\0' "$PWD"
+     for __clux_v in $(compgen -e); do printf '%s=%s\0' "$__clux_v" "${!__clux_v}"; done
+     printf '=\0'
+   } > "$1")
+}
+# __clux_load FILE — in this shell: take the directory and the exported
+# variables that __clux_keep wrote. The subshell runs the command, so the
+# file is data: only names that __clux_carry permits are set, with export,
+# and nothing is evaluated. A file with no end record changes nothing.
+__clux_load() {
+  local __clux_kv __clux_k __clux_w __clux_i __clux_end=0 __clux_new=' '
+  local -a __clux_names __clux_values
+  [ -f "$1" ] || return 0
+  {
+    IFS= read -r -d '' __clux_w
+    while IFS= read -r -d '' __clux_kv; do
+      [ "$__clux_kv" = '=' ] && { __clux_end=1; break; }
+      __clux_k="${__clux_kv%%=*}"
+      __clux_carry "$__clux_k" || continue
+      __clux_names[${#__clux_names[@]}]="$__clux_k"
+      __clux_values[${#__clux_values[@]}]="${__clux_kv#*=}"
+      __clux_new="$__clux_new$__clux_k "
+    done
+  } < "$1"
+  command rm -f "$1"
+  [ "$__clux_end" -eq 1 ] || return 0
+  for __clux_k in $(compgen -e); do
+    __clux_carry "$__clux_k" || continue
+    case "$__clux_new" in *" $__clux_k "*) ;; *) unset "$__clux_k" 2>/dev/null ;; esac
+  done
+  __clux_i=0
+  while [ "$__clux_i" -lt "${#__clux_names[@]}" ]; do
+    export "${__clux_names[$__clux_i]}=${__clux_values[$__clux_i]}" 2>/dev/null
+    __clux_i=$((__clux_i + 1))
+  done
+  builtin cd -- "$__clux_w" 2>/dev/null
+  return 0
+}
 __clux_sum() {
   local __clux_o
   if command -p -v shasum >/dev/null 2>&1; then
@@ -596,8 +660,16 @@ __clux_run() {
   else
     printf '$ %s\n' "${__clux_cmd//[[:cntrl:]]/?}"
   fi
-  { eval "$__clux_cmd"; } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
+  # The command runs in a subshell: it cannot change this shell for later
+  # commands (a function, an alias, a trap, an option, enable). The
+  # directory and the exported variables come back through __clux_load.
+  command rm -f "$__clux_d/$__clux_n.keep"
+  { ( eval "$__clux_cmd"
+      __clux_rc=$?
+      __clux_keep "$__clux_d/$__clux_n.keep"
+      builtin exit "$__clux_rc" ); } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
+  __clux_load "$__clux_d/$__clux_n.keep"
   __clux_i=0
   while [ ! -e "$__clux_d/$__clux_n.done" ] && [ "$__clux_i" -lt 20 ]; do sleep .05; __clux_i=$((__clux_i + 1)); done
   (umask 077; printf '%s\n' "$__clux_rc" > "$__clux_d/$__clux_n.rc.tmp") \
@@ -690,16 +762,18 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 # when the capture fails and 6 when the client fails. The 3.9.0 regular
 # expressions (line_is_credential) can only add "credential". This call
 # forks the client, so the poll loops call it only on each fifth step, and
-# it sends no request when the screen is the same as at the last answer.
+# it sends no request when the window that goes to Laya (the last 5 lines)
+# is the same as at the last answer: a program that changes only its top
+# rows (watch, top) sends no request on each probe.
 pane_state() {
     local window out
     capture_to_cursor || return 1
     CURSOR_LINE="${CAPTURE##*$'\n'}"
-    [ -z "$PANE_STATE" ] || [ "$CAPTURE" != "$PANE_TEXT" ] || return 0
     # The x keeps a blank cursor line through the command substitution.
     window=$(printf '%s\n' "$CAPTURE" | tail -n 5 && printf x)
     window="${window%x}"
     window="${window%$'\n'}"
+    [ -z "$PANE_STATE" ] || [ "$window" != "$PANE_TEXT" ] || return 0
     case "$window" in
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
@@ -709,7 +783,7 @@ pane_state() {
     [[ "$out" =~ $PANE_RE ]] || return 6
     PANE_STATE="${BASH_REMATCH[1]}"
     [ "$PANE_STATE" = credential ] || ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
-    PANE_TEXT="$CAPTURE"
+    PANE_TEXT="$window"
     return 0
 }
 
@@ -891,7 +965,7 @@ nav_key() {
 # cursor line goes, with the 4 lines above it as the screen. The cursor line is the
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
-    local line prompt=0
+    local line prompt=0 shell=0 enter="${2:-0}" flags
     if prompt_input; then
         line="$PROMPT_INPUT$1"
         prompt=1
@@ -911,11 +985,16 @@ send_gate() {
             case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
             ;;
     esac
-    if [ "$prompt" -eq 1 ]; then
-        laya_gate --screen --shell < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
-    else
-        laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
-    fi
+    # At a shell prompt (the clux prompt, or a prompt that Laya calls
+    # shell_prompt, for example a nested bash) the line runs in that shell:
+    # a line that can change the shell for later commands, or (when this
+    # send ends the line) a line that is not complete, is dangerous.
+    { [ "$prompt" -eq 1 ] || [ "$PANE_STATE" = shell_prompt ]; } && shell=1
+    flags=--screen
+    [ "$shell" -eq 0 ] || flags="$flags --shell"
+    [ "$enter" -eq 0 ] || flags="$flags --enter"
+    # shellcheck disable=SC2086
+    laya_gate $flags < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
         0) ;;
         2) fail 'laya: bad input' 2 ;;
@@ -925,7 +1004,13 @@ send_gate() {
     case "$GATE_LEVEL" in
         caution) printf 'laya: caution (%s)\n' "$GATE_REASON" >&2 ;;
         dangerous)
-            printf 'laya: dangerous (%s): use run, it asks the user\n' "$GATE_REASON" >&2
+            # run works only at the clux prompt. In a program (psql, a
+            # nested shell, a [Y/n] question) only the user can type it.
+            if [ "$prompt" -eq 1 ]; then
+                printf 'laya: dangerous (%s): use run, it asks the user\n' "$GATE_REASON" >&2
+            else
+                printf 'laya: dangerous (%s): ask the user to type this line in the pane\n' "$GATE_REASON" >&2
+            fi
             return 6
             ;;
     esac
@@ -957,22 +1042,29 @@ shell_line() {
     [ "$PANE_STATE" = shell_prompt ]
 }
 
-# cursor_mid_line — there is text after the cursor on the cursor row.
-# cursor_x counts screen cells, and a wide character takes 2, so the client
-# counts the cells of the row.
+# cursor_mid_line — 0: there is text after the cursor on the cursor row;
+# 1: the cursor is at the end; 2: the verb cannot tell (the capture or the
+# client failed). cursor_x counts screen cells, and a wide character takes
+# 2, so the client counts the cells of the row.
 cursor_mid_line() {
-    local pos x y row
-    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y}') || return 1
+    local pos x y row rc
+    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y}') || return 2
     x="${pos% *}"
     y="${pos#* }"
-    row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 1
+    case "$x$y" in ''|*[!0-9]*) return 2 ;; esac
+    row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 2
     # A row of printable ASCII has one cell for each character: no client.
     if row_is_ascii "$row"; then
         rtrim "$row"
         [ "${#RTRIM}" -gt "$x" ]
         return
     fi
-    printf '%s\n' "$row" | "$LAYA_PY" "$LAYA_CLIENT" after-cursor "$x" >/dev/null 2>&1
+    rc=$(printf '%s\n' "$row" | "$LAYA_PY" "$LAYA_CLIENT" after-cursor "$x" 2>/dev/null) || return 2
+    case "$rc" in
+        mid) return 0 ;;
+        end) return 1 ;;
+    esac
+    return 2
 }
 
 # row_is_ascii ROW — each byte of ROW is printable ASCII. LC_ALL=C makes
@@ -1079,6 +1171,7 @@ open_command() {
     S_TOKEN=$(LC_ALL=C od -An -N4 -tx1 /dev/urandom | LC_ALL=C tr -d ' \n') || S_TOKEN=
     [ "${#S_TOKEN}" -eq 8 ] || S_TOKEN=$(printf '%04x%04x' "$RANDOM" "$RANDOM")
     PROMPT_MARK="clux-$S_TOKEN\$"
+    CONT_MARK="clux-$S_TOKEN> "
     write_rc_file
     socket="$D/sock"
     if [ "$mode" = socket ] && [ "${#socket}" -gt 100 ]; then
@@ -1097,24 +1190,19 @@ open_command() {
     if [ "$mode" = socket ]; then
         pane=$(tmux -S "$socket" -f /dev/null new-session -d -P -F '#{pane_id}' -s clux-terminal \
             -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
-            || { laya_stop_server "$LAYA_PID"; rm -rf "$D"; fail 'cannot open private companion' 1; }
+            || open_abort 0 'cannot open private companion' 1
         write_state socket "$pane" "$socket" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
     else
         pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" -v -l "$size" \
             -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
-            || { laya_stop_server "$LAYA_PID"; rm -rf "$D"; fail 'cannot open companion' 1; }
+            || open_abort 0 'cannot open companion' 1
         write_state split "$pane" "" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
     fi
     tmux_state select-pane -t "$pane" -T clux-terminal
     if [ -n "$S_LAYA_PID" ]; then
         laya_wait_ready || open_abort 1 'laya not available: the server did not answer'
     fi
-    wait_for_prompt 5 || {
-        laya_stop_server "$S_LAYA_PID"
-        kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
-        rm -rf "$D"
-        fail 'the companion shell did not reach its prompt' 1
-    }
+    wait_for_prompt 5 || open_abort 1 'the companion shell did not reach its prompt' 1
     report_open
 }
 
@@ -1180,35 +1268,37 @@ run_not_started() {
 # its holder, so a holder that was killed does not keep it. Returns 5 with
 # the message when a live verb holds it.
 take_typing_lock() {
-    local pid stale="$D/typing.stale.$$"
-    if ! ln -s "$$" "$D/typing" 2>/dev/null; then
-        pid=$(readlink "$D/typing" 2>/dev/null) || pid=
-        case "$pid" in
-            ''|*[!0-9]*) ;;
-            *) if kill -0 "$pid" 2>/dev/null; then
-                   printf '%s\n' 'another send or run is typing in the pane: try again' >&2
-                   return 5
-               fi ;;
-        esac
-        # Take over a dead holder. mv moves the link away in one step, so
-        # only one verb gets it. When the moved link is not the dead holder
-        # (a new verb took the lock in the meantime), put it back.
-        if mv "$D/typing" "$stale" 2>/dev/null; then
-            if [ "$(readlink "$stale" 2>/dev/null)" = "$pid" ]; then
-                rm -f "$stale"
-            else
-                mv "$stale" "$D/typing" 2>/dev/null || rm -f "$stale"
-                printf '%s\n' 'another send or run is typing in the pane: try again' >&2
-                return 5
-            fi
-        fi
-        ln -s "$$" "$D/typing" 2>/dev/null || {
-            printf '%s\n' 'another send or run is typing in the pane: try again' >&2
-            return 5
-        }
-    fi
+    pid_link "$D/typing" || {
+        printf '%s\n' 'another send or run is typing in the pane: try again' >&2
+        return 5
+    }
     TYPING_LOCK=1
     trap verb_exit EXIT
+}
+
+# pid_link LINK — make LINK a symbolic link to the pid of this verb, in one
+# step (ln -s makes it or fails). A link whose pid is not alive is taken
+# over: mv moves it away in one step, so only one verb gets it, and when the
+# moved link is not the dead holder (a new verb took it in the meantime), it
+# goes back. Returns 1 when a live verb holds it.
+pid_link() {
+    local pid stale="$1.stale.$$"
+    ln -s "$$" "$1" 2>/dev/null && return 0
+    pid=$(readlink "$1" 2>/dev/null) || pid=
+    [ "$pid" != "$$" ] || return 0
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *) ! kill -0 "$pid" 2>/dev/null || return 1 ;;
+    esac
+    if mv "$1" "$stale" 2>/dev/null; then
+        if [ "$(readlink "$stale" 2>/dev/null)" = "$pid" ]; then
+            rm -f "$stale"
+        else
+            mv "$stale" "$1" 2>/dev/null || rm -f "$stale"
+            return 1
+        fi
+    fi
+    ln -s "$$" "$1" 2>/dev/null
 }
 
 release_typing_lock() {
@@ -1298,9 +1388,10 @@ report_run() {
         release_run "$n"
         return 0
     fi
-    # While this verb reports, no new run takes the lock or deletes the output.
-    rm -f "$D/$n.reading"
-    ln -s "$$" "$D/$n.reading" 2>/dev/null || true
+    # While this verb reports, no new run takes the lock or deletes the
+    # output, and no other verb reports the same run: one reader would
+    # delete the output that the other reads.
+    pid_link "$D/$n.reading" || fail "another verb reads the output of run $n now: try again" 5
     READING="$n"
     trap verb_exit EXIT
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
@@ -1509,6 +1600,14 @@ send_command() {
     laya_confirm_pending && { refuse_confirm; return; }
     hidden_text && { refuse_hidden; return; }
     check_pane || return
+    # A continuation line (PS2) adds to a command that the gate did not
+    # examine as one line.
+    if [ -n "$CONT_MARK" ]; then
+        case "$CURSOR_LINE" in
+            *"$CONT_MARK"*|*"${CONT_MARK% }")
+                fail 'the pane shell waits for the rest of a command: send --key C-c, then send the full command on one line' 5 ;;
+        esac
+    fi
     # Each send goes to the gate: text with no Enter too, and each key, because
     # bind can make any key end a line. The gate examines the cursor line plus
     # the text, so text typed in pieces is examined as one line.
@@ -1517,20 +1616,26 @@ send_command() {
         case "$PANE_STATE" in
             pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
         esac
-        send_gate "" || return
+        # Each key goes to the gate as the end of the line: bind can make
+        # any key end a line.
+        send_gate "" 1 || return
         line_unchanged || return
         send_key "$key"
         return
     fi
     [ -n "$text" ] || usage
     # The gate examines the cursor line plus the text, so the text must go
-    # at the end of the line. After Home or Left in a shell it goes in the
-    # middle.
-    if shell_line && cursor_mid_line; then
-        fail 'the cursor is not at the end of the line: send --key End or --key C-c first' 2
-    fi
+    # at the end of the line. After Home or Left it goes in the middle. This
+    # is true in each program, so the check runs on each send, and a send
+    # that cannot tell refuses.
+    cursor_mid_line
+    case $? in
+        0) fail 'the cursor is not at the end of the line: send --key End or --key C-c first' 2 ;;
+        1) ;;
+        *) fail 'cannot read the cursor position: try again' 5 ;;
+    esac
     before="$CURSOR_LINE"
-    send_gate "$text" || return
+    send_gate "$text" "$enter" || return
     line_unchanged || return
     send_literal "$text"
     if [ "$enter" -eq 1 ]; then
@@ -1760,6 +1865,14 @@ laya_download() {
 
 laya_install() {
     local start=$SECONDS version
+    # open uses the client Python: install cannot make CLUX_LAYA_PYTHON
+    # ready, so it says so, and open and install do not send the user in a
+    # circle.
+    if [ -n "${CLUX_LAYA_PYTHON:-}" ] && ! laya_client_ready; then
+        fail "CLUX_LAYA_PYTHON cannot import laya: install laya $LAYA_VERSION in that Python, or unset CLUX_LAYA_PYTHON" 2
+    fi
+    # A venv that does not run is made again: its marker goes.
+    [ ! -f "$LAYA_MARKER" ] || laya_venv_ready || rm -f "$LAYA_MARKER"
     # An installed venv needs no base python3.
     if [ -f "$LAYA_MARKER" ] && laya_checkpoint_present; then
         version=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" version 2>/dev/null) || version=unknown

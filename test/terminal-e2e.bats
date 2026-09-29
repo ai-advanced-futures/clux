@@ -1105,3 +1105,63 @@ pane_shows() {
     run "$TERMINAL" wait --timeout 2 --pattern 'laya'
     [ "$status" -eq 1 ]
 }
+
+@test "a function that a run makes does not change a later run" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- "eval 'cd() { echo HIJACKED; }'; export CLUX_T=1; cd /tmp"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" run -- 'cd /; pwd; echo "t=$CLUX_T"'
+    [ "$status" -eq 0 ]
+    [[ "$output" != *HIJACKED* ]] || false
+    [[ "$output" == *$'\n/\nt=1\n'* ]] || { echo "$output"; false; }
+}
+
+@test "send refuses a line that can change the pane shell, also inside eval" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send --enter -- "eval 'ls() { echo HIJACKED; }'"
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya: dangerous (can change the shell for later commands): use run, it asks the user' ]
+    run "$TERMINAL" send -- 'echo "open'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya: dangerous (the line is not a complete command): use run, it asks the user' ]
+    "$TERMINAL" send --key C-c >/dev/null
+    run "$TERMINAL" run -- 'type ls | head -1'
+    [[ "$output" != *function* ]] || false
+}
+
+@test "send refuses text at a continuation line of the pane shell" {
+    "$TERMINAL" open >/dev/null
+    local mark
+    mark=$(prompt_mark)
+    # The user starts a command that is not complete.
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" 'ls\' Enter
+    pane_shows "${mark%$}>"
+    run "$TERMINAL" send --enter -- '() { echo HIJACKED; }'
+    [ "$status" -eq 5 ]
+    [ "$output" = 'the pane shell waits for the rest of a command: send --key C-c, then send the full command on one line' ]
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" run -- 'type ls | head -1'
+    [[ "$output" != *function* ]] || false
+}
+
+@test "in a program, send checks the cursor and a dangerous line goes to the user" {
+    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'python3 -q' >/dev/null
+    pane_shows '>>>'
+    run "$TERMINAL" send -- 'print(1)'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Left
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" send -- 'x'
+    [ "$status" -eq 2 ]
+    [ "$output" = 'the cursor is not at the end of the line: send --key End or --key C-c first' ]
+    "$TERMINAL" send --key C-c >/dev/null
+    run "$TERMINAL" send --enter -- 'import os  # clux-danger'
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya: dangerous (destructive 0.95): ask the user to type this line in the pane' ]
+    "$TERMINAL" send --key C-d >/dev/null
+}

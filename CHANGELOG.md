@@ -22,7 +22,7 @@ All notable changes to clux are documented here.
 - In a pager or a menu, the move keys (`Up`, `Down`, `Left`, `Right`, `Home`, `End` and the page keys) go to the pane with no command request
 - The output guard uses a new temporary file for each check, and `LC_ALL=C` for `tail`, `wc` and `tr`
 - A line that `not-secret.txt` clears no longer stops the pair rule for the line after it
-- `send` refuses text with exit code 2 when the cursor is not at the end of a shell line (in screen cells, so wide characters count 2)
+- `send` refuses text with exit code 2 when the cursor is not at the end of the line, in all pane states (in screen cells, so wide characters count 2). When the cursor cannot be read, `send` refuses with exit code 5
 - `send --key` takes only a tmux key name; other text gives exit code 2
 - When the output guard fails, the run keeps its lock until `wait --run <n>` gives the output, so a new run cannot delete it (exit code 5)
 - The output guard sends at most 2 requests at one time: `laya-serve` runs one request at a time
@@ -38,7 +38,12 @@ All notable changes to clux are documented here.
 - After a 503 from Laya, the client waits for the `Retry-After` time of the server (at most 1 s), then tries one time more
 - When the output guard reaches its time limit, only the text that Laya did not examine is held (`[held by laya: not_examined, <k> lines]`); the other lines stay and the verb exits 0
 - `run` refuses with exit code 5 (`the pane is not at an empty prompt`) when text came on the prompt line while Laya examined the command, and types `C-u` before its line. `send --key C-c` ends a run whose typed line the pane shell never read (`run <n> did not start: the typed line changed`, `exit=126`)
-- A function definition or `enable` in a command is `dangerous` (`changes the shell for later commands`), so the user must answer
+- Each `run` command runs in a subshell, so it cannot change the functions, aliases, traps or options of the pane shell. Only the directory and the exported variables come back (from a NUL-separated file with an end record, read with no `eval`; `BASH*`, `PS0`-`PS4`, `PROMPT_COMMAND`, `IFS` and other shell names are not taken). A variable that is not exported does not persist to the next `run`
+- At a shell prompt (the clux prompt, or `pane=shell_prompt`), `send` refuses a line that can change the shell (`eval`, `source`, `export`, `alias`, `trap`, `set`, a function, an assignment to `PATH` or `LD_*`, `<<` and others, also inside quotes) and, with `--enter`, a line that is not a complete command (exit code 6, `use run, it asks the user`). The pane shell has the continuation prompt `clux-<token>> `; at that prompt `send` gives exit code 5
+- A dangerous `send` outside the clux prompt says `ask the user to type this line in the pane`, not `use run`
+- Only one verb reads the output of a run at a time: a second reader exits 5 (`another verb reads the output of run <n> now: try again`)
+- `laya install` makes a venv again when its Python cannot import `laya`, and exits 2 when `CLUX_LAYA_PYTHON` names a Python with no `laya`
+- The pane probe sends no request when only rows above the last 5 lines change
 - A reader of a run keeps the lock and the output of that run, and an older run cannot free the lock of a newer run
 - `wait --pattern` does not match a `[held by laya: ...]` marker line
 - `send` cuts each screen line of the gate to its last 200 characters. An `-----END ... PRIVATE KEY-----` line with no start holds from the first line only in cut text. A line that `secret-values.txt` holds sends no request. `laya install` with a venv and no checkpoint needs no base `python3`
