@@ -439,7 +439,7 @@ def block_ranges(checked, pol):
     return ranges, flagged
 
 
-def check_lines(pool, runner, pol, units, flagged, values):
+def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     """Step 5, the line check. `units` are all units of the text in order.
     Each flagged unit goes to Laya alone and with the unit above it. Give the
     set of line indexes that the check holds.
@@ -450,7 +450,9 @@ def check_lines(pool, runner, pol, units, flagged, values):
     secret-values.txt holds). [inferred] Without the last two conditions, the
     line after `hunter2` is held because of `hunter2`. The unit above is held
     when it alone is above the threshold, also when its own block was not
-    flagged."""
+    flagged. `cleared` are the lines that not-secret.txt clears: the check
+    never holds them, and the pair rule reads such a line above as not held,
+    so the line after it is not let through because of it."""
     limit = threshold(pol, "secret", 0.75)
     targets, alone_ids, pairs = [], set(), []
     for position, unit in enumerate(units):
@@ -475,13 +477,16 @@ def check_lines(pool, runner, pol, units, flagged, values):
         line = units[position].line
         # The unit above has its own score: hold it also when its block was
         # not flagged.
-        if position in pair and alone[position - 1] > limit:
-            held.add(units[position - 1].line)
+        above = units[position - 1] if position in pair else None
+        above_high = above is not None and alone[position - 1] > limit and above.line not in cleared
+        if above_high:
+            held.add(above.line)
+        if line in cleared:
+            continue
         if alone[position] > limit:
             held.add(line)
-        elif position in pair and pair[position] > limit:
-            above = units[position - 1]
-            if alone[position - 1] <= limit and above.line not in held and above.line not in values:
+        elif above is not None and pair[position] > limit:
+            if not above_high and above.line not in held and above.line not in values:
                 held.add(line)
     return held
 
@@ -592,12 +597,12 @@ def guard(text, limit):
         ranges, flagged = block_ranges(checked, block_pol)
         units = sorted((unit for block, _answer in checked for unit in block),
                        key=lambda unit: (unit.line, unit.start))
-        held = check_lines(pool, runner, line_pol, units, flagged, values)
+        # not-secret.txt runs before the pair rule and before the half rule
+        # counts, and it removes only holds of the line check.
+        cleared = {index for index, line in enumerate(lines) if never_secret(line, shapes)}
+        held = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    # not-secret.txt runs before the half rule counts, and it removes only
-    # holds of the line check.
-    held = {line for line in held if not never_secret(lines[line], shapes)}
     ranges += [(line, line, "secret") for line in sorted(held | values)]
     ranges += pem_ranges(lines)
     ranges += half_rule(checked, ranges)

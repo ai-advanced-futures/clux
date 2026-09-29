@@ -3,8 +3,10 @@
 # A command skips Laya only when its first words equal one full line of this
 # file, word for word, no word after them starts with --, and it is one
 # simple command with none of these: ; | & < > $ ` ( ) and a newline. The
-# safe list applies only at the clux$ prompt. The pane shell does not expand
-# aliases, and a safe-list run whose first word is a function is refused.
+# safe list applies only to run. The pane shell does not expand aliases, and
+# it refuses a safe-list run when the first word is not the program or the
+# builtin that terminal.sh found. git is not on the list: the config of a
+# repository can start a program (core.fsmonitor, core.pager).
 #
 # There is no user copy of this file. Claude does not edit it.
 ls
@@ -14,6 +16,3 @@ head
 tail
 wc
 echo
-git status
-git log
-git diff

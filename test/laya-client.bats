@@ -93,7 +93,7 @@ PY
 @test "command: a safe-list command skips Laya" {
     start_fake_laya '{}'
     local cmd
-    for cmd in 'ls -la' 'pwd' 'git status -s' 'git log -3' 'cat README.md' 'echo hi'; do
+    for cmd in 'ls -la' 'pwd' 'head -3 README.md' 'wc -l README.md' 'cat README.md' 'echo hi'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
         [ "$output" = '{"level": "safe", "reason": "safe list", "safe_list": true}' ] || { echo "$cmd: $output"; false; }
@@ -105,14 +105,14 @@ PY
     start_fake_laya '{}'
     local cmd
     for cmd in 'ls $(rm -rf x)' 'ls; rm x' 'ls | sh' 'ls > f' 'ls `id`' 'git' 'git push --force' \
-        'gitk' 'sudo ls' 'env ls' 'lsof' 'git log --output=x' 'git diff --output=/tmp/x' \
-        'git status --short' 'ls --color=always' "git diff '--output=/tmp/x'" 'git diff "--output=/tmp/x"' \
-        'git diff {--output=/tmp/x,}' 'git diff \--output=/tmp/x' 'cat ~/.ssh/id_rsa' 'ls *'; do
+        'gitk' 'sudo ls' 'env ls' 'lsof' 'git status -s' 'git log -3' 'git diff' 'cat --output=x' \
+        'tail --output=/tmp/x' 'ls --color=always' "cat '--output=/tmp/x'" 'cat "--output=/tmp/x"' \
+        'cat {--output=/tmp/x,}' 'cat \--output=/tmp/x' 'cat ~/.ssh/id_rsa' 'ls *'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
         [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ] || { echo "$cmd: $output"; false; }
     done
-    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 21 ]
+    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 23 ]
 }
 
 @test "command: the three levels and the reason" {
@@ -430,6 +430,17 @@ PY
     run client output --render <<<"$text"
     [ "$status" -eq 0 ]
     [ "$output" = $'held=2\ncommit 0123456789abcdef0123456789abcdef01234567\n-rw-r--r--@  1 jazz  staff  1234 Sep 28 10:15 notes.txt\ndrwxr-xr-x   5 jazz  staff   160 Jan  3  2025 src\n 2 files changed, 10 insertions(+)\n[held by laya: secret]\n[held by laya: secret]\ntotal 48' ]
+}
+
+@test "output: a line that not-secret.txt clears does not stop the pair rule for the line after it" {
+    start_fake_laya '{"rules": [
+        {"asks": "prompt_injection", "answers": {"secret": 0.9}},
+        {"equals": "total 48", "answers": {"secret": 0.9}},
+        {"equals": "total 48\nzq9x", "answers": {"secret": 0.95}},
+        {"equals": "zq9x", "answers": {"secret": 0.2}}]}'
+    run client output --render < <(printf 'total 48\nzq9x\n')
+    [ "$status" -eq 0 ]
+    [ "$output" = $'held=1\ntotal 48\n[held by laya: secret]' ]
 }
 
 @test "output: a block with more than half of its lines held is held in full" {
