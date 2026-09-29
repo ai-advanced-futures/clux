@@ -1050,6 +1050,15 @@ pane_shows() {
     [ "$status" -eq 0 ]
 }
 
+@test "run of one line longer than the guard limit says that nothing is shown" {
+    "$TERMINAL" open >/dev/null
+    run --separate-stderr "$TERMINAL" run -- "head -c 40000 /dev/zero | tr '\\0' x"
+    [ "$status" -eq 0 ] || { echo "$status $output $stderr"; false; }
+    [[ "$output" == *$'output cut: the last 32768 bytes are one line with no start: nothing is shown\n'* ]] || { echo "$output"; false; }
+    [[ "$output" != *xxxx* ]] || false
+    [[ "$output" == *'exit=0' ]] || { echo "$output"; false; }
+}
+
 @test "the guard removes NUL bytes and still finds the cut" {
     "$TERMINAL" open >/dev/null
     run --separate-stderr "$TERMINAL" run -- 'head -c 40000 /dev/zero; echo; echo nul-end'

@@ -678,12 +678,42 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(guard "$d/nl" 6)" = 'line2|1' ]
     printf 'abcdefghi\nline2\nline3\n' > "$d/nl2"
     [ "$(guard "$d/nl2" 12)" = 'line2|line3|1' ]
-    # One cut line with no newline: none of it goes.
+    # One cut line with no newline: none of it goes, and GUARD_CUT says so.
     printf 'token=value-of-one-line-with-no-newline' > "$d/one"
-    [ "$(guard "$d/one" 10)" = '1' ]
+    [ "$(guard "$d/one" 10)" = '2' ]
+    # A NUL byte before the cut: the cut line goes all the same.
+    printf 'ab\0cdef\nline2\n' > "$d/nul"
+    [ "$(guard "$d/nul" 11)" = 'line2|1' ]
     # No cut: the text goes in full.
     [ "$(guard "$d/tok" 1000)" = 'token=ghp_0123456789abcdefXYZ|line2|0' ]
-    [ "$(grep -cE 'laya_guard <\(.*\)( 1 "[^"]*")?( \|\||;)' "$TERMINAL")" -eq 3 ]
+    run bash -c "source '$TERMINAL'; for GUARD_CUT in 0 1 2; do guard_cut_note; done"
+    [ "$output" = $'output cut: the last 32768 bytes, from the first full line\noutput cut: the last 32768 bytes are one line with no start: nothing is shown' ]
+}
+
+@test "report_run and read send the text they show to the guard, with no pieces, and print the cut note" {
+    local d="$BATS_TEST_TMPDIR/callers" log="$BATS_TEST_TMPDIR/callers.log"
+    mkdir -p "$d"
+    # stub LOG — laya_call writes its arguments and the text it got.
+    local stub="laya_call() { { echo \"args: \$*\"; cat; echo =; } >> '$log'; printf 'held=0\\n'; }"
+    # report_run over --max-lines: the last lines only.
+    printf '0\n' > "$d/3.rc"; printf 'l1\nl2\nl3\nl4\n' > "$d/3.out"; : > "$d/3.done"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; $stub; report_run 3 2"
+    [ "$(cat "$log")" = $'args: output --render --limit 15\nl3\nl4\n=' ] || { cat "$log"; false; }
+    # report_run with a byte cut of one long line: the note says nothing is shown.
+    rm -f "$log"
+    printf '0\n' > "$d/4.rc"; printf 'x%.0s' $(seq 1 40) > "$d/4.out"; : > "$d/4.done"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=4; LAYA_GUARD_BYTES=10; $stub; report_run 4 200"
+    [[ "$output" == *'output cut: the last 10 bytes are one line with no start: nothing is shown'* ]] || { echo "$output"; false; }
+    [ "$(cat "$log")" = $'args: output --render --limit 15\n=' ] || { cat "$log"; false; }
+    # read: the screen, with the cut note after a byte cut.
+    rm -f "$log"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_PANE=%1; LAYA_GUARD_BYTES=10; $stub
+        ensure_open() { :; }; release_if_done() { :; }; laya_confirm_pending() { return 1; }
+        last_run_secret() { return 1; }; check_pane() { :; }; tmux_state() { printf 'top line\\nrow2\\nrow3'; }
+        read_command"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$log")" = $'args: output --render --limit 15\nrow2\nrow3\n=' ] || { cat "$log"; false; }
+    [[ "$output" == 'output cut: the last 10 bytes, from the first full line'* ]] || { echo "$output"; false; }
 }
 
 @test "rc.bash runs its external programs from the system PATH, not from a PATH that a run gave back" {
