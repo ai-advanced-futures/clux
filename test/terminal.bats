@@ -253,7 +253,7 @@ STUB
     local log="$BATS_TEST_TMPDIR/stub.log"
     run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" send -- $'ls\nrm -rf x'
     [ "$status" -eq 2 ]
-    [ "$output" = 'send text must not contain a control character: use --enter or --key' ]
+    [ "$output" = 'send text must not contain a control character or a Unicode format character: use --enter or --key' ]
     run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" send --enter -- $'ls\r'
     [ "$status" -eq 2 ]
     run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" send --key $'a\r'
@@ -487,9 +487,54 @@ STUB
     for cmd in $'ls\nrm -rf x' $'ls\trm' $'echo \x1b[2J'; do
         run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" run -- "$cmd"
         [ "$status" -eq 2 ]
-        [ "$output" = 'run command must not contain a control character: give one line' ]
+        [ "$output" = 'run command must not contain a control character or a Unicode format character: give one line' ]
     done
     [ ! -s "$log" ]
+}
+
+@test "run and send refuse a Unicode format character that can reorder or hide a part of the question" {
+    local log="$BATS_TEST_TMPDIR/stub.log" cmd
+    # U+202E RLO, U+2066 LRI, U+200B zero width space, U+FEFF, a tag character.
+    for cmd in $'echo safe \xe2\x80\xaerm -rf ~' $'ls \xe2\x81\xa6x' $'rm -rf /tmp/a\xe2\x80\x8b' \
+            $'ls\xef\xbb\xbf' $'ls \xf3\xa0\x80\xa1' $'ls \xc2\x9b2J'; do
+        run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" run -- "$cmd"
+        [ "$status" -eq 2 ] || { printf '%q\n' "$cmd"; false; }
+        [ "$output" = 'run command must not contain a control character or a Unicode format character: give one line' ]
+        run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" send -- "$cmd"
+        [ "$status" -eq 2 ]
+    done
+    [ ! -s "$log" ]
+}
+
+@test "hides_text refuses each Cc, Cf, Zl and Zp character of unicodedata, and no other character" {
+    require_laya_python
+    local list="$BATS_TEST_TMPDIR/cps"
+    "$CLUX_LAYA_PYTHON" -c '
+import sys, unicodedata
+for c in range(1, 0x110000):
+    cat = unicodedata.category(chr(c))
+    if c == 10 or cat in ("Cs", "Co", "Cn"):
+        continue
+    want = b"1" if cat in ("Cc", "Cf", "Zl", "Zp") else b"0"
+    sys.stdout.buffer.write(want + b" " + chr(c).encode() + b"\n")
+' > "$list"
+    run bash -c "source '$TERMINAL'
+        bad=0
+        while IFS= read -r l; do
+            if hides_text \"a\${l#* }b\"; then g=1; else g=0; fi
+            [ \"\$g\" = \"\${l%% *}\" ] || { bad=\$((bad + 1)); printf '%q\n' \"\$l\"; }
+        done < '$list'
+        hides_text \$'a\nb' || bad=\$((bad + 1))
+        echo bad=\$bad"
+    [ "${lines[${#lines[@]}-1]}" = 'bad=0' ] || { echo "$output" | head; false; }
+}
+
+@test "hides_text lets a command with accents, other scripts and emoji through" {
+    run bash -c "source '$TERMINAL'
+        for t in 'echo café' 'grep 中文 x.txt' 'echo 👍🏽' 'ls \"a b\"' 'echo \$((1 + 2))'; do
+            ! hides_text \"\$t\" || echo \"refused: \$t\"
+        done"
+    [ -z "$output" ]
 }
 
 # rc_run ARGS... — make rc.bash in a test directory and call __clux_run in a

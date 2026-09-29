@@ -1616,6 +1616,33 @@ cursor_mid_line() {
     return 2
 }
 
+# hides_text TEXT — TEXT has a character that can hide or reorder a part
+# of what the user reads in the question of a dangerous run, or that acts
+# on the pane: a C0 or C1 control character, DEL, a Unicode format
+# character (Cf: the bidi controls, the zero width characters, the tag
+# characters) or the line and paragraph separators. The list is in UTF-8
+# bytes (Unicode 15.0), so it does not depend on the locale; a test
+# compares it with unicodedata. run and send use this one list.
+HIDE_PATTERNS=(
+    $'*[\x01-\x1f\x7f]*'
+    $'*\xc2[\x80-\x9f\xad]*'
+    $'*\xd8[\x80-\x85\x9c]*' $'*\xdb\x9d*' $'*\xdc\x8f*'
+    $'*\xe0\xa2[\x90\x91]*' $'*\xe0\xa3\xa2*' $'*\xe1\xa0\x8e*'
+    $'*\xe2\x80[\x8b-\x8f\xa8-\xae]*' $'*\xe2\x81[\xa0-\xa4\xa6-\xaf]*'
+    $'*\xef\xbb\xbf*' $'*\xef\xbf[\xb9-\xbb]*'
+    $'*\xf0\x91\x82\xbd*' $'*\xf0\x91\x83\x8d*' $'*\xf0\x93\x90[\xb0-\xbf]*'
+    $'*\xf0\x9b\xb2[\xa0-\xa3]*' $'*\xf0\x9d\x85[\xb3-\xba]*'
+    $'*\xf3\xa0\x80[\x81\xa0-\xbf]*' $'*\xf3\xa0\x81[\x80-\xbf]*'
+)
+hides_text() {
+    local LC_ALL=C p
+    for p in "${HIDE_PATTERNS[@]}"; do
+        # shellcheck disable=SC2053
+        [[ $1 != $p ]] || return 0
+    done
+    return 1
+}
+
 # row_is_ascii ROW — each byte of ROW is printable ASCII. LC_ALL=C makes
 # [:print:] match bytes, not characters.
 row_is_ascii() {
@@ -2072,11 +2099,10 @@ run_command() {
     done
     [ -n "${command:-}" ] || usage
     case "$command" in *[![:space:]]*) ;; *) fail 'run needs a command' 2 ;; esac
-    # A newline or another control character can hide a part of the command
-    # in the question of a dangerous run, and it can break the typed line.
-    case "$command" in
-        *[[:cntrl:]]*) fail 'run command must not contain a control character: give one line' 2 ;;
-    esac
+    # A newline, another control character or a Unicode format character
+    # can hide or reorder a part of the command in the question of a
+    # dangerous run, and a control character can break the typed line.
+    ! hides_text "$command" || fail 'run command must not contain a control character or a Unicode format character: give one line' 2
     positive_integer "$timeout" || usage
     positive_integer "$max" || usage
     reserved_word "$command"
@@ -2168,9 +2194,9 @@ send_command() {
     # other C0 control characters and DEL (for example \x0f, C-o on a bash
     # that binds operate-and-get-next) can end a line or act on the pane the
     # same way through send-keys -l; refuse all of them, not only \n and \r.
-    case "$text$key" in
-        *[[:cntrl:]]*) fail 'send text must not contain a control character: use --enter or --key' 2 ;;
-    esac
+    # A Unicode format character (a bidi control, a zero width character)
+    # can make the line on the pane read differently from the line that runs.
+    ! hides_text "$text$key" || fail 'send text must not contain a control character or a Unicode format character: use --enter or --key' 2
     reserved_word "$text"
     [ -z "$key" ] || key_name "$key" || fail "not a key name: $key: send text with send -- TEXT" 2
     # No text and no key is a usage error before any pane request.
