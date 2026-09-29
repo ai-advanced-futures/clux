@@ -1059,9 +1059,10 @@ def cmd_scrub(args):
     """Copy stdin to stdout less each line that matches secret-values.txt."""
     if args:
         raise Fail(2)
-    patterns = compile_lines("secret-values.txt")
-    for line in read_stdin().splitlines():
-        if not any(pattern.search(line) for pattern in patterns):
+    lines = read_stdin().splitlines()
+    held = value_lines(lines, compile_lines("secret-values.txt"))
+    for index, line in enumerate(lines):
+        if index not in held:
             print(line)
 
 

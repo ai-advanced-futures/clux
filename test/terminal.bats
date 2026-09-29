@@ -1303,6 +1303,15 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(grep -c 'shopt -s nocasematch' "$TERMINAL")" -eq 1 ]
 }
 
+@test "random_hex is the one reader of /dev/urandom, and the secret-value match is in one place" {
+    [ "$(grep -c '/dev/urandom' "$TERMINAL")" -eq 2 ]
+    [ "$(grep -c 'random_hex [0-9]' "$TERMINAL")" -eq 2 ]
+    run bash -c "source '$TERMINAL'; random_hex 4; echo; random_hex 32"
+    [[ "${lines[0]}" =~ ^[0-9a-f]{8}$ ]] && [[ "${lines[1]}" =~ ^[0-9a-f]{64}$ ]] || { echo "$output"; false; }
+    local client="$SCRIPTS_DIR/laya_client.py"
+    [ "$(grep -c 'p.search(line) for p in patterns\|pattern.search(line) for pattern in patterns' "$client")" -eq 1 ]
+}
+
 @test "wait --pattern starts no guard after its time limit" {
     local log="$BATS_TEST_TMPDIR/late.log"
     run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'

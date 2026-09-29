@@ -69,6 +69,12 @@ require_tmux() {
         || fail 'clux terminal must run inside tmux' 2
 }
 
+# random_hex BYTES — BYTES random bytes from /dev/urandom in hex, on one
+# line. The callers check the length: an empty or short result is a failure.
+random_hex() {
+    LC_ALL=C od -An -N"$1" -tx1 /dev/urandom | LC_ALL=C tr -d ' \n'
+}
+
 positive_integer() {
     case "$1" in ''|*[!0-9]*|0) return 1 ;; esac
     return 0
@@ -323,7 +329,7 @@ laya_start_server() {
     local port key offline=
     port=$("$LAYA_PY" "$LAYA_CLIENT" port 2>/dev/null) || return 1
     case "$port" in ''|*[!0-9]*) return 1 ;; esac
-    key=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+    key=$(random_hex 32)
     [ "${#key}" -eq 64 ] || return 1
     [ "$2" -eq 0 ] || offline=HF_HUB_OFFLINE=1
     # The key goes in the environment of env, not in its arguments: ps
@@ -1788,7 +1794,7 @@ open_command() {
     umask 077; mkdir -p "$D"
     # The prompt has a random token, so output text that shows clux$ is not
     # the prompt (spec section 9).
-    S_TOKEN=$(LC_ALL=C od -An -N4 -tx1 /dev/urandom | LC_ALL=C tr -d ' \n') || S_TOKEN=
+    S_TOKEN=$(random_hex 4) || S_TOKEN=
     [ "${#S_TOKEN}" -eq 8 ] || S_TOKEN=$(printf '%04x%04x' "$RANDOM" "$RANDOM")
     PROMPT_MARK="clux-$S_TOKEN\$"
     CONT_MARK="clux-$S_TOKEN> "
