@@ -2116,7 +2116,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
         wait_command --pattern '^PASS\$' --timeout 3"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = 'output --render --pieces 40 --runs 0 --limit 15' ] || { cat "$log"; false; }
+    # 3 s left before the deadline: the limit is 3 (or 2 at a SECONDS tick).
+    [[ "$(cat "$log")" =~ ^'output --render --pieces 40 --runs 0 --limit '[23]$ ]] || { cat "$log"; false; }
 }
 
 @test "wait --pattern gives the client the runs of new lines, so an END line does not hold a line far above it" {
@@ -2135,7 +2136,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         wait_command --pattern 'READY' --timeout 3"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     # The new lines: status (row 0), and C with the END line (rows 3 and 4).
-    [ "$(sed -n 2p "$log")" = 'output --render --pieces 32768 --runs 0,1 --limit 15' ] || { cat "$log"; false; }
+    [[ "$(sed -n 2p "$log")" =~ ^'output --render --pieces 32768 --runs 0,1 --limit '[23]$ ]] || { cat "$log"; false; }
 }
 
 @test "wait --pattern starts no guard of a piece after its time limit" {
@@ -2152,6 +2153,41 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         wait_command --pattern NEVER --timeout 5"
     [ "$status" -eq 1 ] || { echo "$status $output"; false; }
     [ "$(wc -l < "$log" | tr -d ' ')" -eq 1 ]
+}
+
+@test "a guard of wait --pattern gets at most the time that is left before the deadline" {
+    local log="$BATS_TEST_TMPDIR/calls"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        laya_pid_check() { :; }
+        laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
+        held=x; value=zzz
+        guard_fresh 'line one' \$((SECONDS + 3)); guard_fresh 'line two' \$((SECONDS + 60))
+        echo \"limit=\$LAYA_GUARD_LIMIT\""
+    [ "$output" = 'limit=15' ] || { echo "$output"; false; }
+    # 3 s left: the limit is 3 (or 2 at a SECONDS tick). 60 s left: 15.
+    [[ "$(cat "$log")" =~ ^'output --render --pieces 32768 --runs 0 --limit '[23]$'\n''output --render --pieces 32768 --runs 0 --limit 15'$ ]] || { cat "$log"; false; }
+}
+
+@test "a pane probe of wait --pattern gets at most the time that is left, and none starts after the deadline" {
+    local log="$BATS_TEST_TMPDIR/calls"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        laya_pid_check() { :; }; sleep() { SECONDS=\$((SECONDS + 1)); }
+        capture_to_cursor() { CAPTURE='waiting'; }
+        tmux_state() { return 1; }
+        laya_call() { echo \"\$*\" >> '$log'; echo '{\"state\": \"other\"}'; }
+        wait_command --pattern NEVER --timeout 3"
+    [ "$status" -eq 1 ] || { echo "$status $output"; false; }
+    # One request: the probes after it keep its answer. The first probe has
+    # 3 s (or 2 s at a SECONDS tick) left.
+    [[ "$(cat "$log")" =~ ^'pane --limit '[23]$ ]] || { cat "$log"; false; }
+    # No probe starts at the deadline.
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }
+        laya_confirm_pending() { SECONDS=\$((SECONDS + 5)); return 1; }
+        probe_pane() { echo probe; }
+        wait_command --pattern NEVER --timeout 3"
+    [ "$status" -eq 1 ] && [ -z "$output" ] || { echo "$status $output"; false; }
 }
 
 @test "the laya-serve check of the pid runs one time in a verb, also for calls in a subshell" {

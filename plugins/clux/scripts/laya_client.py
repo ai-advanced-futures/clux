@@ -29,7 +29,8 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   --runs: the first line of each run of lines
                                   that are next to each other; the PEM rule
                                   does not cross from one run to the next.
-  pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
+  pane [--limit S]                {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
+                                  --limit: a time limit shorter than the gate limit.
 
 Helpers that do not ask Laya: checkpoint, ready, port, version,
 pip-install SECONDS PACKAGE, scrub.
@@ -136,6 +137,14 @@ def finite(value):
     if not math.isfinite(number):
         raise Fail(2)
     return number
+
+
+def time_limit(value):
+    """VALUE of a --limit option: a finite number of seconds above 0."""
+    limit = finite(value)
+    if limit <= 0:
+        raise Fail(2)
+    return limit
 
 
 def threshold(pol, name, default):
@@ -465,9 +474,14 @@ PAIR_ABOVE = 200           # the end of the line above in a pair of the line che
 
 def cmd_pane(args):
     """The prompt type of the cursor line. Input: the cursor line and the 4
-    lines above it. [inferred] An empty screen is "other" with no request."""
+    lines above it. [inferred] An empty screen is "other" with no request.
+    --limit S: a shorter time limit than GATE_LIMIT (the time that is left
+    before the deadline of a wait)."""
+    limit = GATE_LIMIT
     if args:
-        raise Fail(2)
+        if len(args) != 2 or args[0] != "--limit":
+            raise Fail(2)
+        limit = min(GATE_LIMIT, time_limit(args[1]))
     text = read_stdin()
     if not text.strip():
         print(json.dumps({"state": "other"}))
@@ -481,7 +495,7 @@ def cmd_pane(args):
     shorter = [cursor] if above else []
     if len(cursor) > PANE_SHORT:
         shorter.append(cursor[-PANE_SHORT:])
-    answer = ask_whole_or_alone(remote(GATE_LIMIT), policy("pane"),
+    answer = ask_whole_or_alone(remote(limit), policy("pane"),
                                 "\n".join(above + [cursor]), *shorter)
     print(json.dumps({"state": answer.choice("state", PANE_STATES)}))
 
@@ -943,9 +957,7 @@ def cmd_output(args):
         elif arg == "--runs" and rest:
             runs = parse_runs(rest.pop(0))
         elif arg == "--limit" and rest:
-            limit = finite(rest.pop(0))
-            if limit <= 0:
-                raise Fail(2)
+            limit = time_limit(rest.pop(0))
         else:
             raise Fail(2)
     text, held = guard(read_stdin(), limit, size, runs)

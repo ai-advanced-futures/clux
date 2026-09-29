@@ -1043,7 +1043,8 @@ pane_state() {
     PANE_LAST="$key"
     PANE_STATE=
     laya_pid_check || return 6
-    out=$(printf '%s\n' "$window" | laya_call pane)
+    # PANE_LIMIT: the seconds that are left before the deadline of a wait.
+    out=$(printf '%s\n' "$window" | laya_call pane ${PANE_LIMIT:+--limit "$PANE_LIMIT"})
     case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
     [[ "$out" =~ $PANE_RE ]] || return 6
     PANE_STATE="${BASH_REMATCH[1]}"
@@ -2518,14 +2519,16 @@ add_seen_lines() {
 # that the time limit left not examined: they are not held, and the next
 # tick sends them again. Returns 6 when the guard fails, and 1 at the
 # DEADLINE: a guard can take 15 s, so none starts after the time limit of
-# the wait (spec section 11).
+# the wait, and a guard gets at most the time that is left (spec section 11).
 FRESH_FOUND=0
 FRESH_LATE=
 guard_fresh() {
-    local lines
+    local lines left=$(($2 - SECONDS))
     FRESH_FOUND=0
     FRESH_LATE=
-    [ "$SECONDS" -lt "$2" ] || return 1
+    [ "$left" -gt 0 ] || return 1
+    # The local value applies to laya_guard_call in this call only.
+    [ "$left" -ge "$LAYA_GUARD_LIMIT" ] || local LAYA_GUARD_LIMIT="$left"
     laya_guard <(printf '%s\n' "$1") 1 "${3:-0}" || return 6
     lines=$(held_lines "$1" "$GUARD_TEXT")
     if [ "$GUARD_LATE" -gt 0 ]; then
@@ -2616,7 +2619,10 @@ wait_command() {
                 laya_confirm_pending "$seq" && { refuse_confirm; return; }
                 # A secret run that another verb started during the wait.
                 last_run_secret "$seq" && { refuse_secret; return; }
-                probe_pane
+                # A probe can take 11 s: it gets at most the time that is
+                # left, and none starts after the time limit.
+                [ "$SECONDS" -lt "$deadline" ] || return 1
+                PANE_LIMIT=$((deadline - SECONDS)) probe_pane
                 case $? in
                     3) refuse_credential; return ;;
                     6) refuse_laya; return ;;

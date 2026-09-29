@@ -250,6 +250,27 @@ assert c.retry_after({}) == c.RETRY_DELAY' "$(dirname "$LAYA_CLIENT")"
     [ "$output" = $'held=1 not_examined=1\n[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
 }
 
+@test "pane --limit ends the probe at the time that is left, and refuses a bad limit" {
+    start_fake_laya '{"delay": 4}'
+    SECONDS=0
+    run --separate-stderr client pane --limit 1 <<<"Password:"
+    [ "$status" -eq 1 ] || { echo "$status $output $stderr"; false; }
+    [ "$SECONDS" -le 2 ]
+    for bad in 0 -1 nan inf x; do
+        run client pane --limit "$bad" <<<"Password:"
+        [ "$status" -eq 2 ] || { echo "$bad: $status"; false; }
+    done
+    run client pane --limit <<<"Password:"
+    [ "$status" -eq 2 ]
+    run client pane --limit 3 extra <<<"Password:"
+    [ "$status" -eq 2 ]
+    # A limit above the gate limit is the gate limit.
+    set_fake_laya '{}'
+    run client pane --limit 60 <<<"Password:"
+    [ "$status" -eq 0 ]
+    stop_fake_laya
+}
+
 @test "a time-out, bad JSON or no server: exit 1, a wrong key: exit 4, and no input text" {
     local marker=UNIQUE-MARKER-c41d
     start_fake_laya '{"delay": 8}'
