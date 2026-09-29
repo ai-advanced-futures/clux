@@ -643,9 +643,11 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- "sleep 2 && touch '$BATS_TEST_TMPDIR/never'" >/dev/null
     stop_fake_laya
-    run "$TERMINAL" send --key C-c
-    [ "$status" -eq 0 ]
+    # Escape first: after C-c the clux prompt can come back, and Escape is
+    # not permitted there.
     run "$TERMINAL" send --key Escape
+    [ "$status" -eq 0 ] || { echo "$status $output"; false; }
+    run "$TERMINAL" send --key C-c
     [ "$status" -eq 0 ]
     # Text still needs Laya. (At the clux prompt a key on a blank line needs
     # no request: there is no pane request there, and a blank line runs nothing.)
@@ -1280,4 +1282,21 @@ pane_shows() {
     run "$TERMINAL" send --enter -- 'print(len(x))'
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     "$TERMINAL" send --key C-d >/dev/null
+}
+
+@test "in a nested bash, send types text but only the user ends the line" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "env PS1='nested\$ ' bash --norc --noprofile" >/dev/null
+    pane_shows 'nested$'
+    run --separate-stderr "$TERMINAL" send --enter -- "touch '$BATS_TEST_TMPDIR/ran'"
+    [ "$status" -eq 2 ] || { echo "$status $stderr"; false; }
+    [ "$stderr" = 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' ]
+    run "$TERMINAL" send -- "touch '$BATS_TEST_TMPDIR/ran'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 2 ]
+    "$TERMINAL" send --key C-c >/dev/null
+    "$TERMINAL" send --key C-d >/dev/null
+    sleep .5
+    [ ! -e "$BATS_TEST_TMPDIR/ran" ]
 }

@@ -817,9 +817,11 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
         [[ "$stderr" == 'at the clux prompt, only Enter and keys that edit the line work: '* ]] || false
     done
-    run --separate-stderr bash -c "$stubs; send_command --key Escape"
-    [ "$status" -eq 2 ]
-    [ "$stderr" = 'at the clux prompt, Escape is not permitted: use send --key C-c' ]
+    for k in Escape ESCAPE escape eScApE; do
+        run --separate-stderr bash -c "$stubs; send_command --key $k"
+        [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
+        [ "$stderr" = 'at the clux prompt, Escape is not permitted: use send --key C-c' ]
+    done
     [ ! -e "$log" ]
     run bash -c "$stubs; send_command --key C-a; send_command --key Enter"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
@@ -1164,6 +1166,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local stubs="source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; CONT_MARK='clux-ab12cd34> '
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='sh\$ '; PANE_STATE=shell_prompt; }; run_not_started() { :; }
+        pane_nested_shell() { return 1; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }; wait_for_echo() { :; }
         send_key() { :; }; send_literal() { :; }"
     run bash -c "$stubs; send_command -- 'echo'; send_command -- ' a'"
@@ -1248,7 +1251,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local mark="$BATS_TEST_TMPDIR/ran"
     run bash -c "source '$TERMINAL'; LAYA_PY=/bin/sh; LAYA_CLIENT=-c
         S_LAYA_PID=999999; laya_call 'touch $mark'; echo rc=\$?
-        S_LAYA_PID=\$\$; laya_call 'touch $mark'; echo rc=\$?"
+        laya_pid_is_server() { :; }; S_LAYA_PID=\$\$; laya_call 'touch $mark'; echo rc=\$?"
     [ "$output" = $'rc=1\nrc=0' ]
     [ -e "$mark" ]
 }
@@ -1311,4 +1314,111 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$status" -eq 5 ]
     [ "$stderr" = 'another verb reads the output of run 5 now: try again' ]
     [ -e "$d/5.out" ] && [ -e "$d/5.held" ]
+}
+
+@test "PROMPT_COMMAND and PS0 to PS4 are read-only in the pane shell" {
+    local d="$BATS_TEST_TMPDIR/ps" name
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    for name in PROMPT_COMMAND PS0 PS1 PS2 PS3 PS4; do
+        run bash -c "source '$d/rc.bash'; : \${$name:=x} 2>/dev/null; $name=y; echo changed"
+        [[ "$output" == *"$name: readonly variable"* ]] && [[ "$output" != *changed* ]] || { echo "$name: $output"; false; }
+    done
+    run bash -c "source '$d/rc.bash'; printf '%s|%s|%s\n' \"\$PROMPT_COMMAND\" \"\$PS0\" \"\$PS1\""
+    [ "$output" = '||clux-ab12cd34$ ' ]
+}
+
+@test "a key with no typed text makes the shell rule read all of the line (Up shows a line from the history)" {
+    local d="$BATS_TEST_TMPDIR/up"
+    mkdir -p "$d"
+    run bash -c "source '$TERMINAL'; D='$d'
+        CURSOR_LINE='sh\$ '; typed_edit
+        CURSOR_LINE='sh\$ source ~/.env'; typed_split ''; echo \"[\$LINE_HEAD|\$LINE_TYPED]\""
+    [ "$output" = '[|sh$ source ~/.env]' ]
+}
+
+@test "at a shell in front, a pager or menu state from Laya does not skip the gate, and typed text is kept" {
+    local log="$BATS_TEST_TMPDIR/menu.log" d="$BATS_TEST_TMPDIR/menu"
+    mkdir -p "$d"
+    local stubs="source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        check_pane() { CURSOR_LINE='➜ proj '; PANE_STATE=menu; }
+        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
+        send_gate() { echo \"gate \$1\" >> '$log'; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
+        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
+    run bash -c "$stubs; send_command --key Up; send_command -- ev"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tr '\n' '|' < "$log")" = 'gate |key Up|gate ev|text ev|' ]
+    [ "$(sed -n 3p "$d/typed")" = ev ]
+}
+
+@test "laya_call sends nothing when the pid of the server is alive but not laya-serve" {
+    local log="$BATS_TEST_TMPDIR/called"
+    run bash -c "source '$TERMINAL'; LAYA_PY=/bin/echo; LAYA_CLIENT='$log'
+        S_LAYA_PID=\$\$; laya_call health"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+@test "wait --pattern keeps only the lines of the last guarded capture as seen" {
+    local log="$BATS_TEST_TMPDIR/guard.log" n="$BATS_TEST_TMPDIR/n"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() {
+            [ \"\$1\" != display-message ] || return 1
+            echo x >> '$n'; local t=\$(wc -l < '$n'); t=\$((t))
+            case \$t in 1) printf 'a\nb\n' ;; 2) printf 'c\nd\n' ;; 3) printf 'a\nb\n' ;; *) printf 'a\nb\nDONE\n' ;; esac
+        }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); printf '%s,' \$GUARD_TEXT >> '$log'; echo >> '$log'; }
+        wait_command --pattern DONE --timeout 5"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # a and b are guarded again after c and d took the screen.
+    [ "$(tr '\n' ' ' < "$log")" = 'a,b, c,d, a,b, b,DONE, ' ]
+}
+
+@test "at a nested shell prompt only the user ends a line: send refuses Enter and keys that are not edit keys" {
+    local log="$BATS_TEST_TMPDIR/nest.log" d="$BATS_TEST_TMPDIR/nest" k
+    mkdir -p "$d"
+    local stubs="source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        check_pane() { CURSOR_LINE='user@remote\$ '; PANE_STATE=shell_prompt; }
+        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
+        send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
+        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
+    for k in "--enter -- ls" "--key Enter" "--key C-m" "--key C-j" "--key C-x" "--key M-x" "--key F5"; do
+        run --separate-stderr bash -c "$stubs; send_command $k"
+        [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
+        [ "$stderr" = 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' ]
+    done
+    [ ! -e "$log" ]
+    run bash -c "$stubs; send_command -- 'ls -la'; send_command --key C-a; send_command --key BSpace"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tr '\n' '|' < "$log")" = 'text ls -la|key C-a|key BSpace|' ]
+    # A known program in front (python3) still takes Enter.
+    rm -f "$log" "$d/typed"
+    run bash -c "$stubs; pane_runs_program() { return 0; }; pane_nested_shell() { return 1; }; send_command --enter -- 'print(1)'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tr '\n' '|' < "$log")" = 'text print(1)|key Enter|' ]
+}
+
+@test "nested_shell finds a shell or a remote shell in front, not a fork of the pane shell, a script or a program" {
+    local rows expect
+    check() {
+        run bash -c "source '$TERMINAL'; ps() { printf '100 1 Ss bash --rcfile /d/rc.bash -i\n$1'; }; nested_shell 100"
+        [ "$status" -eq "$2" ] || { echo "$1 -> $status"; false; }
+    }
+    check '200 100 S+ bash --rcfile /d/rc.bash -i\n' 1
+    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ python3 -q\n' 1
+    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ /bin/bash ./install.sh\n' 1
+    check '300 100 S+ terraform apply\n' 1
+    check '300 100 S bash\n' 1
+    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ bash\n' 0
+    check '300 100 S+ -zsh\n' 0
+    check '300 100 S+ bash -i --rcfile /tmp/x\n' 0
+    check '300 100 S+ ssh host\n' 0
+    check '300 100 S+ /usr/local/bin/docker exec -it c sh\n' 0
+    check '300 100 S+ python3\n400 300 Ss+ /bin/bash\n' 0
+    run bash -c "source '$TERMINAL'; ps() { :; }; nested_shell 100"
+    [ "$status" -eq 0 ]
 }

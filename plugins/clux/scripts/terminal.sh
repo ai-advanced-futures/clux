@@ -188,10 +188,19 @@ refuse_laya_run() {
 # Run the client with the server of this companion. The URL and the key come
 # from state, not from the environment, so all verbs of one companion use one
 # server. The client stderr has only fixed messages; each verb prints its own.
+LAYA_PID_CHECKED=
 laya_call() {
     # [inferred] When the server that open started ended, another process
-    # can take its port: that process must not get the key or the text.
-    [ -z "$S_LAYA_PID" ] || kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
+    # can take its port: that process must not get the key or the text. A
+    # new process can also get the pid, so the first call of a verb checks
+    # that the pid is laya-serve (one ps), and each call that it is alive.
+    if [ -n "$S_LAYA_PID" ]; then
+        kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
+        if [ "$LAYA_PID_CHECKED" != "$S_LAYA_PID" ]; then
+            laya_pid_is_server "$S_LAYA_PID" || return 1
+            LAYA_PID_CHECKED="$S_LAYA_PID"
+        fi
+    fi
     CLUX_LAYA_URL="$S_LAYA_URL" CLUX_LAYA_KEY="$S_LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" "$@" 2>/dev/null
 }
 
@@ -586,6 +595,13 @@ write_rc_file() {
 unset HISTFILE
 set +o history
 PROMPT_COMMAND=
+PS0=
+PS3=
+PS4='+ '
+# Read-only: the shell expands these before each prompt or line with no
+# gate. Each line of Claude runs in a subshell, but a key such as M-C-e can
+# expand text in this shell.
+readonly PROMPT_COMMAND PS0 PS1 PS2 PS3 PS4
 # No aliases. Each run command runs in a subshell (__clux_run), so it
 # cannot change the functions, the aliases, the traps or the options of
 # this shell; only the directory and the exported variables come back.
@@ -1168,7 +1184,10 @@ typed_split() {
     [ ! -f "$D/typed" ] || { IFS= read -r before; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
     LINE_HEAD="$CURSOR_LINE"
     LINE_TYPED="$1"
-    [ -n "$t" ] || return 0
+    if [ -z "$t" ]; then
+        [ "$strict" != 1 ] || { LINE_HEAD=; LINE_TYPED="$CURSOR_LINE$1"; }
+        return 0
+    fi
     tt="${t%"${t##*[![:space:]]}"}"
     if [ "$strict" != 1 ] && [ -n "$tt" ] && [[ "$line" == *"$tt" ]]; then
         LINE_HEAD="${line:0:$((${#line} - ${#tt}))}"
@@ -1189,11 +1208,11 @@ typed_add() {
 }
 
 # typed_edit — send sent a key that can edit the line: the typed text can
-# be anywhere in the line now.
+# be anywhere in the line now. With no typed text (Up at an empty prompt
+# shows a line from the history), all of the line is typed text.
 typed_edit() {
     local b="" strict t=""
-    [ -f "$D/typed" ] || return 0
-    { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
+    [ ! -f "$D/typed" ] || { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
     printf '%s\n1\n%s\n' "$b" "$t" > "$D/typed"
 }
 
@@ -1245,6 +1264,49 @@ pane_runs_program() {
     local pid
     pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 1
     front_program "$pid"
+}
+
+# pane_nested_shell — a nested shell is in the front of the pane: only the
+# user ends a line there (spec section 7). Also true when tmux or ps cannot
+# tell: the rule then only refuses more.
+pane_nested_shell() {
+    local pid
+    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    nested_shell "$pid"
+}
+
+# nested_shell PID — below PID (the pane shell), a process in a front group
+# is a shell that is not a fork of the pane shell (the __clux_sub subshell
+# has the same arguments) and runs no script file (bash ./x.sh), or a tool
+# that gives a shell (ssh, docker exec, kubectl exec, su, tmux). A shell on
+# a pty of its own (pty.spawn, :terminal) is in the front group of that pty.
+# A script that reads a line (read -p) is not a nested shell.
+nested_shell() {
+    ps -A -o pid= -o ppid= -o stat= -o args= 2>/dev/null | awk -v root="$1" '
+        function base(w) { sub(/.*\//, "", w); sub(/^-/, "", w); return tolower(w) }
+        function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|oksh|yash|fish|tcsh|csh|ash|busybox|nu|xonsh|elvish|pwsh)$/ }
+        function remote(n) {
+            return n ~ /^(ssh|mosh.*|telnet|rsh|rlogin|docker|podman|nerdctl|kubectl|oc|lxc|incus|su|nsenter|chroot|script|screen|tmux|session-manager-plugin|vagrant|multipass|distrobox|toolbox|machinectl)$/
+        }
+        { a = $4; for (i = 5; i <= NF; i++) a = a " " $i
+          up[$1] = $2; args[$1] = a; front[$1] = ($3 ~ /\+/)
+          first[$1] = $4; second[$1] = (NF >= 5 ? $5 : "") }
+        END {
+            if (!(root in up)) exit 0
+            for (p in up) {
+                if (p == root || !front[p]) continue
+                q = up[p]; n = 0
+                while (q in up && q != root && n < 64) { q = up[q]; n++ }
+                if (q != root) continue
+                name = base(first[p])
+                if (remote(name)) exit 0
+                if (!shell(name) || args[p] == args[root]) continue
+                if (second[p] != "" && second[p] !~ /^-/) continue
+                exit 0
+            }
+            exit 1
+        }'
 }
 
 # front_program PID — a known program that is not a shell runs in the front
@@ -1881,13 +1943,12 @@ send_command() {
         # Escape and then a key is a Meta key: at the clux prompt, M-C-e
         # (shell-expand-line) runs $(...) of the line in the pane shell. The
         # check needs tmux only, not Laya.
-        case "$key" in
-            [Ee]scape)
-                if ! capture_cursor_line || prompt_input; then
-                    fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2
-                fi
-                ;;
-        esac
+        # tmux reads a key name with no case (ESCAPE is Escape).
+        if key_is "$key" Escape; then
+            if ! capture_cursor_line || prompt_input; then
+                fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2
+            fi
+        fi
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
         case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" "$D/typed"; run_not_started ;; esac
@@ -1920,6 +1981,18 @@ send_command() {
             else
                 edit_key "$key" || fail "at the clux prompt, only Enter and keys that edit the line work: $key: use send --enter or run" 2
             fi
+        fi
+    fi
+    # A nested shell in front (bash, zsh, ssh, docker exec). A line that ends there runs in that
+    # shell, and no list of words can find each line that changes the shell
+    # for later lines. So clux does not end a line there: only the user
+    # does (spec section 7). Text with no Enter, the edit keys and the
+    # interrupt keys work. A pager or a menu is a program in front, not a
+    # shell: Laya can call a shell prompt a menu.
+    if ! prompt_input && pane_nested_shell; then
+        [ "$PANE_STATE" != pager ] && [ "$PANE_STATE" != menu ] || PANE_STATE=other
+        if [ "$enter" -eq 1 ] || { [ -n "$key" ] && ! edit_key "$key"; }; then
+            fail 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' 2
         fi
     fi
     if [ -n "$key" ] && [ "$enter" -eq 0 ]; then
@@ -1962,9 +2035,9 @@ send_command() {
         rm -f "$D/typed"
         return
     fi
-    # The text that clux typed in this line, for the gate (typed_split). A
-    # pager or a menu takes it as keys.
-    case "$PANE_STATE" in pager|menu) ;; *) typed_add "$before" "$text" ;; esac
+    # The text that clux typed in this line, for the gate (typed_split), in
+    # each state: the state can be wrong.
+    typed_add "$before" "$text"
     # Text that the pane does not show (after stty -echo) cannot be examined
     # by the next gate, so each later send and run refuses until C-c. Only a
     # shell line must show the text: a pager or a menu takes a key and can
@@ -2039,12 +2112,12 @@ add_seen_lines() {
 wait_command() {
     local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh
     local hist="" hist_now back
-    # The lines that a guard examined. The first line is a mark that no
-    # screen line is, so the set is never empty.
+    # The lines of the last capture that a guard examined. The first line is
+    # a mark that no screen line is, so the set is never empty.
     local seen=$'\001clux-seen'
     # The lines that a guard of this wait held. A line that the pair rule
     # held (hunter2 under Password:) can pass in a later window with other
-    # context, so it stays held.
+    # context, so it stays held. Only held lines go in it.
     local held=$'\001clux-held'
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -2152,7 +2225,9 @@ wait_command() {
                         elif laya_guard <(printf '%s\n' "$fresh") 1; then
                             sum="$screen"
                             [ -z "$hist_now" ] || hist="$hist_now"
-                            seen=$(add_seen_lines "$seen" "$screen")
+                            # Only the lines of the last guarded capture:
+                            # the set does not grow over a long wait.
+                            seen=$'\001clux-seen'$'\n'"$screen"
                             held=$(add_seen_lines "$held" "$(held_lines "$fresh" "$GUARD_TEXT")")
                             guard_fails=0
                             # The marker lines of held text are not pane
