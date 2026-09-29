@@ -138,6 +138,15 @@ pane_shows() {
     [[ "$output" != *trap-ran* ]] || false
 }
 
+@test "run of the end of a key file shows no line of the key" {
+    printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ' \
+        'QyNTUxOQAAACBkeybodyline2xxxxxxxxxxxxxxxxx' '-----END OPENSSH PRIVATE KEY-----' > "$BATS_TEST_TMPDIR/k"
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- "tail -n 3 '$BATS_TEST_TMPDIR/k'"
+    [[ "$output" != *b3BlbnNz* ]] && [[ "$output" != *keybody* ]] || { echo "$output"; false; }
+    [[ "$output" == *'[held by laya: secret, 3 lines]'* ]] || { echo "$output"; false; }
+}
+
 # 5
 @test "the output file is deleted and the private files are private" {
     "$TERMINAL" open >/dev/null
@@ -1035,7 +1044,7 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     run --separate-stderr "$TERMINAL" run -- 'head -c 40000 /dev/zero; echo; echo nul-end'
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'output cut: the last 32768 bytes\n'* ]] || false
+    [[ "$output" == *$'output cut: the last 32768 bytes, from the first full line\n'* ]] || false
     [[ "$output" == *$'nul-end\nexit=0' ]] || false
     [ -z "$stderr" ]
 }
@@ -1059,7 +1068,7 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'head -c 300000 /dev/zero | tr "\0" a; echo; echo last-line'
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'output cut: the last 32768 bytes\n'* ]] || false
+    [[ "$output" == *$'output cut: the last 32768 bytes, from the first full line\n'* ]] || false
     [[ "$output" == *$'last-line\nexit=0' ]] || false
     [ "${#output}" -lt 34000 ]
 }

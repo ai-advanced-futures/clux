@@ -19,12 +19,11 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   prompt), then the text that clux typed. Laya
                                   gets them as one line. Typed text that can
                                   change that shell is dangerous.
-  output [--render] [--cut] [--limit S] [--pieces BYTES] [--runs 0,I,...]
+  output [--render] [--limit S] [--pieces BYTES] [--runs 0,I,...]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>" (with " not_examined=<m>"
                                   when the time limit left <m> lines not examined),
                                   then the text.
-                                  --cut: the text can start inside a key.
                                   --pieces: guard pieces of whole lines of at most
                                   BYTES each, with one time limit for all.
                                   --runs: the first line of each run of lines
@@ -787,14 +786,18 @@ def never_secret(line, patterns):
     return False
 
 
-def pem_ranges(lines, cut=False):
+def pem_ranges(lines):
     """Step 6: -----BEGIN to -----END is one held unit. [inferred] The BEGIN
     line of a private key with no END holds to the end of the text; another
     BEGIN with no END (a certificate) holds nothing, and Laya examines it.
-    When the text is cut (it can start inside a key), the END line of a
-    private key with no BEGIN holds from the first line. The rule holds each
-    range whatever Laya answers."""
-    ranges, begin, key, seen = [], None, None, False
+    The END line of a private key with no BEGIN holds from the line after
+    the END before it (or from the first line). This applies to all text,
+    not only to cut text: tail, grep -A or sed -n on a key file give the
+    end of a key with no BEGIN. Round 7 limited it to cut text so that a
+    lone -----END OF REPORT----- held no output; the END side must now name
+    PRIVATE KEY, so that case holds nothing. The rule holds each range
+    whatever Laya answers."""
+    ranges, begin, key, start = [], None, None, 0
     for index, line in enumerate(lines):
         if begin is None and PEM_BEGIN in line:
             begin = index
@@ -803,11 +806,9 @@ def pem_ranges(lines, cut=False):
         if PEM_END in line:
             if begin is not None:
                 ranges.append((begin, index, "secret"))
-            elif not seen and cut and PEM_KEY_END.search(line):
-                ranges.append((0, index, "secret"))
-            begin, key, seen = None, None, True
-        elif begin is not None:
-            seen = True
+            elif PEM_KEY_END.search(line):
+                ranges.append((start, index, "secret"))
+            begin, key, start = None, None, index + 1
     if key is not None:
         ranges.append((key, len(lines) - 1, "secret"))
     return ranges
@@ -852,7 +853,7 @@ def guard_lines(lines, pem, runner, pool, setup):
     return render(lines, ranges)
 
 
-def guard(text, limit, cut=False, size=0, runs=(0,)):
+def guard(text, limit, size=0, runs=(0,)):
     """The output guard (spec section 8). Give (guarded text, held).
 
     With SIZE, the text goes in pieces of whole lines, each at most SIZE
@@ -884,7 +885,7 @@ def guard(text, limit, cut=False, size=0, runs=(0,)):
     edges = [start for start in runs if start < len(lines)] + [len(lines)]
     for start, end in zip(edges, edges[1:]):
         pem += [(first + start, last + start, kind)
-                for first, last, kind in pem_ranges(lines[start:end], cut)]
+                for first, last, kind in pem_ranges(lines[start:end])]
     starts = [sum(len(part) for part in parts[:index]) for index in range(len(parts))]
     setup = (policy("output-block"), policy("output-line"),
              compile_lines("secret-values.txt"), compile_lines("not-secret.txt"))
@@ -914,13 +915,11 @@ def parse_runs(value):
 
 
 def cmd_output(args):
-    render_mode, cut, limit, size, runs, rest = False, False, DEFAULT_OUTPUT_LIMIT, 0, (0,), list(args)
+    render_mode, limit, size, runs, rest = False, DEFAULT_OUTPUT_LIMIT, 0, (0,), list(args)
     while rest:
         arg = rest.pop(0)
         if arg == "--render":
             render_mode = True
-        elif arg == "--cut":
-            cut = True
         elif arg == "--pieces" and rest and rest[0].isdigit() and int(rest[0]) > 0:
             size = int(rest.pop(0))
         elif arg == "--runs" and rest:
@@ -931,7 +930,7 @@ def cmd_output(args):
                 raise Fail(2)
         else:
             raise Fail(2)
-    text, held = guard(read_stdin(), limit, cut, size, runs)
+    text, held = guard(read_stdin(), limit, size, runs)
     if render_mode:
         # not_examined=N only when the time limit left lines not examined:
         # the caller can then try again, which it must not do for a secret.

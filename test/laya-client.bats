@@ -391,25 +391,22 @@ assert c.half_rule(block, [(0, 2, 'secret')]) == [(0, 3, 'secret')]
     [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
     [[ "$output" != *keybody* ]] || { echo "$output"; false; }
     [[ "$output" == *'after the key'* ]] || { echo "$output"; false; }
-    # An END with no BEGIN at the top of the full text holds nothing when
-    # the text is not cut (the neighbor state, no --cut).
+    # An END of a private key with no BEGIN holds the lines above it, in
+    # pieces too.
     run client output --render --pieces 400 < <(printf 'plain top\n-----END RSA PRIVATE KEY-----\n')
-    [[ "$output" == *'plain top'* ]] || { echo "$output"; false; }
-    # With --cut, it holds the lines above it.
-    run client output --render --pieces 400 --cut < <(printf 'plain top\n-----END RSA PRIVATE KEY-----\n')
     [[ "$output" != *'plain top'* ]] || { echo "$output"; false; }
 }
 
 @test "output --runs: the PEM rule does not cross the gap between two runs of lines" {
     start_fake_laya '{}'
     # A status line far above, then the END of a key whose BEGIN an
-    # earlier guard examined. With --cut the END holds the lines above
-    # it, but only in its own run.
-    run --separate-stderr client output --render --cut --runs 0,2 < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
+    # earlier guard examined. The END holds the lines above it, but only
+    # in its own run.
+    run --separate-stderr client output --render --runs 0,2 < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
     [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
     [ "$output" = $'held=2\nstatus 12:01\nbuild ok\n[held by laya: secret, 2 lines]' ] || { echo "$output"; false; }
     # One run (no --runs): the END holds all the lines above it.
-    run client output --render --cut < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
+    run client output --render < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
     [ "$output" = $'held=4\n[held by laya: secret, 4 lines]' ] || { echo "$output"; false; }
     # A key with its BEGIN and END in one run, in pieces, is held in full.
     run client output --render --pieces 40 --runs 0,1 < <(printf 'top\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\nafter\n')
@@ -587,16 +584,20 @@ PY
     [ "$output" = $'held=4\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 4 lines]\nend' ]
     run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\nstart\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n')
     [ "$output" = $'held=3\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 3 lines]' ]
-    # A cut output can start inside a key: the END line of a private key
-    # with no BEGIN holds from the first line.
-    run client output --render --cut < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
+    # The end of a key file (tail, grep -A, sed -n, a cut output): the END
+    # line of a private key with no BEGIN holds from the first line.
+    run client output --render < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
     [ "$output" = $'held=3\n[held by laya: secret, 3 lines]\ne1\ne2\ne3\ne4\ne5\ne6\ne7' ]
-    # Text that is not cut starts at its first line, so the rule does not
-    # apply. Other END lines (a certificate, a report) never apply.
-    run client output --render < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\n')
-    [ "$output" = $'held=1\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n[held by laya: secret]\ne1' ] || [ "$output" = $'held=0\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1' ]
-    run client output --render --cut < <(printf 'r1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1\n')
+    # After a full BEGIN ... END block, an END with no BEGIN holds from the
+    # line after the END above it, not from the first line.
+    run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\nc7\n-----BEGIN CERTIFICATE-----\nMIIBsz\n-----END CERTIFICATE-----\nkeyline1\nkeyline2\n-----END EC PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
+    [ "$output" = $'held=6\nc1\nc2\nc3\nc4\nc5\nc6\nc7\n[held by laya: secret, 3 lines]\n[held by laya: secret, 3 lines]\ne1\ne2\ne3\ne4\ne5\ne6\ne7' ] || { echo "$output"; false; }
+    # Other END lines (a certificate, a report) never apply.
+    run client output --render < <(printf 'r1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1\n')
     [ "$output" = $'held=0\nr1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1' ]
+    # --cut is gone: the rule is the same for all text.
+    run client output --render --cut < /dev/null
+    [ "$status" -eq 2 ]
     # A BEGIN with no END holds to the end only for a private key: a
     # certificate cut at its end holds nothing, and Laya examines it.
     run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\n-----BEGIN CERTIFICATE-----\nMIIBszCCAV2gAwIBAgIU\nerror: the last line\n')

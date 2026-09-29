@@ -1128,9 +1128,8 @@ GUARD_CUT=0
 # A marker line that the guard puts in place of held text.
 HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 
-# laya_guard FILE [CUT] [PIECES] [RUNS] — the output guard (spec section 8).
-# CUT=1: the text can start inside a key (a screen, or the last lines of an
-# output). PIECES=1: no cut to LAYA_GUARD_BYTES; the client guards all of
+# laya_guard FILE [PIECES] [RUNS] — the output guard (spec section 8).
+# PIECES=1: no cut to LAYA_GUARD_BYTES; the client guards all of
 # the text in pieces of whole lines of at most LAYA_GUARD_BYTES, with one
 # time limit (wait --pattern). RUNS (with PIECES): the first line of each
 # run of lines that are next to each other (0,4,9). Sets GUARD_TEXT (the
@@ -1139,16 +1138,20 @@ HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 # can show them) and GUARD_CUT (1 when
 # only the last LAYA_GUARD_BYTES went to the guard). Returns 6 when the
 # client fails or its time limit ends. [inferred] The command substitution
-# removes blank lines at the end of the text. A cut can split a UTF-8
-# character; the client decodes with "replace", so that is not an error.
+# removes blank lines at the end of the text. The byte cut starts inside a
+# line, maybe inside a token: the end of a secret with no prefix (ghp_,
+# AKIA, a key name) that the guard cannot know. So the text up to the
+# first newline goes, and no part of that line reaches the guard or Claude
+# ("output cut" tells Claude). When the byte before the cut is a newline,
+# the first line is whole and stays. A cut text with no newline is all one
+# cut line, so none of it goes.
 laya_guard() {
-    local out data size tmp cut="${2:-0}" args=(output --render)
-    if [ "${3:-0}" -eq 1 ]; then
+    local out data size tmp before args=(output --render)
+    if [ "${2:-0}" -eq 1 ]; then
         GUARD_CUT=0
         data=$(LC_ALL=C tr -d '\000' 2>/dev/null < "$1" && printf x) || return 6
         data="${data%x}"
-        args+=(--pieces "$LAYA_GUARD_BYTES" --runs "${4:-0}")
-        [ "$cut" -eq 0 ] || args+=(--cut)
+        args+=(--pieces "$LAYA_GUARD_BYTES" --runs "${3:-0}")
         laya_guard_call "$data" "${args[@]}"
         return
     fi
@@ -1164,10 +1167,13 @@ laya_guard() {
     [ "$((size + 0))" -le "$LAYA_GUARD_BYTES" ] || GUARD_CUT=1
     # The x keeps the newlines at the end.
     data=$(LC_ALL=C tail -c "$LAYA_GUARD_BYTES" "$tmp" | LC_ALL=C tr -d '\000' && printf x)
+    # The byte before the cut, in hex (a NUL byte stays visible).
+    before=$(LC_ALL=C head -c 1 "$tmp" | od -An -tx1 | tr -d ' \n')
     rm -f "$tmp"
     data="${data%x}"
-    [ "$GUARD_CUT" -eq 0 ] || cut=1
-    [ "$cut" -eq 0 ] || args+=(--cut)
+    if [ "$GUARD_CUT" -eq 1 ] && [ "$before" != 0a ]; then
+        case "$data" in *$'\n'*) data="${data#*$'\n'}" ;; *) data= ;; esac
+    fi
     laya_guard_call "$data" "${args[@]}"
 }
 
@@ -2036,7 +2042,7 @@ report_run() {
         lines=$((lines + 0))
         [ -z "$last" ] || lines=$((lines + 1))
         if [ "$lines" -gt "$max" ]; then
-            laya_guard <(tail -n "$max" "$D/$n.out") 1 || guard=6
+            laya_guard <(tail -n "$max" "$D/$n.out") || guard=6
         else
             laya_guard "$D/$n.out" || guard=6
         fi
@@ -2051,7 +2057,7 @@ report_run() {
             return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
-        [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
+        [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes, from the first full line\n' "$LAYA_GUARD_BYTES"
         [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
         [ "$GUARD_HELD" -eq 0 ] || printf 'laya: held %s lines\n' "$GUARD_HELD"
         [ "$GUARD_LATE" -eq 0 ] \
@@ -2368,8 +2374,8 @@ read_command() {
     last_run_secret && { refuse_secret; return; }
     check_pane || return
     screen=$(tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines") || return 1
-    laya_guard <(printf '%s\n' "$screen") 1 || { refuse_laya; return; }
-    [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
+    laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
+    [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes, from the first full line\n' "$LAYA_GUARD_BYTES"
     [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
 }
 
@@ -2455,7 +2461,7 @@ guard_fresh() {
     FRESH_FOUND=0
     FRESH_LATE=
     [ "$SECONDS" -lt "$2" ] || return 1
-    laya_guard <(printf '%s\n' "$1") 1 1 "${3:-0}" || return 6
+    laya_guard <(printf '%s\n' "$1") 1 "${3:-0}" || return 6
     lines=$(held_lines "$1" "$GUARD_TEXT")
     if [ "$GUARD_LATE" -gt 0 ]; then
         FRESH_LATE=$(held_lines "$1" "$GUARD_TEXT" not_examined)

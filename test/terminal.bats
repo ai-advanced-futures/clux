@@ -655,18 +655,35 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ ! -e "$d/3.out" ]
 }
 
-@test "laya_guard sends --cut only for cut text" {
+@test "laya_guard sends no --cut, and after a byte cut the cut first line does not reach the guard" {
     local d="$BATS_TEST_TMPDIR/cut"
     mkdir -p "$d"
     printf 'a\n' > "$d/in"
     run bash -c "source '$TERMINAL'; D='$d'
         laya_call() { echo \"args: \$*\" >&2; printf 'held=0\\na'; }
-        laya_guard '$d/in'; laya_guard '$d/in' 1; LAYA_GUARD_BYTES=1; laya_guard '$d/in'"
+        laya_guard '$d/in'; LAYA_GUARD_BYTES=1; laya_guard '$d/in'"
     [ "${lines[0]}" = 'args: output --render --limit 15' ]
-    [ "${lines[1]}" = 'args: output --render --cut --limit 15' ]
-    [ "${lines[2]}" = 'args: output --render --cut --limit 15' ]
-    # report_run over --max-lines, read and wait --pattern pass 1.
-    [ "$(grep -cE 'laya_guard <\(.*\) 1( 1( "[^"]*")?)?( \|\||;)' "$TERMINAL")" -eq 3 ]
+    [ "${lines[1]}" = 'args: output --render --limit 15' ]
+    # guard FILE BYTES — the text that reaches the client, with | for a newline.
+    guard() {
+        bash -c "source '$TERMINAL'; D='$d'; LAYA_GUARD_BYTES=$2
+            laya_call() { cat > '$d/sent'; printf 'held=0\\n'; }
+            laya_guard '$1'; cat '$d/sent'; printf '%s' \"\$GUARD_CUT\"" | tr '\n' '|'
+    }
+    # The cut is inside the token of the first line: that line goes.
+    printf 'token=ghp_0123456789abcdefXYZ\nline2\n' > "$d/tok"
+    [ "$(guard "$d/tok" 12)" = 'line2|1' ] || { guard "$d/tok" 12; false; }
+    # The byte before the cut is a newline: the first line is whole and stays.
+    printf 'abcdefgh\nline2\n' > "$d/nl"
+    [ "$(guard "$d/nl" 6)" = 'line2|1' ]
+    printf 'abcdefghi\nline2\nline3\n' > "$d/nl2"
+    [ "$(guard "$d/nl2" 12)" = 'line2|line3|1' ]
+    # One cut line with no newline: none of it goes.
+    printf 'token=value-of-one-line-with-no-newline' > "$d/one"
+    [ "$(guard "$d/one" 10)" = '1' ]
+    # No cut: the text goes in full.
+    [ "$(guard "$d/tok" 1000)" = 'token=ghp_0123456789abcdefXYZ|line2|0' ]
+    [ "$(grep -cE 'laya_guard <\(.*\)( 1 "[^"]*")?( \|\||;)' "$TERMINAL")" -eq 3 ]
 }
 
 @test "rc.bash runs its external programs from the system PATH, not from a PATH that a run gave back" {
@@ -972,7 +989,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
         held=x; value=zzz; guard_fresh \$'line one\\nline two\\nline three' \$((SECONDS + 60)); echo \"rc=\$? found=\$FRESH_FOUND\""
     [ "$output" = 'rc=0 found=0' ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = 'output --render --pieces 10 --runs 0 --cut --limit 15' ] || { cat "$log"; false; }
+    [ "$(cat "$log")" = 'output --render --pieces 10 --runs 0 --limit 15' ] || { cat "$log"; false; }
 }
 
 @test "a run whose output the time limit left not examined keeps the output and the lock" {
@@ -1962,7 +1979,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
         wait_command --pattern '^PASS\$' --timeout 3"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = 'output --render --pieces 40 --runs 0 --cut --limit 15' ] || { cat "$log"; false; }
+    [ "$(cat "$log")" = 'output --render --pieces 40 --runs 0 --limit 15' ] || { cat "$log"; false; }
 }
 
 @test "wait --pattern gives the client the runs of new lines, so an END line does not hold a line far above it" {
@@ -1981,7 +1998,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         wait_command --pattern 'READY' --timeout 3"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     # The new lines: status (row 0), and C with the END line (rows 3 and 4).
-    [ "$(sed -n 2p "$log")" = 'output --render --pieces 32768 --runs 0,1 --cut --limit 15' ] || { cat "$log"; false; }
+    [ "$(sed -n 2p "$log")" = 'output --render --pieces 32768 --runs 0,1 --limit 15' ] || { cat "$log"; false; }
 }
 
 @test "wait --pattern starts no guard of a piece after its time limit" {
