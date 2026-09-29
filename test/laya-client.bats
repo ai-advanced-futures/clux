@@ -225,7 +225,7 @@ assert c.retry_after({}) == c.RETRY_DELAY' "$(dirname "$LAYA_CLIENT")"
     [ -z "$output" ]
 }
 
-@test "a time-out, bad JSON, a wrong key or no server: exit 1 and no input text" {
+@test "a time-out, bad JSON or no server: exit 1, a wrong key: exit 4, and no input text" {
     local marker=UNIQUE-MARKER-c41d
     start_fake_laya '{"delay": 8}'
     SECONDS=0
@@ -240,7 +240,8 @@ assert c.retry_after({}) == c.RETRY_DELAY' "$(dirname "$LAYA_CLIENT")"
     [ -z "$output" ]
     [[ "$stderr" != *"$marker"* ]] || false
     run --separate-stderr env CLUX_LAYA_KEY=wrong "$CLUX_LAYA_PYTHON" "$LAYA_CLIENT" command <<<"rm $marker"
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 4 ]
+    [ "$stderr" = 'laya: the server refused the API key' ]
     stop_fake_laya
     run --separate-stderr client command <<<"rm $marker"
     [ "$status" -eq 1 ]
@@ -319,6 +320,29 @@ PY
     # answer too, so all lines of that block are held.
     [[ "$output" == *$'\n[held by laya: not_examined, '*' lines]'* ]] || { echo "$output"; false; }
     [[ "$output" != *'flag-me here'* ]] || false
+}
+
+@test "output: one request that reaches the request limit holds only its block" {
+    start_fake_laya '{"rules": [{"contains": "slow-block", "delay": 6}]}'
+    local text
+    text=$(for i in $(seq 1 40); do echo "plain line $i of the output"; done; echo 'slow-block here')
+    run --separate-stderr client output --render --limit 15 < <(printf '%s\n' "$text")
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [[ "$output" == *'plain line 1 of the output'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'[held by laya: not_examined, '*' lines]'* ]] || { echo "$output"; false; }
+    [[ "$output" != *'slow-block here'* ]] || false
+}
+
+@test "output: sk- is a secret value only with no letter or digit before it" {
+    start_fake_laya '{}'
+    run client output --render < <(printf '%s\n' 'flask-app-deployment-7f9c8d6b5-x2x9z 1/1 Running' 'task-runner-deployment-abc123def456' 'key=sk-abcdefghijklmnopqrstuvwxyz' 'sk-proj-ABCDEFGHIJKLMNOPQRSTUV')
+    [ "$status" -eq 0 ]
+    [ "$output" = $'held=2\nflask-app-deployment-7f9c8d6b5-x2x9z 1/1 Running\ntask-runner-deployment-abc123def456\n[held by laya: secret]\n[held by laya: secret]' ] || { echo "$output"; false; }
+}
+
+@test "command and pane share one function that asks again with the line alone" {
+    [ "$(grep -c 'raise Fail(3)' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py")" -eq 1 ]
+    grep -q '^def ask_whole_or_alone' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py"
 }
 
 @test "output: a failed request exits 1 with no text, and bad arguments exit 2" {

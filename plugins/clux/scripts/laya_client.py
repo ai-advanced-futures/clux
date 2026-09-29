@@ -26,7 +26,8 @@ Helpers that do not ask Laya: checkpoint, port, version,
 pip-install SECONDS PACKAGE, scrub.
 
 Exit codes: 0 a decision; 1 Laya is not available or gave a bad answer;
-2 bad input; 3 the text is too long: Laya would examine only its start. On a failure, stdout is empty and stderr has one fixed message.
+2 bad input; 3 the text is too long: Laya would examine only its start; 4 the
+server refused the API key (401 or 403). On a failure, stdout is empty and stderr has one fixed message.
 The client never writes terminal text to stderr or to a log.
 """
 import http.client
@@ -47,17 +48,21 @@ LOOPBACK = ("127.0.0.1", "localhost", "::1")
 REQUEST_LIMIT = 5.0
 RETRY_DELAY = 1.0   # the Retry-After of the server, and the most that the client waits
 GATE_LIMIT = 2 * REQUEST_LIMIT + RETRY_DELAY   # one request, the pause and the retry after a 503
-MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long to examine"}
+MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long to examine",
+            4: "laya: the server refused the API key"}
 
 
 class Fail(Exception):
     """End the client with this exit code. With message (the default),
-    stderr gets the fixed message of the code; the helpers end with none."""
+    stderr gets the fixed message of the code; the helpers end with none.
+    late: one request reached REQUEST_LIMIT (the server is slow or has a
+    queue); the guard holds only that text as not examined."""
 
-    def __init__(self, code, message=True):
+    def __init__(self, code, message=True, late=False):
         Exception.__init__(self, code)
         self.code = code
         self.message = message
+        self.late = late
 
 
 class Busy(Exception):
@@ -83,9 +88,11 @@ def read_stdin():
 
 
 def policy(name):
-    """Read config/laya/<name>.json. There is no user copy: a command in the
-    companion can write the files of the user, and a copy with a threshold
-    of 2 would turn off the gate or the guard (spec section 6)."""
+    """Read config/laya/<name>.json. There is no user copy, so a user file
+    cannot turn off the gate or the guard with a threshold of 2. This is a
+    defense in depth only: a command that Laya passed can write any file of
+    the user, also these files, the venv and the state file. Spec section 7
+    ("The limit of the private directory") puts that out of scope."""
     path = os.path.join(CONFIG, name + ".json")
     try:
         with open(path, encoding="utf-8") as handle:
@@ -161,7 +168,13 @@ class Remote:
         except urllib.error.HTTPError as error:
             if error.code == 503:
                 raise Busy(retry_after(error.headers))
+            if error.code in (401, 403):
+                raise Fail(4)
             raise Fail(1)
+        except TimeoutError:
+            raise Fail(1, late=True)
+        except urllib.error.URLError as error:
+            raise Fail(1, late=isinstance(error.reason, TimeoutError))
         except (OSError, ValueError, http.client.HTTPException):
             raise Fail(1)
 
@@ -254,6 +267,18 @@ def cmd_health(args):
 LEVELS = ("safe", "caution", "dangerous")
 
 
+def ask_whole_or_alone(runner, pol, whole, alone):
+    """Ask with the whole state. When Laya cuts it and there is a shorter
+    state with only the line (alone), ask again with that. A state that
+    Laya still cuts is refused (exit 3): Laya would examine only its start."""
+    answer = ask(runner, pol, whole)
+    if alone is not None and is_cut(answer, pol):
+        answer = ask(runner, pol, alone)
+    if is_cut(answer, pol):
+        raise Fail(3)
+    return answer
+
+
 def level_of(answer, pol):
     """dangerous: a boolean above its threshold, or risk dangerous.
     caution: risk caution. Otherwise safe. The reason names the highest
@@ -316,14 +341,13 @@ def cmd_command(args):
             raise Fail(2)
     # Each command goes to Laya: no safe list (spec section 7). Laya cuts a
     # long state and examines only its start, so a cut state is refused.
-    pol, runner = policy("command"), remote(GATE_LIMIT)
-    answer = ask(runner, pol, state)
     # When Laya cuts the line and the screen, the line goes alone: a long
     # screen must not stop a short line. A blank line needs its screen.
-    if is_cut(answer, pol) and isinstance(state, dict) and state["screen"] and command.strip():
-        answer = ask(runner, pol, {"line": command, "screen": ""})
-    if is_cut(answer, pol):
-        raise Fail(3)
+    alone = None
+    if isinstance(state, dict) and state["screen"] and command.strip():
+        alone = {"line": command, "screen": ""}
+    pol = policy("command")
+    answer = ask_whole_or_alone(remote(GATE_LIMIT), pol, state, alone)
     level, reason = level_of(answer, pol)
     if "--shell" in args and SHELL_WORDS.search(command):
         level, reason = "dangerous", "can change the shell for later commands"
@@ -354,12 +378,8 @@ def cmd_pane(args):
     lines = text.split("\n")
     cursor = lines[-1][-PANE_CURSOR:]
     above = [line[-PANE_ABOVE:] for line in lines[:-1]]
-    pol, runner = policy("pane"), remote(GATE_LIMIT)
-    answer = ask(runner, pol, "\n".join(above + [cursor]))
-    if above and is_cut(answer, pol):
-        answer = ask(runner, pol, cursor)
-    if is_cut(answer, pol):
-        raise Fail(3)
+    answer = ask_whole_or_alone(remote(GATE_LIMIT), policy("pane"),
+                                "\n".join(above + [cursor]), cursor if above else None)
     print(json.dumps({"state": answer.choice("state", PANE_STATES)}))
 
 
@@ -458,12 +478,13 @@ TIME_MARGIN = 0.05         # a failure this near the end of the time limit is th
 
 def in_time(runner, request):
     """Run one request of the guard. Give None when the time limit of the
-    guard ended before Laya answered: the caller holds that text as not
+    guard ended, or this one request reached REQUEST_LIMIT (a queue on the
+    server), before Laya answered: the caller holds that text as not
     examined. Any other failure (Laya does not answer) stops the guard."""
     try:
         return request()
     except Fail as fail:
-        if fail.code == 1 and time.monotonic() >= runner.deadline - TIME_MARGIN:
+        if fail.code == 1 and (fail.late or time.monotonic() >= runner.deadline - TIME_MARGIN):
             return None
         raise
 
