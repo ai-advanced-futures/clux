@@ -1300,3 +1300,46 @@ pane_shows() {
     sleep .5
     [ ! -e "$BATS_TEST_TMPDIR/ran" ]
 }
+
+@test "a line that ends after Home on a wrapped line goes whole" {
+    local tail="$BATS_TEST_TMPDIR/tail-mark"
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send -- "echo $(printf 'x%.0s' $(seq 1 150)) > '$tail'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Home
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    [ "$(wc -c < "$tail" | tr -d ' ')" -eq 151 ]
+}
+
+@test "keys that come while a command runs do not run at the next clux prompt" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'sleep 2' >/dev/null
+    sleep .3
+    run "$TERMINAL" send -- "touch '$BATS_TEST_TMPDIR/typeahead'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    sleep .5
+    [ ! -e "$BATS_TEST_TMPDIR/typeahead" ]
+}
+
+@test "Claude can type in vim when the cursor is on a character" {
+    command -v vim >/dev/null || skip 'no vim'
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "vim -u NONE -N '$BATS_TEST_TMPDIR/v.txt'" >/dev/null
+    pane_shows '~'
+    run "$TERMINAL" send -- 'ihello'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Escape
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send -- ':wq'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    [ "$(cat "$BATS_TEST_TMPDIR/v.txt")" = hello ]
+}

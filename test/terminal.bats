@@ -618,7 +618,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         declare -F | grep -c ' cd\$\| f\$'; trap -p DEBUG | wc -l | tr -d ' '
         shopt -q expand_aliases && echo aliases-on || echo aliases-off
         enable -n | wc -l | tr -d ' '; cd /; echo \$PWD"
-    [ "$output" = $'/tmp|bar|||none\n0\n0\naliases-off\n0\n/' ] || { echo "$output"; false; }
+    [ "$output" = $'/tmp|bar||__clux_flush|none\n0\n0\naliases-off\n0\n/' ] || { echo "$output"; false; }
     [ ! -e "$d/1.keep" ]
 }
 
@@ -1325,7 +1325,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         [[ "$output" == *"$name: readonly variable"* ]] && [[ "$output" != *changed* ]] || { echo "$name: $output"; false; }
     done
     run bash -c "source '$d/rc.bash'; printf '%s|%s|%s\n' \"\$PROMPT_COMMAND\" \"\$PS0\" \"\$PS1\""
-    [ "$output" = '||clux-ab12cd34$ ' ]
+    [ "$output" = '__clux_flush||clux-ab12cd34$ ' ]
 }
 
 @test "a key with no typed text makes the shell rule read all of the line (Up shows a line from the history)" {
@@ -1419,6 +1419,131 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     check '300 100 S+ ssh host\n' 0
     check '300 100 S+ /usr/local/bin/docker exec -it c sh\n' 0
     check '300 100 S+ python3\n400 300 Ss+ /bin/bash\n' 0
+    # Under a nested shell: sleep does not read the keys, python3 does.
+    check '300 100 S bash\n400 300 S+ sleep 10\n' 0
+    check '300 100 S bash\n400 300 S+ python3\n' 1
     run bash -c "source '$TERMINAL'; ps() { :; }; nested_shell 100"
     [ "$status" -eq 0 ]
+}
+
+@test "the cursor line goes to its end: rows below the cursor row that the line wraps to are in it" {
+    run bash -c "source '$TERMINAL'
+        tmux_state() {
+            case \"\$1 \$*\" in
+                display-message*) echo 1 ;;
+                *'-E 1'*) printf 'top\nclux-ab\$ rm -rf /home/u/pro' ;;
+                *'-E -'*) printf 'top\nclux-ab\$ rm -rf /home/u/proj/build/out/tmp\n\n\n' ;;
+            esac
+        }
+        capture_cursor_line; printf '%s\n' \"\$CURSOR_LINE\"; printf '%s\n' \"\$CAPTURE\" | wc -l | tr -d ' '"
+    [ "$output" = $'clux-ab$ rm -rf /home/u/proj/build/out/tmp\n2' ]
+    # When the screen changed between the two captures, the first one stays.
+    run bash -c "source '$TERMINAL'
+        tmux_state() {
+            case \"\$1 \$*\" in
+                display-message*) echo 1 ;;
+                *'-E 1'*) printf 'top\nclux-ab\$ abc' ;;
+                *'-E -'*) printf 'new\nother\n' ;;
+            esac
+        }
+        capture_cursor_line; printf '%s\n' \"\$CURSOR_LINE\""
+    [ "$output" = 'clux-ab$ abc' ]
+}
+
+@test "in a nested shell Escape is refused, and the pane shell drops typeahead before its prompt" {
+    local d="$BATS_TEST_TMPDIR/esc"
+    mkdir -p "$d"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
+        ensure_open() { :; }; capture_cursor_line() { CURSOR_LINE='user@remote\$ '; }
+        pane_nested_shell() { return 0; }; send_key() { echo sent; }
+        send_command --key escape"
+    [ "$status" -eq 2 ]
+    [ "$stderr" = 'in a nested shell, Escape is not permitted: use send --key C-c' ]
+    [ -z "$output" ]
+    run bash -c "source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
+        ensure_open() { :; }; capture_cursor_line() { CURSOR_LINE='~ vim'; }
+        pane_nested_shell() { return 1; }; send_key() { echo \"sent \$1\"; }
+        send_command --key Escape"
+    [ "$output" = 'sent Escape' ]
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    run bash -c "source '$d/rc.bash'; echo \"\$PROMPT_COMMAND\"; declare -f __clux_flush | grep -c 'dd bs='"
+    [ "$output" = $'__clux_flush\n1' ]
+}
+
+@test "a full-screen program (alternate screen) has no mid-line check" {
+    run bash -c "source '$TERMINAL'
+        tmux_state() { case \"\$1\" in display-message) echo '0 0 1' ;; capture-pane) echo 'hello world' ;; esac; }
+        cursor_mid_line; echo \$?
+        tmux_state() { case \"\$1\" in display-message) echo '0 0 0' ;; capture-pane) echo 'hello world' ;; esac; }
+        cursor_mid_line; echo \$?"
+    [ "$output" = $'1\n0' ]
+}
+
+@test "wait --pattern finds the lines that scrolled off when a full history drops lines" {
+    local n="$BATS_TEST_TMPDIR/n"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { echo x >> '$n'; }
+        tmux_state() {
+            local t=\$(cat '$n' 2>/dev/null | wc -l); t=\$((t))
+            case \"\$1\" in
+                display-message) [ \"\$t\" -eq 0 ] && echo '1990 2000' || echo '1860 2000' ;;
+                capture-pane)
+                    if [ \"\$t\" -eq 0 ]; then printf 'a\nb\n'
+                    elif [[ \"\$*\" == *'-S -70'* ]]; then printf 'BUILD OK\nx\nc\nd\n'
+                    else printf 'c\nd\n'; fi ;;
+            esac
+        }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); }
+        wait_command --pattern 'BUILD OK' --timeout 3"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "wait --pattern guards many new lines in pieces of whole lines, so a line is not held by a cut" {
+    local log="$BATS_TEST_TMPDIR/pieces" n="$BATS_TEST_TMPDIR/n"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'; LAYA_GUARD_BYTES=40
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() {
+            [ \"\$1\" != display-message ] || return 1
+            printf 'log line 1\nPASS\nlog line 3\nlog line 4\nlog line 5\nlog line 6\nlog line 7\n'
+        }
+        # As the client: a text longer than the limit is cut to its last bytes.
+        laya_guard() { local f=\$(cat \"\$1\"); printf '%s\\n' \"\$f\" | wc -c | tr -d ' ' >> '$log'; GUARD_TEXT=\$(printf '%s\\n' \"\$f\" | LC_ALL=C tail -c \"\$LAYA_GUARD_BYTES\"); }
+        wait_command --pattern '^PASS\$' --timeout 3"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(sort -n "$log" | tail -n 1)" -le 40 ]
+}
+
+@test "the laya-serve check of the pid runs one time in a verb, also for calls in a subshell" {
+    local count="$BATS_TEST_TMPDIR/ps"
+    run bash -c "source '$TERMINAL'; LAYA_PY=/bin/echo; LAYA_CLIENT=x; S_LAYA_PID=\$\$
+        laya_pid_is_server() { echo x >> '$count'; }
+        laya_gate() { laya_pid_check || return 6; out=\$(laya_call command); }
+        laya_gate; laya_gate; out=\$(printf a | laya_call pane); laya_gate"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
+}
+
+@test "one send reads the process tree one time" {
+    local count="$BATS_TEST_TMPDIR/ps" d="$BATS_TEST_TMPDIR/one"
+    mkdir -p "$d"
+    run bash -c "source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        check_pane() { CURSOR_LINE='>>> '; PANE_STATE=shell_prompt; SCREEN_ABOVE=; }
+        tmux_state() { echo 100; }
+        ps() { echo x >> '$count'; printf '100 1 Ss bash -i\n200 100 S+ bash -i\n300 200 S+ python3\n'; }
+        laya_gate() { echo \"gate \$*\"; GATE_LEVEL=safe; GATE_REASON=x; }
+        line_unchanged() { :; }; cursor_mid_line() { return 1; }; shell_line() { return 1; }
+        send_key() { :; }; send_literal() { :; }
+        send_command --enter -- 'print(1)'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$output" = 'gate --screen' ]
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
+}
+
+@test "__clux_sub writes the keep file one time: no EXIT trap after the direct call" {
+    local body
+    body=$(sed -n '/^__clux_sub() {/,/^}/p' "$TERMINAL")
+    [[ "$body" == *$'__clux_keep "$__clux_k"\n    trap - EXIT\n    exit "$1" )'* ]] || false
 }

@@ -188,19 +188,24 @@ refuse_laya_run() {
 # Run the client with the server of this companion. The URL and the key come
 # from state, not from the environment, so all verbs of one companion use one
 # server. The client stderr has only fixed messages; each verb prints its own.
+# laya_pid_check — the server that open started is alive, and the first
+# check of a verb also finds that its pid is laya-serve (one ps): a new
+# process can get the pid. The callers that run the client in a subshell
+# (a command substitution or a pipe) call it first, in the verb, so the
+# mark stays and the wait loops fork no ps each second.
 LAYA_PID_CHECKED=
+laya_pid_check() {
+    [ -n "$S_LAYA_PID" ] || return 0
+    kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
+    [ "$LAYA_PID_CHECKED" != "$S_LAYA_PID" ] || return 0
+    laya_pid_is_server "$S_LAYA_PID" || return 1
+    LAYA_PID_CHECKED="$S_LAYA_PID"
+}
+
 laya_call() {
     # [inferred] When the server that open started ended, another process
-    # can take its port: that process must not get the key or the text. A
-    # new process can also get the pid, so the first call of a verb checks
-    # that the pid is laya-serve (one ps), and each call that it is alive.
-    if [ -n "$S_LAYA_PID" ]; then
-        kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
-        if [ "$LAYA_PID_CHECKED" != "$S_LAYA_PID" ]; then
-            laya_pid_is_server "$S_LAYA_PID" || return 1
-            LAYA_PID_CHECKED="$S_LAYA_PID"
-        fi
-    fi
+    # can take its port: that process must not get the key or the text.
+    laya_pid_check || return 1
     CLUX_LAYA_URL="$S_LAYA_URL" CLUX_LAYA_KEY="$S_LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" "$@" 2>/dev/null
 }
 
@@ -594,7 +599,18 @@ write_rc_file() {
         cat <<'EOF'
 unset HISTFILE
 set +o history
-PROMPT_COMMAND=
+# Keys that came while a command ran (typeahead) would go to readline at
+# this prompt with no gate: Escape and C-e is shell-expand-line, and Enter
+# runs the line in this shell. The shell drops them before each prompt.
+__clux_flush() {
+  local s
+  s=$(command stty -g 2>/dev/null) || return 0
+  command stty -icanon min 0 time 0 2>/dev/null
+  command dd bs=4096 count=64 of=/dev/null 2>/dev/null
+  command stty "$s" 2>/dev/null
+  return 0
+}
+PROMPT_COMMAND=__clux_flush
 PS0=
 PS3=
 PS4='+ '
@@ -701,6 +717,7 @@ __clux_sub() {
     # A DEBUG, ERR or RETURN trap of the command must not run in the keep step.
     trap - DEBUG ERR RETURN
     __clux_keep "$__clux_k"
+    trap - EXIT
     exit "$1" )
   set -- "$?" "$2"
   [ -f "$2" ] || printf '%s\n' 'clux: the directory and the exported variables did not come back: the command set an EXIT trap and ended with exit'
@@ -806,7 +823,7 @@ __clux_line() {
 }
 # A line cannot make a new __clux_run that skips the question. exit, exec
 # and logout stay plain functions: the subshell of a command unsets them.
-readonly -f __clux_refuse __clux_clear __clux_carry __clux_keep __clux_load __clux_sub __clux_sum __clux_run __clux_line
+readonly -f __clux_flush __clux_refuse __clux_clear __clux_carry __clux_keep __clux_load __clux_sub __clux_sum __clux_run __clux_line
 EOF
     } > "$D/rc.bash"
 }
@@ -855,12 +872,25 @@ CAPTURE=
 # capture_to_cursor — the screen from row 0 to the cursor row, in CAPTURE.
 # The x keeps a blank cursor line: without it, the command substitution
 # removes it, and the last line of CAPTURE is the line above the cursor.
+# The cursor line goes to its end: after Home on a long line, the rows below
+# the cursor row are part of the line, and a line that ends goes whole. A
+# second capture to the last row gives them; the lines above the cursor line
+# are the same in the two captures.
 capture_to_cursor() {
-    local cy
+    local cy all head line
     cy=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_y}') || return 1
     CAPTURE=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E "$cy" && printf x) || return 1
     CAPTURE="${CAPTURE%x}"
     CAPTURE="${CAPTURE%$'\n'}"
+    all=$(tmux_state capture-pane -p -J -t "$S_PANE" -S 0 -E - && printf x) || return 1
+    all="${all%x}"
+    head=
+    case "$CAPTURE" in *$'\n'*) head="${CAPTURE%$'\n'*}"$'\n' ;; esac
+    case "$all" in "$head"*) ;; *) return 0 ;; esac
+    line="${all:${#head}}"
+    line="${line%%$'\n'*}"
+    # Only a longer line of the same start: else the screen changed.
+    case "$line" in "${CAPTURE:${#head}}"*) CAPTURE="$head$line" ;; esac
 }
 
 # A suffix test on the line capture_cursor_line already holds, so one poll
@@ -935,6 +965,7 @@ pane_state() {
     fi
     PANE_LAST="$window"
     PANE_STATE=
+    laya_pid_check || return 6
     out=$(printf '%s\n' "$window" | laya_call pane)
     case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
     [[ "$out" =~ $PANE_RE ]] || return 6
@@ -1007,6 +1038,7 @@ LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)"'
 # bash regular expression, because jq is only recommended for clux.
 laya_gate() {
     local out rc=0
+    laya_pid_check || return 6
     out=$(laya_call command "$@") || rc=$?
     [ "$rc" -ne 2 ] || return 2
     [ "$rc" -ne 3 ] || return 3
@@ -1047,6 +1079,7 @@ laya_guard() {
     data="${data%x}"
     [ "$GUARD_CUT" -eq 0 ] || cut=1
     [ "$cut" -eq 0 ] || args+=(--cut)
+    laya_pid_check || return 6
     out=$(printf '%s' "$data" | laya_call "${args[@]}" --limit "$LAYA_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
@@ -1255,88 +1288,95 @@ send_line() {
     clear_line; send_literal "__clux_line $sum"; send_key Enter
 }
 
-# pane_runs_program — the process in the front of the pane is a known
-# program that is not a shell (python3, psql, node, vim, less and others).
-# The shell rules do not apply there. Any
-# other process (a shell, ssh, docker, kubectl, or a name that tmux cannot
-# give) gets the shell rules: they only refuse more.
+# The front of the pane, from pane_front: PANE_NESTED=1 when a nested shell
+# is in front (only the user ends a line there), PANE_PROGRAM=1 when a known
+# program that is not a shell is in front (no shell rules). send reads the
+# tree one time (PANE_FRONT_SET=1), so its two checks see the same state.
+PANE_NESTED=1
+PANE_PROGRAM=0
+PANE_FRONT_SET=0
+pane_front() {
+    local pid out
+    PANE_NESTED=1
+    PANE_PROGRAM=0
+    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    out=$(front_kinds "$pid")
+    case "$out" in [01]' '[01]) PANE_NESTED="${out% *}"; PANE_PROGRAM="${out#* }" ;; esac
+    return 0
+}
+
+# pane_runs_program — a known program that is not a shell (python3, psql,
+# node, vim, less and others) is in the front of the pane. The shell rules
+# do not apply there. Any other process (a shell, ssh, docker, kubectl, or a
+# name that tmux or ps cannot give) gets the shell rules: they only refuse
+# more.
 pane_runs_program() {
-    local pid
-    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 1
-    front_program "$pid"
+    [ "$PANE_FRONT_SET" = 1 ] || pane_front
+    [ "$PANE_PROGRAM" = 1 ]
 }
 
 # pane_nested_shell — a nested shell is in the front of the pane: only the
 # user ends a line there (spec section 7). Also true when tmux or ps cannot
 # tell: the rule then only refuses more.
 pane_nested_shell() {
-    local pid
-    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
-    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-    nested_shell "$pid"
+    pane_front
+    [ "$PANE_NESTED" = 1 ]
 }
 
-# nested_shell PID — below PID (the pane shell), a process in a front group
+# nested_shell PID and front_program PID — the two answers of front_kinds.
+nested_shell() { local out; out=$(front_kinds "$1"); [ "${out% *}" != 0 ]; }
+front_program() { local out; out=$(front_kinds "$1"); [ "${out#* }" = 1 ]; }
+
+# front_kinds PID — one ps (pid, parent, state, arguments) of the processes
+# below PID (the pane shell) gives "NESTED PROGRAM". #{pane_current_command}
+# is not enough: a line of __clux_line runs in a subshell of the pane shell,
+# so tmux gives bash, not python3. The name is the first argument with no
+# path, no - and no case (Python on macOS).
+# NESTED is 1 when a process in a front group (+ in the state) is a nested
+# shell, or runs under a nested shell and is not a known program: text that
+# sleep does not read goes to that shell at its next prompt. A nested shell
 # is a shell that is not a fork of the pane shell (the __clux_sub subshell
 # has the same arguments) and runs no script file (bash ./x.sh), or a tool
-# that gives a shell (ssh, docker exec, kubectl exec, su, tmux). A shell on
-# a pty of its own (pty.spawn, :terminal) is in the front group of that pty.
-# A script that reads a line (read -p) is not a nested shell.
-nested_shell() {
+# that gives a shell (ssh, docker exec, kubectl exec, su, tmux). A shell on a
+# pty of its own (pty.spawn, :terminal) is in the front group of that pty.
+# PROGRAM is 1 when a known program is in a front group, and no shell or ssh
+# runs under a process that is not a shell.
+front_kinds() {
     ps -A -o pid= -o ppid= -o stat= -o args= 2>/dev/null | awk -v root="$1" '
         function base(w) { sub(/.*\//, "", w); sub(/^-/, "", w); return tolower(w) }
         function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|oksh|yash|fish|tcsh|csh|ash|busybox|nu|xonsh|elvish|pwsh)$/ }
         function remote(n) {
             return n ~ /^(ssh|mosh.*|telnet|rsh|rlogin|docker|podman|nerdctl|kubectl|oc|lxc|incus|su|nsenter|chroot|script|screen|tmux|session-manager-plugin|vagrant|multipass|distrobox|toolbox|machinectl)$/
         }
-        { a = $4; for (i = 5; i <= NF; i++) a = a " " $i
-          up[$1] = $2; args[$1] = a; front[$1] = ($3 ~ /\+/)
-          first[$1] = $4; second[$1] = (NF >= 5 ? $5 : "") }
-        END {
-            if (!(root in up)) exit 0
-            for (p in up) {
-                if (p == root || !front[p]) continue
-                q = up[p]; n = 0
-                while (q in up && q != root && n < 64) { q = up[q]; n++ }
-                if (q != root) continue
-                name = base(first[p])
-                if (remote(name)) exit 0
-                if (!shell(name) || args[p] == args[root]) continue
-                if (second[p] != "" && second[p] !~ /^-/) continue
-                exit 0
-            }
-            exit 1
-        }'
-}
-
-# front_program PID — a known program that is not a shell runs in the front
-# process group of the pane, below PID (the pane shell), and no shell or ssh
-# runs under a process that is not a shell there. #{pane_current_command}
-# names the leader of the front group: for a line of __clux_line that is its
-# subshell (bash), not python3. So one ps gives the pid, the parent, the
-# state (+ is the front group) and the name, with no case (Python on macOS).
-# A program can run a shell on a pty of its own (pty.spawn in python,
-# :terminal in vim, term in emacs): then the line goes to that shell. The
-# subshells of __clux_sub are shells under shells, so they do not count.
-front_program() {
-    ps -A -o pid= -o ppid= -o stat= -o comm= 2>/dev/null | awk -v root="$1" '
-        function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|fish|tcsh|csh|ash|ssh)$/ }
         function program(n) {
             return n ~ /^(i?python.*|bpython.*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh|node|deno|bun|irb|pry|ghci|lua.*|r|julia|erl|iex|scala|sbcl|gdb|lldb|php|vi|vim|nvim|view|nano|pico|emacs|less|more|most|man|top|htop|btop|tig|fzf)$/
         }
-        { c = $4; for (i = 5; i <= NF; i++) c = c " " $i
-          sub(/.*\//, "", c); sub(/^-/, "", c)
-          up[$1] = $2; name[$1] = tolower(c); front[$1] = ($3 ~ /\+/) }
+        function nest(p) {
+            if (remote(name[p])) return 1
+            return shell(name[p]) && args[p] != args[root] && !(second[p] != "" && second[p] !~ /^-/)
+        }
+        { a = $4; for (i = 5; i <= NF; i++) a = a " " $i
+          up[$1] = $2; args[$1] = a; front[$1] = ($3 ~ /\+/)
+          name[$1] = base($4); second[$1] = (NF >= 5 ? $5 : "") }
         END {
-            found = 0
+            if (!(root in up)) { print "1 0"; exit }
+            nested = 0; found = 0; inner = 0
             for (p in up) {
-                q = up[p]; other = 0; n = 0
-                while (q in up && q != root && n < 64) { if (!shell(name[q])) other = 1; q = up[q]; n++ }
+                if (p == root) continue
+                q = up[p]; other = 0; under = 0; n = 0
+                while (q in up && q != root && n < 64) {
+                    if (!shell(name[q]) && name[q] != "ssh") other = 1
+                    if (nest(q)) under = 1
+                    q = up[q]; n++
+                }
                 if (q != root) continue
-                if (shell(name[p]) && other) exit 1
-                if (front[p] && program(name[p])) found = 1
+                if ((shell(name[p]) || name[p] == "ssh") && other) inner = 1
+                if (!front[p]) continue
+                if (program(name[p])) found = 1
+                if (nest(p) || (under && !program(name[p]))) nested = 1
             }
-            exit !found
+            print nested " " ((found && !inner) ? 1 : 0)
         }'
 }
 
@@ -1370,11 +1410,13 @@ shell_line() {
 # client failed). cursor_x counts screen cells, and a wide character takes
 # 2, so the client counts the cells of the row.
 cursor_mid_line() {
-    local pos x y row rc
-    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y}') || return 2
-    x="${pos% *}"
-    y="${pos#* }"
+    local pos x y alt row rc
+    pos=$(tmux_state display-message -p -t "$S_PANE" '#{cursor_x} #{cursor_y} #{alternate_on}') || return 2
+    read -r x y alt <<< "$pos"
     case "$x$y" in ''|*[!0-9]*) return 2 ;; esac
+    # A full-screen program (vim, nano, less) uses the alternate screen. Its
+    # cursor is on a character, and its text is not a line of a shell.
+    [ "$alt" != 1 ] || return 1
     row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 2
     # A row of printable ASCII has one cell for each character: no client.
     if row_is_ascii "$row"; then
@@ -1943,11 +1985,15 @@ send_command() {
         # Escape and then a key is a Meta key: at the clux prompt, M-C-e
         # (shell-expand-line) runs $(...) of the line in the pane shell. The
         # check needs tmux only, not Laya.
-        # tmux reads a key name with no case (ESCAPE is Escape).
+        # tmux reads a key name with no case (ESCAPE is Escape). In a nested
+        # shell, Escape and then C-e (an edit key) is M-C-e too. While a
+        # command of the pane shell runs, the pane shell drops the keys that
+        # wait when it shows its prompt (__clux_flush).
         if key_is "$key" Escape; then
             if ! capture_cursor_line || prompt_input; then
                 fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2
             fi
+            ! pane_nested_shell || fail 'in a nested shell, Escape is not permitted: use send --key C-c' 2
         fi
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
@@ -1989,11 +2035,14 @@ send_command() {
     # does (spec section 7). Text with no Enter, the edit keys and the
     # interrupt keys work. A pager or a menu is a program in front, not a
     # shell: Laya can call a shell prompt a menu.
-    if ! prompt_input && pane_nested_shell; then
-        [ "$PANE_STATE" != pager ] && [ "$PANE_STATE" != menu ] || PANE_STATE=other
-        if [ "$enter" -eq 1 ] || { [ -n "$key" ] && ! edit_key "$key"; }; then
-            fail 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' 2
+    if ! prompt_input; then
+        if pane_nested_shell; then
+            [ "$PANE_STATE" != pager ] && [ "$PANE_STATE" != menu ] || PANE_STATE=other
+            if [ "$enter" -eq 1 ] || { [ -n "$key" ] && ! edit_key "$key"; }; then
+                fail 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' 2
+            fi
         fi
+        PANE_FRONT_SET=1
     fi
     if [ -n "$key" ] && [ "$enter" -eq 0 ]; then
         case "$PANE_STATE" in
@@ -2109,9 +2158,36 @@ add_seen_lines() {
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
+# guard_fresh FRESH — the guard of wait --pattern, in pieces of whole lines
+# that fit in LAYA_GUARD_BYTES: a guard of a cut text starts inside a line,
+# and held_lines cannot line it up. Adds the held lines to held and tests
+# the pattern (value) on the text that the pattern can see: both are locals
+# of wait_command. Sets FRESH_FOUND=1 on a match. Returns 6 when a guard
+# fails.
+FRESH_FOUND=0
+guard_fresh() {
+    local rest chunk sep=$'\n\001\n'
+    FRESH_FOUND=0
+    rest=$(printf '%s\n' "$1" | LC_ALL=C awk -v lim="$LAYA_GUARD_BYTES" '
+        { n = length($0) + 1; if (size && size + n > lim) { print "\001"; size = 0 } print; size += n }')
+    while [ -n "$rest" ]; do
+        chunk="${rest%%"$sep"*}"
+        if [ "$chunk" = "$rest" ]; then rest=; else rest="${rest#*"$sep"}"; fi
+        laya_guard <(printf '%s\n' "$chunk") 1 || return 6
+        held=$(add_seen_lines "$held" "$(held_lines "$chunk" "$GUARD_TEXT")")
+        # The marker lines of held text are not pane text: the pattern does
+        # not see them.
+        if visible_lines "$GUARD_TEXT" "$held" | grep -Eq -- "$value"; then
+            FRESH_FOUND=1
+            return 0
+        fi
+    done
+    return 0
+}
+
 wait_command() {
     local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh
-    local hist="" hist_now back
+    local hist="" hist_now hist_limit back
     # The lines of the last capture that a guard examined. The first line is
     # a mark that no screen line is, so the set is never empty.
     local seen=$'\001clux-seen'
@@ -2202,15 +2278,22 @@ wait_command() {
                 # The lines that scrolled off since the last guarded capture
                 # come too (at most --max-lines): a fast build must not
                 # scroll the pattern line away between two captures.
+                # A full history drops a tenth of history-limit at one time,
+                # so a smaller size is also new lines.
                 back=
-                hist_now=$(tmux_state display-message -p -t "$S_PANE" '#{history_size}') || hist_now=
+                hist_now=$(tmux_state display-message -p -t "$S_PANE" '#{history_size} #{history_limit}') || hist_now=
+                read -r hist_now hist_limit <<< "$hist_now"
                 case "$hist_now" in ''|*[!0-9]*) hist_now= ;; esac
+                case "$hist_limit" in ''|*[!0-9]*) hist_limit=0 ;; esac
                 if [ -n "$hist_now" ]; then
                     [ -n "$hist" ] || hist="$hist_now"
                     if [ "$hist_now" -gt "$hist" ]; then
                         back=$((hist_now - hist))
-                        [ "$back" -le "$max" ] || back="$max"
+                    elif [ "$hist_now" -lt "$hist" ]; then
+                        back=$((hist_now - hist + (hist_limit / 10 > 0 ? hist_limit / 10 : 1)))
                     fi
+                    [ -z "$back" ] || [ "$back" -gt 0 ] || back=
+                    [ -z "$back" ] || [ "$back" -le "$max" ] || back="$max"
                 fi
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE" ${back:+-S "-$back"}); then
                     if [ "$screen" != "$sum" ]; then
@@ -2222,18 +2305,14 @@ wait_command() {
                             # A guard can take 15 s: none starts after the
                             # time limit (spec section 11).
                             return 1
-                        elif laya_guard <(printf '%s\n' "$fresh") 1; then
+                        elif guard_fresh "$fresh"; then
                             sum="$screen"
                             [ -z "$hist_now" ] || hist="$hist_now"
                             # Only the lines of the last guarded capture:
                             # the set does not grow over a long wait.
                             seen=$'\001clux-seen'$'\n'"$screen"
-                            held=$(add_seen_lines "$held" "$(held_lines "$fresh" "$GUARD_TEXT")")
                             guard_fails=0
-                            # The marker lines of held text are not pane
-                            # text: the pattern does not see them.
-                            visible_lines "$GUARD_TEXT" "$held" \
-                                | grep -Eq -- "$value" && return 0
+                            [ "$FRESH_FOUND" -eq 0 ] || return 0
                         else
                             guard_fails=$((guard_fails + 1))
                             [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
