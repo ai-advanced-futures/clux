@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 load test_helper
 
 REAL_TMUX="$(command -v tmux)"
@@ -419,6 +421,23 @@ pane_shows() {
     [ "$alive" -eq 0 ]
 }
 
+@test "open stops the laya server of a dead companion of the same owner" {
+    local data="$BATS_TEST_TMPDIR/data" d pid i=0
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    kill -0 "$pid"
+    "$REAL_TMUX" -S "$TMUX_SOCKET" kill-pane -t "$(companion_pane)"
+    CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        "$TERMINAL" open >/dev/null
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; false; }
+    "$TERMINAL" close
+}
+
 @test "the reaper stops the laya server of an owner pane that is gone" {
     local data="$BATS_TEST_TMPDIR/data" other pid
     make_fake_venv "$data/clux/laya"
@@ -737,6 +756,65 @@ pane_shows() {
     [ "$status" -eq 0 ]
 }
 
+@test "a blank line in a program goes to Laya with the screen above it" {
+    set_fake_laya '{"rules": [{"contains": "Delete all resources", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "printf 'Delete all %s? [Y/n]\\n' resources; read -r a; touch '$BATS_TEST_TMPDIR/accepted'" >/dev/null
+    pane_shows 'Delete all resources? [Y/n]'
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 6 ]
+    sleep .5
+    [ ! -e "$BATS_TEST_TMPDIR/accepted" ]
+    "$TERMINAL" send --key C-c >/dev/null
+    # A blank line at the clux$ prompt needs no request.
+    "$TERMINAL" wait --timeout 5 --idle
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ]
+    [ -z "$(fake_laya_states destructive)" ]
+}
+
+@test "the clux$ prompt after output with no last newline is still the prompt" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'printf foo'
+    [ "$status" -eq 0 ]
+    pane_shows 'fooclux$'
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" send --enter -- 'echo hi'
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states destructive | tail -n 1)" = '"echo hi"' ]
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" run -- 'printf foo'
+    [ "$status" -eq 0 ]
+    "$TERMINAL" send --enter -- 'stty -echo' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" -l 'printf foo'
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" Enter
+    "$TERMINAL" wait --timeout 5 --idle
+    pane_shows 'fooclux$'
+    # The echo check applies at this prompt too.
+    run "$TERMINAL" send -- "touch '$BATS_TEST_TMPDIR/x'"
+    [ "$status" -eq 3 ]
+    "$TERMINAL" send --key C-c >/dev/null
+}
+
+@test "an interrupt key works while a Laya question is open" {
+    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    mkdir -p "$BATS_TEST_TMPDIR/clux-danger"
+    run "$TERMINAL" run --timeout 2 -- "rm -rf '$BATS_TEST_TMPDIR/clux-danger'"
+    [ "$status" -eq 1 ]
+    pane_shows 'run? [y/N]'
+    run "$TERMINAL" send -- 'y'
+    [ "$status" -eq 3 ]
+    run "$TERMINAL" send --key C-c
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" wait --timeout 5 --run 1
+    [ "$status" -eq 0 ]
+    [ "$output" = $'laya: declined by the user\nexit=126' ]
+    [ -d "$BATS_TEST_TMPDIR/clux-danger" ]
+}
+
 @test "send --key refuses text that is not a key name, also after stty -echo" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'stty -echo' >/dev/null
@@ -815,7 +893,7 @@ pane_shows() {
     [ "$status" -eq 6 ]
     run "$TERMINAL" run -- 'echo next'
     [ "$status" -eq 5 ]
-    [ "$output" = 'the output of run 1 is held: use wait --run 1 first' ]
+    [ "$output" = 'the output of run 1 is held: use wait --run 1, or wait --run 1 --discard' ]
     set_fake_laya '{}'
     run "$TERMINAL" wait --run 1
     [ "$status" -eq 0 ]
@@ -823,6 +901,36 @@ pane_shows() {
     [ ! -d "$(companion_dir)/busy" ]
     run "$TERMINAL" run -- 'echo next'
     [ "$status" -eq 0 ]
+}
+
+@test "wait --run N --discard drops held output that Laya cannot examine" {
+    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'echo held-marker'
+    [ "$status" -eq 6 ]
+    run "$TERMINAL" run -- 'true'
+    [ "$status" -eq 5 ]
+    [ "$output" = 'the output of run 1 is held: use wait --run 1, or wait --run 1 --discard' ]
+    run "$TERMINAL" wait --run 1 --discard
+    [ "$status" -eq 0 ]
+    [ "$output" = $'output discarded: laya did not examine it\nexit=0' ]
+    [ ! -e "$(companion_dir)/1.out" ]
+    run "$TERMINAL" wait --run 1 --discard
+    [ "$status" -eq 2 ]
+    run "$TERMINAL" wait --idle --discard
+    [ "$status" -eq 2 ]
+    set_fake_laya '{}'
+    run "$TERMINAL" run -- 'echo next'
+    [ "$status" -eq 0 ]
+}
+
+@test "the guard removes NUL bytes and still finds the cut" {
+    "$TERMINAL" open >/dev/null
+    run --separate-stderr "$TERMINAL" run -- 'head -c 40000 /dev/zero; echo; echo nul-end'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'output cut: the last 32768 bytes\n'* ]] || false
+    [[ "$output" == *$'nul-end\nexit=0' ]] || false
+    [ -z "$stderr" ]
 }
 
 @test "wait --run on an older run does not free the lock of a run that continues" {

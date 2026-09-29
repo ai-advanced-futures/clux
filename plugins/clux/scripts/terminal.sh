@@ -207,12 +207,22 @@ laya_checkpoint_present() {
 }
 
 laya_installed() {
-    [ -f "$LAYA_MARKER" ] && laya_checkpoint_present
+    [ -f "$LAYA_MARKER" ] && laya_checkpoint_present && laya_client_ready
+}
+
+# laya_client_ready — LAYA_PY (the venv, or CLUX_LAYA_PYTHON) runs and can
+# import the laya package that the client uses.
+laya_client_ready() {
+    [ -x "$LAYA_PY" ] || return 1
+    "$LAYA_PY" -c 'import laya.structured' >/dev/null 2>&1
 }
 
 # The Laya checks of open, before it makes $D. Each refusal exits 6.
 laya_open_check() {
     if [ -n "${CLUX_LAYA_URL:-}" ]; then
+        # The client needs a Python that can import laya, also for a server
+        # that the user starts.
+        laya_client_ready || fail 'laya not installed: run terminal.sh laya install' 6
         laya_url_is_loopback "$CLUX_LAYA_URL" \
             || fail 'CLUX_LAYA_URL must name a loopback host: 127.0.0.1, localhost or ::1' 6
         S_LAYA_URL="$CLUX_LAYA_URL"
@@ -450,6 +460,11 @@ reap_companions() {
             kill -0 "$pid" 2>/dev/null || remove_companion_dir "$dir" 0
         fi
     done
+    stop_reaped_servers
+}
+
+# stop_reaped_servers — stop the servers that remove_companion_dir found.
+stop_reaped_servers() {
     [ "${#REAP_PIDS[@]}" -eq 0 ] || laya_stop_server "${REAP_PIDS[@]}"
     REAP_PIDS=()
 }
@@ -511,9 +526,11 @@ __clux_run() {
   if [ -e "$__clux_d/$__clux_n.confirm" ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
     printf 'laya: dangerous (%s)\n$ %s\n' "$__clux_reason" "$__clux_cmd"
-    __clux_answer=
+    # The read is in a subshell: bash goes on with a read after a trapped
+    # C-c, but C-c ends the subshell, so C-c (and C-d) declines. The pane
+    # shell ignores the C-c, and C-z cannot stop the question.
     trap : INT
-    builtin read -r -p 'run? [y/N] ' __clux_answer
+    __clux_answer=$(trap - INT; trap '' TSTP; builtin read -r -p 'run? [y/N] ' __clux_a && printf '%s' "$__clux_a")
     trap - INT
     command rm -f "$__clux_d/$__clux_n.confirm"
     if [ "$__clux_answer" != y ]; then
@@ -592,6 +609,19 @@ line_at_prompt() {
     rtrim "$CURSOR_LINE"
     case "$RTRIM" in *'clux$') return 0 ;; esac
     return 1
+}
+
+# prompt_input — the cursor line holds the clux$ prompt, also after output
+# with no last newline (fooclux$ ). Sets PROMPT_INPUT to the text after the
+# FIRST 'clux$ ': when the output before the prompt holds 'clux$ ' too, the
+# gate gets more text, not less.
+PROMPT_INPUT=
+prompt_input() {
+    case "$CURSOR_LINE" in
+        *'clux$ '*) PROMPT_INPUT="${CURSOR_LINE#*'clux$ '}" ;;
+        *'clux$') PROMPT_INPUT= ;;
+        *) return 1 ;;
+    esac
 }
 
 PANE_STATE=
@@ -694,15 +724,18 @@ GUARD_CUT=0
 # removes blank lines at the end of the text. A cut can split a UTF-8
 # character; the client decodes with "replace", so that is not an error.
 laya_guard() {
-    local out data LC_ALL=C
-    # The x keeps the newlines at the end, so the byte count is exact.
-    data=$(tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" && printf x) || return 6
-    data="${data%x}"
+    local out data size tmp="$D/guard.tmp" LC_ALL=C
+    # A file, because $1 can be a pipe and is read two times: the size, then
+    # the text. Bash drops NUL bytes from a command substitution with a
+    # warning, so tr removes them first, and the size comes from wc.
+    tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" > "$tmp" || { rm -f "$tmp"; return 6; }
+    size=$(wc -c < "$tmp")
     GUARD_CUT=0
-    if [ "${#data}" -gt "$LAYA_GUARD_BYTES" ]; then
-        GUARD_CUT=1
-        data="${data: -$LAYA_GUARD_BYTES}"
-    fi
+    [ "$((size + 0))" -le "$LAYA_GUARD_BYTES" ] || GUARD_CUT=1
+    # The x keeps the newlines at the end.
+    data=$(tail -c "$LAYA_GUARD_BYTES" "$tmp" | tr -d '\000' && printf x)
+    rm -f "$tmp"
+    data="${data%x}"
     out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
@@ -766,15 +799,25 @@ interrupt_key() {
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
     local line prompt=0
-    case "$CURSOR_LINE" in
-        'clux$ '*) line="${CURSOR_LINE#'clux$ '}$1"; prompt=1 ;;
-        'clux$') line="$1"; prompt=1 ;;
-        *) line="$CURSOR_LINE$1" ;;
-    esac
-    [ "$prompt" -eq 0 ] || line="${line#"${line%%[![:space:]]*}"}"
+    if prompt_input; then
+        line="$PROMPT_INPUT$1"
+        prompt=1
+        line="${line#"${line%%[![:space:]]*}"}"
+    else
+        line="$CURSOR_LINE$1"
+    fi
     reserved_word "$line"
-    # [inferred] A blank line runs nothing, so it needs no request.
-    case "$line" in *[![:space:]]*) ;; *) return 0 ;; esac
+    # [inferred] A blank line at the clux$ prompt runs nothing, so it needs
+    # no request. In a program a blank line can accept a default ([Y/n], a
+    # menu), so Laya gets the screen above it; only a blank screen too has
+    # nothing to examine.
+    case "$line" in
+        *[![:space:]]*) ;;
+        *)
+            [ "$prompt" -eq 0 ] || return 0
+            case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
+            ;;
+    esac
     # [inferred] No safe list for send: only run checks that the first word
     # is a program or a builtin (the .safe marker), so on send a function of
     # the same name would skip Laya.
@@ -815,7 +858,7 @@ wait_for_echo() {
 # shell_line — the cursor line is a shell prompt: the clux$ prompt, or a
 # prompt that Laya calls shell_prompt (ssh, python3, psql).
 shell_line() {
-    case "$CURSOR_LINE" in 'clux$'*) return 0 ;; esac
+    prompt_input && return 0
     [ "$PANE_STATE" = shell_prompt ]
 }
 
@@ -917,7 +960,10 @@ open_command() {
     laya_open_check
     # [inferred] A dead companion of this owner can still own a Laya server,
     # so its directory goes through remove_companion_dir, not rm -rf.
-    [ ! -d "$D" ] || remove_companion_dir "$D" 0
+    if [ -d "$D" ]; then
+        remove_companion_dir "$D" 0
+        stop_reaped_servers
+    fi
     umask 077; mkdir -p "$D"; write_rc_file
     socket="$D/sock"
     if [ "$mode" = socket ] && [ "${#socket}" -gt 100 ]; then
@@ -1054,7 +1100,7 @@ report_run() {
             # output when Laya answers, and no new run deletes it.
             printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
             : > "$D/$n.held"
-            printf 'laya not available: the output stays; use wait --run %s when Laya answers\n' "$n" >&2
+            printf 'laya not available: the output stays; use wait --run %s when Laya answers, or wait --run %s --discard\n' "$n" "$n" >&2
             return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
@@ -1130,7 +1176,7 @@ run_command() {
     ensure_open
     # run types __clux_run on the same line, after the hidden text.
     hidden_text && { refuse_hidden; return; }
-    output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ first" 5
+    output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ, or wait --run $S_SEQ --discard" 5
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader took is free.
         [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
@@ -1199,9 +1245,9 @@ send_command() {
     reserved_word "$text"
     [ -z "$key" ] || key_name "$key" || fail "not a key name: $key: send text with send -- TEXT" 2
     ensure_open
-    laya_confirm_pending && { refuse_confirm; return; }
     # An interrupt key cannot type a value, and it must work when Laya does
-    # not: it skips the Laya pane check.
+    # not: it skips the Laya pane check. It also works while a Laya question
+    # is open: C-c there declines the run, it cannot accept it.
     if [ -n "$key" ] && interrupt_key "$key"; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
         send_key "$key"
@@ -1209,6 +1255,7 @@ send_command() {
         case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" ;; esac
         return
     fi
+    laya_confirm_pending && { refuse_confirm; return; }
     hidden_text && { refuse_hidden; return; }
     check_pane || return
     # Each send goes to the gate: text with no Enter too, and each key, because
@@ -1263,9 +1310,10 @@ read_command() {
 }
 
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum=""
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --discard) discard=1; shift ;;
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
             --max-lines) [ "$#" -ge 2 ] || usage; max="$2"; shift 2 ;;
             --idle) [ -z "$mode" ] || usage; mode=idle; shift ;;
@@ -1278,7 +1326,18 @@ wait_command() {
     positive_integer "$max" || usage
     [ -n "$mode" ] || usage
     [ "$mode" != run ] || positive_integer "$value" || usage
+    [ "$discard" -eq 0 ] || [ "$mode" = run ] || usage
     ensure_open
+    if [ "$discard" -eq 1 ]; then
+        # Output that the guard cannot examine each time (a large secret
+        # file) would keep the lock for ever: drop it, with no text.
+        [ -e "$D/$value.held" ] || fail "run $value has no held output" 2
+        read -r rc < "$D/$value.rc"
+        rm -f "$D/$value.out" "$D/$value.held"
+        printf 'output discarded: laya did not examine it\nexit=%s\n' "$rc"
+        release_run "$value"
+        return 0
+    fi
     case "$mode" in
         run)
             # A secret run waits for the user at a credential prompt, so the
@@ -1434,12 +1493,13 @@ laya_download() {
 
 laya_install() {
     local start=$SECONDS version
-    laya_find_python || fail 'laya install needs python3 3.10 or later' 2
+    # An installed venv needs no base python3.
     if [ -f "$LAYA_MARKER" ] && laya_checkpoint_present; then
         version=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" version 2>/dev/null) || version=unknown
         printf 'laya %s is already installed\nvenv=%s\n' "$version" "$LAYA_VENV"
         return 0
     fi
+    laya_find_python || fail 'laya install needs python3 3.10 or later' 2
     if [ ! -f "$LAYA_MARKER" ]; then
         # [inferred] A venv with no marker is partial: make it again.
         rm -rf "$LAYA_VENV"

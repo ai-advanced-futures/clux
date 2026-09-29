@@ -167,6 +167,20 @@ STUB
     ! grep -q 'split-window' "$log" || false
 }
 
+@test "open with CLUX_LAYA_URL needs a client Python that imports laya" {
+    open_tmux_stub
+    local py
+    # A Python with no laya package.
+    printf '#!/bin/sh\nexec python3 -S -I -c "import sys; sys.exit(1)" "$@"\n' > "$BATS_TEST_TMPDIR/nolaya"
+    chmod +x "$BATS_TEST_TMPDIR/nolaya"
+    for py in "$BATS_TEST_TMPDIR/none/python3" "$BATS_TEST_TMPDIR/nolaya"; do
+        run env CLUX_TERMINAL_DIR="$BATS_TEST_TMPDIR/root" TMUX=fake TMUX_PANE=%0 \
+            CLUX_LAYA_PYTHON="$py" CLUX_LAYA_URL=http://127.0.0.1:9 "$TERMINAL" open
+        [ "$status" -eq 6 ] || { echo "$py gave $status"; false; }
+        [ "$output" = 'laya not installed: run terminal.sh laya install' ]
+    done
+}
+
 @test "open refuses when the CLUX_LAYA_URL server does not answer" {
     open_tmux_stub
     run env CLUX_TERMINAL_DIR="$BATS_TEST_TMPDIR/root" TMUX=fake TMUX_PANE=%0 \
@@ -370,6 +384,12 @@ open(sys.argv[1], "w").write("%d\n" % s.getsockname()[1]); time.sleep(30)' "$por
         "$TERMINAL" laya install
     [ "$status" -eq 0 ]
     [[ "$output" == 'laya '*' is already installed'* ]] || false
+    # An installed venv needs no python3 3.10 on PATH.
+    run env -u TMUX -u TMUX_PANE PATH="$BATS_TEST_TMPDIR/nopython:/bin:/usr/sbin:/sbin" \
+        XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        /bin/bash -c "PATH=\$PATH; exec '$(command -v bash)' '$TERMINAL' laya install"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" == 'laya '*' is already installed'* ]] || false
 }
 
 @test "laya install needs Python 3.10 or later" {
@@ -422,6 +442,10 @@ STUB
     [[ "$output" != *'AKIA'* ]] || false
     [ -f "$venv/.clux-installed" ]
     [ -z "$(ls -A "$tmp")" ]
+}
+
+@test "the skill and the release notes have no author notes" {
+    ! grep -n 'inferred' "$REPO_ROOT/plugins/clux/skills/terminal/SKILL.md" "$REPO_ROOT/CHANGELOG.md" || false
 }
 
 @test "the terminal skill covers Laya and the time limits of terminal.sh" {
