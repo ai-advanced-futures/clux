@@ -39,6 +39,7 @@ The client never writes terminal text to stderr or to a log.
 """
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -111,10 +112,22 @@ def policy(name):
     return value
 
 
+def finite(value):
+    """VALUE as a finite number, else Fail(2). nan makes each comparison
+    false (a threshold of nan holds nothing), and inf is no time limit."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise Fail(2)
+    if not math.isfinite(number):
+        raise Fail(2)
+    return number
+
+
 def threshold(pol, name, default):
     try:
-        return float(pol.get("thresholds", {}).get(name, default))
-    except (AttributeError, TypeError, ValueError):
+        return finite(pol.get("thresholds", {}).get(name, default))
+    except AttributeError:
         raise Fail(2)
 
 
@@ -889,10 +902,7 @@ def cmd_output(args):
         elif arg == "--pieces" and rest and rest[0].isdigit() and int(rest[0]) > 0:
             size = int(rest.pop(0))
         elif arg == "--limit" and rest:
-            try:
-                limit = float(rest.pop(0))
-            except ValueError:
-                raise Fail(2)
+            limit = finite(rest.pop(0))
             if limit <= 0:
                 raise Fail(2)
         else:
@@ -1007,10 +1017,7 @@ def cmd_pip_install(args):
     import subprocess
     if len(args) != 2:
         raise Fail(2)
-    try:
-        seconds = float(args[0])
-    except ValueError:
-        raise Fail(2)
+    seconds = finite(args[0])
     if seconds <= 0:
         raise Fail(124, message=False)
     try:

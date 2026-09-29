@@ -423,6 +423,32 @@ assert calls == {'policy': 2, 'compile': 2, 'pool': 1}, calls
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
+@test "a time limit or a threshold that is not a finite number exits 2" {
+    local value
+    for value in nan NaN inf -inf 1e999 0 -1 abc; do
+        run client output --limit "$value" <<<'x'
+        [ "$status" -eq 2 ] || { echo "--limit $value gave $status"; false; }
+    done
+    for value in nan inf; do
+        run client pip-install "$value" none
+        [ "$status" -eq 2 ] || { echo "pip-install $value gave $status"; false; }
+    done
+    run python3 -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+for value in ('nan', float('nan'), float('inf'), None, 'x'):
+    try:
+        c.threshold({'thresholds': {'secret': value}}, 'secret', 0.5)
+    except c.Fail as fail:
+        assert fail.args[0] == 2 or getattr(fail, 'code', 2) == 2
+    else:
+        raise AssertionError(value)
+assert c.threshold({'thresholds': {}}, 'secret', 0.5) == 0.5
+assert c.threshold({'thresholds': {'secret': 0.7}}, 'secret', 0.5) == 0.7
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "output: one request that reaches the request limit holds only its block" {
     start_fake_laya '{"rules": [{"contains": "slow-block", "delay": 6}]}'
     local text
