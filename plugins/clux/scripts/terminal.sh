@@ -233,6 +233,9 @@ laya_open_check() {
         laya_python_ready "$LAYA_PY" || fail 'laya not installed: run terminal.sh laya install' 6
         laya_url_is_loopback "$CLUX_LAYA_URL" \
             || fail 'CLUX_LAYA_URL must name a loopback host: 127.0.0.1, localhost or ::1' 6
+        # A server that the user starts has no pid in state: a pid from the
+        # state of a dead companion must not stop laya_call.
+        S_LAYA_PID=
         S_LAYA_URL="$CLUX_LAYA_URL"
         S_LAYA_KEY="${CLUX_LAYA_KEY:-}"
         laya_call health >/dev/null || fail 'laya not available at CLUX_LAYA_URL' 6
@@ -867,6 +870,7 @@ prompt_input() {
 
 PANE_STATE=
 PANE_TEXT=
+PANE_LAST=
 SCREEN_ABOVE=
 PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 
@@ -903,6 +907,17 @@ pane_state() {
         PANE_TEXT="$window"
         return 0
     fi
+    # A wait probe (PANE_SETTLE=1): output that changed since the probe before
+    # is not a prompt that waits for input, so it sends no request (npm
+    # install would send one each second to the one-worker server). The first
+    # probe of a verb sends. The local patterns apply.
+    if [ "${PANE_SETTLE:-0}" -eq 1 ] && [ -n "$PANE_LAST" ] && [ "$window" != "$PANE_LAST" ]; then
+        PANE_LAST="$window"
+        PANE_STATE=other
+        ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
+        return 0
+    fi
+    PANE_LAST="$window"
     PANE_STATE=
     out=$(printf '%s\n' "$window" | laya_call pane)
     case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
@@ -920,7 +935,7 @@ PROBE_FAILS=0
 # (a slow machine, or a 503 while a guard uses the server) does not end the
 # wait, and it still applies the local credential patterns.
 probe_pane() {
-    pane_state
+    PANE_SETTLE=1 pane_state
     case $? in
         0)
             PROBE_FAILS=0
@@ -1227,34 +1242,39 @@ send_line() {
 # other process (a shell, ssh, docker, kubectl, or a name that tmux cannot
 # give) gets the shell rules: they only refuse more.
 pane_runs_program() {
-    local out name
-    out=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid} #{pane_current_command}') || return 1
-    # tmux gives the name with no fixed case: Python on macOS.
-    name="${out#* }"
-    key_is "${name##*/}" 'python*' 'ipython*' 'bpython*' psql mysql mariadb sqlite3 redis-cli mongo mongosh \
-        node deno bun irb pry ghci 'lua*' R julia erl iex scala sbcl gdb lldb php \
-        vi vim nvim view nano pico emacs less more most man top htop btop tig fzf || return 1
-    # A program can run a shell on a pty of its own (pty.spawn in python,
-    # :terminal in vim, term in emacs). Then the line goes to that shell.
-    ! program_runs_shell "${out%% *}"
+    local pid
+    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 1
+    front_program "$pid"
 }
 
-# program_runs_shell PID — a shell (or ssh) runs under a process that is not a
-# shell, below PID (the pane shell). The subshells of __clux_sub are shells
-# under shells, so they do not count. One ps for all processes.
-program_runs_shell() {
-    ps -A -o pid= -o ppid= -o comm= 2>/dev/null | awk -v root="$1" '
+# front_program PID — a known program that is not a shell runs in the front
+# process group of the pane, below PID (the pane shell), and no shell or ssh
+# runs under a process that is not a shell there. #{pane_current_command}
+# names the leader of the front group: for a line of __clux_line that is its
+# subshell (bash), not python3. So one ps gives the pid, the parent, the
+# state (+ is the front group) and the name, with no case (Python on macOS).
+# A program can run a shell on a pty of its own (pty.spawn in python,
+# :terminal in vim, term in emacs): then the line goes to that shell. The
+# subshells of __clux_sub are shells under shells, so they do not count.
+front_program() {
+    ps -A -o pid= -o ppid= -o stat= -o comm= 2>/dev/null | awk -v root="$1" '
         function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|fish|tcsh|csh|ash|ssh)$/ }
-        { c = $3; for (i = 4; i <= NF; i++) c = c " " $i
-          sub(/.*\//, "", c); sub(/^-/, "", c); up[$1] = $2; name[$1] = c }
+        function program(n) {
+            return n ~ /^(i?python.*|bpython.*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh|node|deno|bun|irb|pry|ghci|lua.*|r|julia|erl|iex|scala|sbcl|gdb|lldb|php|vi|vim|nvim|view|nano|pico|emacs|less|more|most|man|top|htop|btop|tig|fzf)$/
+        }
+        { c = $4; for (i = 5; i <= NF; i++) c = c " " $i
+          sub(/.*\//, "", c); sub(/^-/, "", c)
+          up[$1] = $2; name[$1] = tolower(c); front[$1] = ($3 ~ /\+/) }
         END {
+            found = 0
             for (p in up) {
-                if (!shell(name[p])) continue
-                other = 0; q = up[p]; n = 0
+                q = up[p]; other = 0; n = 0
                 while (q in up && q != root && n < 64) { if (!shell(name[q])) other = 1; q = up[q]; n++ }
-                if (q == root && other) exit 0
+                if (q != root) continue
+                if (shell(name[p]) && other) exit 1
+                if (front[p] && program(name[p])) found = 1
             }
-            exit 1
+            exit !found
         }'
 }
 
@@ -2018,6 +2038,7 @@ add_seen_lines() {
 
 wait_command() {
     local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh
+    local hist="" hist_now back
     # The lines that a guard examined. The first line is a mark that no
     # screen line is, so the set is never empty.
     local seen=$'\001clux-seen'
@@ -2046,6 +2067,10 @@ wait_command() {
         # Output that the guard cannot examine each time (a large secret
         # file) would keep the lock for ever: drop it, with no text.
         [ -e "$D/$value.held" ] || fail "run $value has no held output" 2
+        # A verb that reads this output now keeps it.
+        pid_link "$D/$value.reading" || fail "another verb reads the output of run $value now: try again" 5
+        READING="$value"
+        trap verb_exit EXIT
         read -r rc < "$D/$value.rc"
         rm -f "$D/$value.out" "$D/$value.held"
         printf 'output discarded: laya did not examine it\nexit=%s\n' "$rc"
@@ -2101,17 +2126,32 @@ wait_command() {
                 # with the line above it for context: a progress bar sends
                 # 2 lines, not the full screen, each second. A line that
                 # an earlier guard examined did not match.
-                if screen=$(tmux_state capture-pane -p -J -t "$S_PANE"); then
+                # The lines that scrolled off since the last guarded capture
+                # come too (at most --max-lines): a fast build must not
+                # scroll the pattern line away between two captures.
+                back=
+                hist_now=$(tmux_state display-message -p -t "$S_PANE" '#{history_size}') || hist_now=
+                case "$hist_now" in ''|*[!0-9]*) hist_now= ;; esac
+                if [ -n "$hist_now" ]; then
+                    [ -n "$hist" ] || hist="$hist_now"
+                    if [ "$hist_now" -gt "$hist" ]; then
+                        back=$((hist_now - hist))
+                        [ "$back" -le "$max" ] || back="$max"
+                    fi
+                fi
+                if screen=$(tmux_state capture-pane -p -J -t "$S_PANE" ${back:+-S "-$back"}); then
                     if [ "$screen" != "$sum" ]; then
                         fresh=$(new_screen_lines "$seen" "$screen")
                         if [ -z "$fresh" ]; then
                             sum="$screen"
+                            [ -z "$hist_now" ] || hist="$hist_now"
                         elif [ "$SECONDS" -ge "$deadline" ]; then
                             # A guard can take 15 s: none starts after the
                             # time limit (spec section 11).
                             return 1
                         elif laya_guard <(printf '%s\n' "$fresh") 1; then
                             sum="$screen"
+                            [ -z "$hist_now" ] || hist="$hist_now"
                             seen=$(add_seen_lines "$seen" "$screen")
                             held=$(add_seen_lines "$held" "$(held_lines "$fresh" "$GUARD_TEXT")")
                             guard_fails=0

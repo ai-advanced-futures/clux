@@ -1270,3 +1270,14 @@ pane_shows() {
     [[ "$output" == *$'\nback\n'* ]] || { echo "$output"; false; }
     "$TERMINAL" close
 }
+
+@test "python3 that send starts in the pane gets no shell rule" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'python3 -q' >/dev/null
+    pane_shows '>>>'
+    run "$TERMINAL" send --enter -- 'x = set()'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --enter -- 'print(len(x))'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" send --key C-d >/dev/null
+}

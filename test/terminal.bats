@@ -775,7 +775,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
         ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
         probe_pane() { return 0; }; sleep() { :; }
-        tmux_state() { echo x >> '$BATS_TEST_TMPDIR/n'; n=\$(wc -l < '$BATS_TEST_TMPDIR/n'); n=\$((n)); printf '%s\\nprogress %s\\n' '$top' \"\$n\"; [ \"\$n\" -lt 3 ] || echo DONE; }
+        tmux_state() { [ \"\$1\" != display-message ] || return 1; echo x >> '$BATS_TEST_TMPDIR/n'; n=\$(wc -l < '$BATS_TEST_TMPDIR/n'); n=\$((n)); printf '%s\\nprogress %s\\n' '$top' \"\$n\"; [ \"\$n\" -lt 3 ] || echo DONE; }
         laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); printf '%s\\n' \"\$GUARD_TEXT\" | wc -l | tr -d ' ' >> '$log'; }
         wait_command --pattern DONE --timeout 5"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
@@ -786,17 +786,19 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local log="$BATS_TEST_TMPDIR/flags"
     run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=x
         laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
-        PANE_STATE=shell_prompt; CURSOR_LINE='>>> '; ps() { :; }
-        tmux_state() { echo python3.12; }; send_gate 'print(1)'
-        tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls'
-        tmux_state() { return 1; }; send_gate 'ls'
-        PANE_STATE=other; tmux_state() { echo bash; }; CURSOR_LINE='Delete? [y/N] '; send_gate 'y'
+        ps() { printf '100 1 Ss -bash\\n200 100 S+ bash\\n300 200 S+ %s\\n' \"\$P\"; }
+        tmux_state() { echo 100; }
+        PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
+        P=python3.12; send_gate 'print(1)'
+        P=-bash; CURSOR_LINE='user@host\$ '; send_gate 'ls'
+        tmux_state() { return 1; }; send_gate 'ls'; tmux_state() { echo 100; }
+        PANE_STATE=other; P=bash; CURSOR_LINE='Delete? [y/N] '; send_gate 'y'
         PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'
-        CURSOR_LINE='user@remote\$ '; tmux_state() { echo ssh; }; send_gate 'ls'
-        tmux_state() { echo kubectl; }; send_gate 'ls'
-        CURSOR_LINE='> '; tmux_state() { echo node; }; send_gate '1'
-        PANE_STATE=other; CURSOR_LINE='➜ proj '; tmux_state() { echo zsh; }; send_gate 'ls'
-        PANE_STATE=pager; CURSOR_LINE=':'; tmux_state() { echo less; }; send_gate 'q'"
+        CURSOR_LINE='user@remote\$ '; P=ssh; send_gate 'ls'
+        P=kubectl; send_gate 'ls'
+        CURSOR_LINE='> '; P=node; send_gate '1'
+        PANE_STATE=other; CURSOR_LINE='➜ proj '; P=zsh; send_gate 'ls'
+        PANE_STATE=pager; CURSOR_LINE=':'; P=less; send_gate 'q'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen --shell\n--screen\n--screen --shell\n--screen --shell\n--screen\n--screen --shell\n--screen' ]
 }
@@ -1201,17 +1203,24 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$stderr" = 'laya: the cursor line is too long to examine: send --key C-c' ]
 }
 
-@test "a program named Python with no case gets no shell rule, and a shell inside a program gets it" {
-    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 Python'; }
-        ps() { printf '100 1 -bash\n200 100 bash\n300 200 /opt/homebrew/bin/python3\n'; }
+@test "the front program comes from ps with no case, also under a subshell, and a shell inside a program gets the rule" {
+    # A line of __clux_line runs in a subshell: tmux names that bash, and
+    # python3 runs under it in the front group.
+    run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
+        ps() { printf '100 1 Ss -bash\n200 100 S+ bash\n300 200 S+ /opt/homebrew/Frameworks/Python.app/Contents/MacOS/Python\n'; }
         pane_runs_program"
     [ "$status" -eq 0 ]
-    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 python3'; }
-        ps() { printf '100 1 -bash\n200 100 bash\n300 200 python3\n400 300 /bin/bash\n'; }
+    # A program in the background is not the front program.
+    run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
+        ps() { printf '100 1 Ss -bash\n300 100 S python3\n'; }
         pane_runs_program"
     [ "$status" -eq 1 ]
-    run bash -c "source '$TERMINAL'; tmux_state() { echo '100 nvim'; }
-        ps() { printf '100 1 -bash\n300 100 nvim\n400 300 zsh\n'; }
+    run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
+        ps() { printf '100 1 Ss -bash\n200 100 S+ bash\n300 200 S+ python3\n400 300 Ss+ /bin/bash\n'; }
+        pane_runs_program"
+    [ "$status" -eq 1 ]
+    run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
+        ps() { printf '100 1 Ss -bash\n300 100 S+ nvim\n400 300 Ss zsh\n'; }
         pane_runs_program"
     [ "$status" -eq 1 ]
 }
@@ -1249,4 +1258,57 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         capture_to_cursor() { CAPTURE=\$'out\nclux-ab12cd34\$ ls'; }; laya_call() { echo CALLED; return 1; }
         pane_state; echo \"rc=\$? \$PANE_STATE\""
     [ "$output" = 'rc=0 shell_prompt' ]
+}
+
+@test "open with CLUX_LAYA_URL does not use the laya_pid of a dead companion" {
+    require_laya_python
+    start_fake_laya '{"answers": {"state": "other"}}'
+    run bash -c "source '$TERMINAL'; S_LAYA_PID=999999; laya_open_check; echo \"ok \$S_LAYA_PID\""
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$output" = 'ok ' ]
+}
+
+@test "wait --pattern also examines the lines that scrolled off since the last capture" {
+    local n="$BATS_TEST_TMPDIR/n"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { echo x >> '$n'; }
+        tmux_state() {
+            local t=\$(cat '$n' 2>/dev/null | wc -l); t=\$((t))
+            case \"\$1\" in
+                display-message) [ \"\$t\" -eq 0 ] && echo 10 || echo 12 ;;
+                capture-pane)
+                    if [ \"\$t\" -eq 0 ]; then printf 'a\nb\n'
+                    elif [[ \"\$*\" == *'-S -2'* ]]; then printf 'BUILD OK\nx\nc\nd\n'
+                    else printf 'c\nd\n'; fi ;;
+            esac
+        }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); }
+        wait_command --pattern 'BUILD OK' --timeout 3"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "a wait probe sends no request while the window still changes, only the first probe and a still window" {
+    local count="$BATS_TEST_TMPDIR/count"
+    run bash -c "source '$TERMINAL'
+        n=0
+        capture_to_cursor() { n=\$((n + 1)); [ \"\$n\" -le 3 ] || n=3; CAPTURE=\"line \$n\"\$'\\nx> '; }
+        laya_call() { echo x >> '$count'; echo '{\"state\": \"other\"}'; }
+        probe_pane; probe_pane; probe_pane; probe_pane; echo \$PANE_STATE"
+    [ "$output" = other ]
+    # line 1 sends, lines 2 and 3 changed, line 3 again is still: 2 requests.
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 2 ]
+}
+
+@test "wait --run --discard keeps the output while another verb reads it" {
+    local d="$BATS_TEST_TMPDIR/dis"
+    mkdir -p "$d"
+    printf '0\n' > "$d/5.rc"; printf 'out\n' > "$d/5.out"; : > "$d/5.held"
+    sleep 30 3>&- & local reader=$!
+    ln -s "$reader" "$d/5.reading"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; ensure_open() { :; }; wait_command --run 5 --discard"
+    kill "$reader" 2>/dev/null || true
+    [ "$status" -eq 5 ]
+    [ "$stderr" = 'another verb reads the output of run 5 now: try again' ]
+    [ -e "$d/5.out" ] && [ -e "$d/5.held" ]
 }
