@@ -299,14 +299,20 @@ def cmd_command(args):
         raise Fail(2)
     text = read_stdin()
     if "--screen" in args:
-        lines = text.rstrip("\n").split("\n")
+        # Only the last newline goes: a blank input line stays the line.
+        lines = (text[:-1] if text.endswith("\n") else text).split("\n")
         command = lines[-1]
-        state = {"line": command, "screen": "\n".join(lines[:-1])}
+        screen = "\n".join(lines[:-1])
+        state = {"line": command, "screen": screen}
+        # A blank line in a program can accept a default ([Y/n]), so it goes
+        # to Laya with the screen above it.
+        if not command.strip() and not screen.strip():
+            raise Fail(2)
     else:
         command = text.rstrip("\n")
         state = command
-    if not command.strip():
-        raise Fail(2)
+        if not command.strip():
+            raise Fail(2)
     # safe_list is its own field: terminal.sh writes the .safe marker from
     # it, not from the reason text.
     if "--no-safe-list" not in args and on_safe_list(command):

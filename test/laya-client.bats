@@ -513,3 +513,12 @@ PY
 @test "the output guard sends at most 2 requests at one time: laya-serve runs one at a time" {
     grep -q '^MAX_PARALLEL = 2$' "$LAYA_CLIENT"
 }
+
+@test "command --screen: a blank line goes to Laya with the screen, a blank screen too exits 2" {
+    start_fake_laya '{}'
+    run --separate-stderr client command --screen --no-safe-list < <(printf 'Delete all? [Y/n]\n\n')
+    [ "$status" -eq 0 ]
+    [ "$(fake_laya_states destructive | tail -n 1)" = '""' ]
+    run --separate-stderr client command --screen --no-safe-list < <(printf '\n\n')
+    [ "$status" -eq 2 ]
+}
