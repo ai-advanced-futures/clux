@@ -820,6 +820,37 @@ PY
     [ "$status" -eq 2 ] && [ "$stderr" = 'laya: bad input' ]
 }
 
+@test "cells gives a variation selector the tmux width, and never fewer cells than tmux" {
+    run python3 -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+cases = {'a': 1, '\U0001f44d': 2, '❤️': 2, '\U0001f44d️': 2, '☺︎': 1,
+         'x️️': 2, 'a︀b': 2, 'é': 1, '한': 2}
+for text, width in cases.items():
+    assert c.cells(text) == width, (text, c.cells(text))
+# A skin tone, a ZWJ sequence and a format character keep their full
+# count: older tmux versions show them wider (a false refusal, spec 7).
+assert c.cells('\U0001f44d\U0001f3fd') == 4
+assert c.cells('‍') == 1
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # The live check: cells is never below the cursor_x of a real tmux.
+    command -v tmux >/dev/null || skip 'no tmux'
+    local sock="$BATS_TEST_TMPDIR/w.sock" text x n
+    tmux -S "$sock" -f /dev/null new -d -s w -x 120 -y 5 'sleep 30'
+    for text in 'a' '👍' '👍🏽' '❤️' '👍️' '☺︎' '👨‍👩‍👧' $'a​b' $'é' 'plain ascii'; do
+        tmux -S "$sock" respawn-pane -k -t w "printf '%s' '$text'; sleep 30"
+        for n in 1 2 3 4 5 6 7 8 9 10; do
+            x=$(tmux -S "$sock" display -p -t w '#{cursor_x}')
+            [ "$x" -gt 0 ] && break
+            python3 -c 'import time; time.sleep(0.1)'
+        done
+        n=$(printf '%s' "$text" | python3 -c "import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts'); import laya_client as c; print(c.cells(sys.stdin.read()))")
+        [ "$n" -ge "$x" ] || { tmux -S "$sock" kill-server; echo "$text: cells $n, tmux $x"; false; }
+    done
+    tmux -S "$sock" kill-server
+}
+
 @test "the pieces of a long line share 100 characters, so a token is whole in one piece" {
     run python3 -c "
 import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')

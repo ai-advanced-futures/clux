@@ -924,14 +924,26 @@ def cmd_check_url(args):
 
 
 def cells(text):
-    """The screen cells of text: 2 for a wide character, 0 for a
-    combining character, else 1."""
+    """The screen cells of text, never fewer than tmux gives (spec section
+    7): too few would let text go in the middle of the line with no gate;
+    too many only refuses the send. 2 for a wide character, 0 for a
+    combining character, else 1. A variation selector (U+FE00 to U+FE0F) is
+    0, but VS16 (U+FE0F) after a narrow character is 1: tmux 3.4 and later
+    show that character wide. tmux 3.4 and later also join an emoji and its
+    skin tone, and a ZWJ sequence, in 2 cells, and give 0 to a format
+    character (U+200B); older versions do not. So these keep their full
+    count, and a row with one of them after the cursor can be refused."""
     import unicodedata
-    count = 0
+    count, last = 0, 0
     for char in text:
+        if "\ufe00" <= char <= "\ufe0f":
+            count += 1 if char == "\ufe0f" and last == 1 else 0
+            last = 2 if char == "\ufe0f" and last == 1 else last
+            continue
         if unicodedata.combining(char):
             continue
-        count += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        last = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        count += last
     return count
 
 
