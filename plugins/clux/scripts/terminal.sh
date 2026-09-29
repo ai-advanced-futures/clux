@@ -2315,7 +2315,6 @@ send_command() {
         if accept_key "$key"; then rm -f "$D/typed"; else typed_edit; fi
         return
     fi
-    [ -n "$text" ] || [ -n "$key" ] || usage
     # The gate examines the cursor line plus the text, so the text must go
     # at the end of the line. After Home or Left it goes in the middle. This
     # is true in each program, so the check runs on each send, and a send
