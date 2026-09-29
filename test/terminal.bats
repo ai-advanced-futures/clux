@@ -507,27 +507,60 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [[ "$output" == *'$ echo a?b'* ]] || false
 }
 
-@test "a safe-list run refuses a first word that is not the program that terminal.sh found" {
-    local bin="$BATS_TEST_TMPDIR/bin" path sum
-    mkdir -p "$bin"
-    printf '#!/bin/sh\necho fake\n' > "$bin/ls"; chmod +x "$bin/ls"
-    path=$(bash -c 'type -P ls')
-    sum=$(rc_sum 'ls /')
-    RC_CMD='ls /' run rc_run "$sum" safe file "$path"
-    [[ "$output" == *'rc=0' ]] || false
-    RC_CMD='ls /' RC_SETUP="PATH='$bin':\$PATH" run rc_run "$sum" safe file "$path"
-    [[ "$output" == *'refused: the first word is not the program that the safe list permits'* ]] || false
-    [[ "$output" != *fake* ]] || false
-    RC_CMD='ls /' RC_SETUP="hash -p '$bin/ls' ls" run rc_run "$sum" safe file "$path"
-    [[ "$output" == *'rc=0' ]] || false
-    [[ "$output" != *fake* ]] || false
-    RC_CMD='ls /' RC_SETUP="ls() { echo fake; }" run rc_run "$sum" safe file "$path"
-    [[ "$output" == *'refused: the first word'* ]] || false
-    sum=$(rc_sum 'echo hi')
-    RC_CMD='echo hi' run rc_run "$sum" safe builtin
-    [[ "$output" == *$'hi\nrc=0' ]] || false
-    RC_CMD='echo hi' RC_SETUP="echo() { builtin echo fake; }" run rc_run "$sum" safe builtin
-    [[ "$output" == *'refused: the first word'* ]] || false
+@test "__clux_run has no safe mode: a mode that is not plain or confirm runs nothing" {
+    local mark="$BATS_TEST_TMPDIR/ran" sum
+    sum=$(rc_sum "touch '$mark'")
+    RC_CMD="touch '$mark'" run rc_run "$sum" safe file /bin/touch
+    [[ "$output" == *'refused: the mode is not plain or confirm'* ]] || false
+    [[ "$output" == *'rc=126' ]] || false
+    [ ! -e "$mark" ]
+    ! grep -q 'safe list' "$BATS_TEST_TMPDIR/rc/rc.bash" || false
+}
+
+@test "rc.bash sets ignoreeof, so C-d at the prompt does not end the pane shell" {
+    local d="$BATS_TEST_TMPDIR/rc"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    run bash -c "source '$d/rc.bash'; shopt -qo ignoreeof && echo on; echo \"\$IGNOREEOF\""
+    [ "$output" = $'on\n1000000' ]
+}
+
+@test "the typing lock refuses a live holder and takes the lock of a dead holder" {
+    local d="$BATS_TEST_TMPDIR/lock"
+    mkdir -p "$d"
+    sleep 30 3>&- & local live=$!
+    ln -s "$live" "$d/typing"
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?"
+    [[ "$output" == *'another send or run is typing in the pane: try again'* ]] || false
+    [[ "$output" == *'rc=5' ]] || false
+    [ "$(readlink "$d/typing")" = "$live" ]
+    kill "$live"; wait "$live" 2>/dev/null || true
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; readlink '$d/typing'; echo \$\$"
+    [ "${lines[0]}" = 'rc=0' ]
+    [ "${lines[1]}" = "${lines[2]}" ]
+    # The EXIT trap releases the lock.
+    [ ! -L "$d/typing" ]
+}
+
+@test "send refuses when the cursor line changed while Laya examined it" {
+    run bash -c "source '$TERMINAL'
+        CURSOR_LINE='clux\$ ls'
+        capture_cursor_line() { CURSOR_LINE='Password:'; }
+        line_unchanged; echo rc=\$?
+        CURSOR_LINE='clux\$ ls'
+        capture_cursor_line() { CURSOR_LINE='clux\$ ls'; }
+        line_unchanged; echo rc=\$?
+        capture_cursor_line() { return 1; }
+        line_unchanged; echo rc=\$?"
+    [ "$output" = $'the line changed while Laya examined it: read, then send again\nrc=5\nrc=0\nthe line changed while Laya examined it: read, then send again\nrc=5' ]
+}
+
+@test "send and run refuse with exit 2 when Laya cannot examine all the text" {
+    run bash -c "source '$TERMINAL'
+        laya_call() { return 3; }; laya_gate </dev/null; echo \$?"
+    [ "$output" = '3' ]
+    grep -q "3) fail 'laya: the line is too long to examine: make it shorter' 2" "$TERMINAL"
+    grep -q "3) release_busy; fail 'laya: the command is too long to examine: make it shorter' 2" "$TERMINAL"
 }
 
 @test "rc.bash gets the directory and the prompt token as values, not from the environment" {

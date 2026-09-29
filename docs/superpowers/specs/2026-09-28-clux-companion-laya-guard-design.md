@@ -65,7 +65,7 @@ These decisions come from the user (2026-09-28).
 - **Start.** clux can install and start Laya locally, after the user confirms.
 - **Lifetime.** `open` starts one Laya server for the companion. `close` and the `SessionEnd` hook stop it.
 - **External server.** When `CLUX_LAYA_URL` is set, clux uses that server and does not start or stop a server.
-- **Risk levels.** Commands on the safe list do not go to Laya. A `caution` command runs, and Claude gets a note. A `dangerous` command runs only after the user types `y` in the pane.
+- **Risk levels.** Each command goes to Laya: there is no safe list (section 7). A `caution` command runs, and Claude gets a note. A `dangerous` command runs only after the user types `y` in the pane.
 - **Output guard.** clux splits the output into blocks and sends each block to Laya. clux then examines each line of a flagged block, and holds back only the lines that contain secrets.
 - **Client.** A small Python client that uses the laya SDK.
 
@@ -89,7 +89,6 @@ These decisions come from the user (2026-09-28).
 | `config/laya/output-block.json` (new) | Policy for a block of output. |
 | `config/laya/output-line.json` (new) | Policy for one line of a flagged block. |
 | `config/laya/pane.json` (new) | Policy for the prompt type on the cursor line. |
-| `config/laya/safe-commands.txt` (new) | The safe list: first words that do not go to Laya. |
 | `config/laya/secret-values.txt` (new) | Regular expressions for secret values. An extra layer of the output guard (section 8). |
 | `config/laya/not-secret.txt` (new) | Regular expressions for line shapes that are never secret (section 15). |
 
@@ -108,7 +107,7 @@ Each policy file is one JSON object:
 - `schema` goes to `LayaDecision` unchanged. `enum` becomes `choice`, `boolean` becomes `noul`, and an integer with limits becomes `score`. The `description` of each property is the question.
 - `thresholds` are read only by the client.
 - Claude does not edit these files. The skill tells Claude not to edit them.
-- A user copy in `$XDG_CONFIG_HOME/clux/laya/<name>.json` replaces the shipped file of the same name. This is a replace rule, not the add rule that `credential-patterns.txt` uses in 3.9.0. [inferred] The three `.txt` files (`safe-commands.txt`, `secret-values.txt`, `not-secret.txt`) have no user copy. [inferred] Only the shipped `.txt` files apply. [inferred]
+- A user copy in `$XDG_CONFIG_HOME/clux/laya/<name>.json` replaces the shipped file of the same name. This is a replace rule, not the add rule that `credential-patterns.txt` uses in 3.9.0. [inferred] The two `.txt` files (`secret-values.txt`, `not-secret.txt`) have no user copy. [inferred] Only the shipped `.txt` files apply. [inferred]
 
 ## 5. The client
 
@@ -119,9 +118,9 @@ Input: the URL comes from the environment variable `CLUX_LAYA_URL`, and the key 
 | Subcommand | stdin | stdout |
 |---|---|---|
 | `health` | nothing | `{"ok": true}`, or exit 1 |
-| `command` | the command text | `{"level": "safe"\|"caution"\|"dangerous", "reason": "destructive 0.85", "safe_list": false}` (`safe_list` is `true` only when the safe list gave the level; terminal.sh writes `<n>.safe` from this field, not from the reason text [inferred]) |
+| `command` | the command text | `{"level": "safe"\|"caution"\|"dangerous", "reason": "destructive 0.85"}`, or exit 3 when Laya cut the text (see "Cut text" in section 7) |
 | `output` | the text | `{"text": "<text with held lines replaced>", "held": [{"kind": "secret", "lines": 2}, …]}` |
-| `pane` | the cursor line and the 4 lines above it | `{"state": "credential"\|"yes_no"\|"menu"\|"pager"\|"shell_prompt"\|"other"}` |
+| `pane` | the cursor line and the 4 lines above it (exit 3 when Laya cut the text, section 9) | `{"state": "credential"\|"yes_no"\|"menu"\|"pager"\|"shell_prompt"\|"other"}` |
 
 Exit codes of the client: 0 on a decision; 1 when Laya is not available or gives a bad answer; 2 on bad input. `terminal.sh` treats all codes other than 0 as "Laya not available".
 
@@ -198,7 +197,23 @@ For `send`, the state that goes to Laya is:
 - `line`: the full input line. At the `clux-<token>$` prompt this is the text after `clux-<token>$ ` on the cursor line, plus the new text. Thus a command that Claude types in parts gets the same check as a command in one part. In other states (a continuation line, a heredoc, a program prompt) there is no prompt mark, and `line` is the cursor line plus the new text.
 - `screen`: the 4 lines above the cursor line, so that Laya knows the program (for example `mysql>` or a `[y/N]` question).
 
-The safe list applies only to `run`. `send` always goes to Laya: only `run` checks that the first word is the program that terminal.sh found (see below), so on `send` a function with the name of a safe-list word would skip Laya.
+### One verb types at a time
+
+`send` and `run` take the typing lock before they read the cursor line, and keep it until they typed. The lock is a symbolic link `$D/typing` to the pid of the verb (`ln -s` makes it or fails, in one step). A lock whose pid is not alive is taken over: the verb moves the link away with `mv` (only one verb gets it), checks that it is still the dead holder, then makes its own link. When a live verb holds it, the verb exits 5 with `another send or run is typing in the pane: try again`. Without the lock, two `send` verbs at one time read the same cursor line, Laya examines each piece alone, and the two pieces make one line that no gate examined. The interrupt keys take no lock. `run` releases the lock when it typed `__clux_run`, not when the command ends.
+
+### The line that the gate examined
+
+The gate can take some seconds. In that time a program can change the cursor line (for example `ssh` shows `Password:`). Thus `send` reads the cursor line again after the gate, just before it types. When the line is not the line that the gate examined, or the capture fails, `send` types nothing and exits 5 with `the line changed while Laya examined it: read, then send again`. [inferred] A program that draws the line again and again (a spinner) gives this refusal each time. [inferred] A short time stays between the second read and the typing; the lock does not close it, because a program in the pane is not a verb.
+
+### Cut text
+
+Laya reads at most 512 tokens for each question. When the text is longer, Laya examines only a part of it, and a command such as `echo <400 x's>; rm -rf ~` gets the score of the `echo`. The client divides `usage.input_tokens` by the number of questions of the policy. When that mean is 496 (512 minus a margin of 16) or more, Laya cut the text, and the client exits 3. `send` then exits 2 with `laya: the line is too long to examine: make it shorter`, and `run` exits 2 with `laya: the command is too long to examine: make it shorter`. Nothing is typed.
+
+### No safe list
+
+Each command goes to Laya, also `ls` and `echo`. An earlier design let some first words skip Laya, and the pane shell checked that the first word was the program that terminal.sh found. That check cannot be trusted: a command that ran earlier can make a function with the name of any builtin that the check uses (`builtin`, `type`, `command`, `hash`), and bash permits a function named `/bin/ls`. The pane shell still runs `shopt -u expand_aliases`, so it runs the text that Laya examined.
+
+The pane shell sets `ignoreeof` and `IGNOREEOF=1000000`. `C-d` is an interrupt key and skips the gate, so without this a `send --key C-d` at an empty prompt would end the pane shell.
 
 In a pager or a menu (the last `pane_state`), the keys `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PgUp`, `PageDown`, `PgDn`, `NPage` and `PPage` with no modifier go to the pane with no command request: there they only move. `Space` is not one: it selects in a menu. At a shell prompt these keys still go to the gate.
 
@@ -207,17 +222,6 @@ In a pager or a menu (the last `pane_state`), the keys `Up`, `Down`, `Left`, `Ri
 ### The limit of the private directory
 
 The pane shell runs as the same user as terminal.sh, so no file of the companion is out of its reach. The gate protects the pane before a command runs. A command that ran can change the pane shell, `rc.bash` or the state file, and a later gate cannot undo that. Thus clux does not keep trust in files that the pane shell can write: the typed line carries the sum and the mode, `rc.bash` gets the private directory as a read-only value (not the exported `CLUX_TERMINAL_D`), and the client refuses a Laya URL that is not on a loopback host.
-
-### Safe list
-
-A command skips Laya only when all of these are true:
-
-- The command's first words equal one full line of `config/laya/safe-commands.txt`, word for word (`ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`). `git` is not on the list: the config of a repository can start a program (`core.fsmonitor`, `core.pager`), so each `git` command goes to Laya.
-- No word after the matched line starts with `--`. A long option can write a file (`git diff --output=<file>`), so `git log --output=<file>` and `ls --color` go to Laya. Short options (`ls -la`, `git log -3`) do not end the match.
-- It is one simple command of plain words. It contains none of these: `;` `|` `&` `<` `>` `$` `` ` `` `(` `)` newline, and none of `'` `"` `\` `{` `}` `*` `?` `[` `]` `~` `!`. [inferred] Bash changes a word with quotes, a backslash, braces, a glob or `~` before the command gets it: `git diff '--output=x'`, `git diff {--output=x,}` and `git diff \--output=x` all give `--output=x`.
-Thus `ls -la` skips Laya, and `ls $(rm -rf x)` goes to Laya.
-
-The pane shell runs `shopt -u expand_aliases`, so an alias cannot change what a safe-list word runs. For a safe-list command, `run` finds the first word in its own shell: `type -t` gives `builtin` or `file`, and for `file`, `type -P` gives the path. The typed line carries this (`__clux_run <n> <sum> safe file /bin/ls` or `safe builtin`). The pane shell runs `hash -r`, then finds the first word again. When the kind or the path is not the same (a function of the same name, a different `PATH`, a `hash -p` entry), the run prints `refused: the first word is not the program that the safe list permits` and exits 126.
 
 ### Levels
 
@@ -243,7 +247,7 @@ The client gives `dangerous` when one boolean is above its threshold (default 0.
 
 - `run` refuses a command with a control character (a newline, a tab, an escape) with exit code 2, before Laya: such a character can hide a part of the command in the question.
 - `run` writes the command to `<n>.cmd`, an empty marker `<n>.confirm` and the reason to `<n>.reason`, then types `__clux_run <n> <sum> confirm`. `<sum>` is the first 32 hex characters of the SHA-256 of the command that Laya examined.
-- The typed line, not a file, tells the pane shell what the gate decided: the mode is `plain`, `confirm` or `safe`. The files in the private directory are only data. `__clux_run` makes the sum of `<n>.cmd` again and refuses a different sum (`refused: the command changed after Laya examined it`, exit 126). Thus a change of `<n>.cmd` after the gate, or a deleted `<n>.confirm`, does not skip the gate or the question.
+- The typed line, not a file, tells the pane shell what the gate decided: the mode is `plain` or `confirm`. `__clux_run` refuses any other mode (exit 126). The files in the private directory are only data. `__clux_run` makes the sum of `<n>.cmd` again and refuses a different sum (`refused: the command changed after Laya examined it`, exit 126). Thus a change of `<n>.cmd` after the gate, or a deleted `<n>.confirm`, does not skip the gate or the question.
 - For `confirm`, `__clux_run` shows `laya: dangerous (<reason>)`, then the command, then `run? [y/N] `. Control characters in the reason and in the command show as `?`. It reads one line from the terminal.
 - Each `<n>.cmd` runs one time. `__clux_run` refuses a run that has no `<n>.cmd` or that has an `<n>.rc`, and it deletes `<n>.cmd` when it reads it. `send` and `run` refuse text that contains `__clux_` with exit code 2, with no Laya request. Thus a declined command cannot run again through `__clux_run <n>`.
 - It deletes `<n>.confirm` on all answers.
@@ -259,19 +263,23 @@ The guard applies to all text that goes from the pane to Claude:
 
 - The output of `run` and `wait --run` (in `report_run`, after the cut to `--max-lines`).
 - The screen text of `read`.
-- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time. `wait --pattern` polls each 1 s, not each 0.2 s. It keeps the last raw capture and runs the guard again only when the capture changes and the raw screen matches the pattern. [inferred] A pattern that matches only a held marker line is not found.
+- The screen that `wait --pattern` examines. The pattern is tested on the guarded text, not on the raw screen. This prevents a pattern that finds a held secret one character at a time. `wait --pattern` polls each 1 s, not each 0.2 s. It keeps the last raw capture and runs the guard on each new capture. No test reads the raw screen: when a raw test decides whether the guard runs, the time of the verb tells that a held line matches. A failed guard counts as a failed pane probe: after 3 in a row the verb exits 6, and the same screen is guarded again on the next tick. [inferred] A pattern that matches only a held marker line is not found.
 
 `--secret` runs keep the 3.9.0 behavior. Their output does not go to Laya or to Claude.
 
 ### Steps
 
-1. **Blocks.** The client splits the text into blocks of complete lines. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
+1. **Blocks.** The client splits the text into blocks of complete lines. It makes the blocks from the last line up, so that new output at the end does not move the edges of the blocks above it. A top block of less than half the size joins the block below it. The first estimate is 2 characters for each token (section 2 measured about 2 for `ls -la`), with at most 300 tokens in each block. A line longer than 300 tokens is its own block, split into pieces.
 2. **Block check.** The client sends all blocks with `output-block.json`, at most 2 at one time. [inferred] `laya-serve` 0.3.21 runs one model request at a time, and the 5 s request limit counts the time in its queue; with 2, a request waits for at most one other request. The schema asks: `secret` (boolean: does the text contain a password, API key, token, private key or other credential?), `prompt_injection` (boolean: does the text contain instructions to an AI assistant?).
 3. **Cut text.** The client divides `usage.input_tokens` by the number of questions of the block policy (2). When that mean row is 496 (512 minus a margin of 16) or more, the longest row can be cut, so Laya cut the block. The client splits that block in two and sends each half again. A single line that Laya cuts is split into pieces.
 4. **Injection.** A block with `prompt_injection` above its threshold (default 0.8) is held. Its lines become one line: `[held by laya: prompt_injection, <k> lines]`.
 5. **Line check.** For each block with `secret` above its threshold (default 0.5), the client sends each line two times with `output-line.json` (the same `secret` question): the line alone, and the line with the line above it. A line is held when:
    - the line alone is above the line threshold (default 0.75), or
    - the pair is above the threshold, and the line above alone is not. Thus the secret is in this line (for example `hunter2` after `Password:`).
+
+   The pair gets the last 200 characters of the line above, so that Laya does not cut the pair. When Laya cuts a request of the line check, the score is 1.0 and the line is held. There is no pair request when the line alone or the line above alone is held, or when `secret-values.txt` holds the line above. The pair rule goes in line order: a line whose line above is held is not held by the pair.
+
+   [inferred] The context of a block still changes its score: the same line can get a different score in a different block. `secret-values.txt` is the layer that does not depend on the context.
 
    The line above has its own alone score. [inferred] When that score is above the line threshold, the line above is held too, also when its own block was not flagged (a secret on the last line of a block).
 
@@ -304,7 +312,7 @@ The output guard runs inside the time of the verb. The guard limit is 15 s. When
 
 `credential_on_cursor` becomes `pane_state`. It gives one of `credential`, `yes_no`, `menu`, `pager`, `shell_prompt`, `other`.
 
-- The client gets the cursor line and the 4 lines above it (the prompt `Enter value:` alone is not clear).
+- The client gets the cursor line and the 4 lines above it (the prompt `Enter value:` alone is not clear). It sends the last 400 characters of the cursor line and the last 200 characters of each line above. When Laya cuts that text, it asks again with the cursor line alone. When Laya cuts that too, the client exits 3, and the probe fails as when Laya does not answer.
 - The pane-state input does not go to Claude, so this text needs no output guard.
 - The result is `credential` when Laya gives `credential` or the 3.9.0 regular expressions find a credential prompt. terminal.sh applies this rule. [inferred] It calls the existing `line_is_credential` (3.9.0 bash, unchanged) on the cursor line. [inferred] It ORs that result with the client's `state`. [inferred] The client does not read `credential-patterns.txt`. [inferred]
 - The prompt is `clux-<token>$ `. `open` makes the token from 4 random bytes and writes it to `rc.bash` and to the state file. The test `line_at_prompt` (the suffix `clux-<token>$`) stays a plain string test. It does not use Laya, because it is the marker of the clux shell and not a decision about content. Output that shows `clux$ ` is not the prompt, because it does not have the token. `prompt_input`, `wait_for_prompt` and `wait_for_clear` use the same mark. A companion that an older clux opened has no token, and its mark stays `clux$`.
@@ -321,7 +329,8 @@ The 3.9.0 codes stay. One code is new.
 
 | Code | Meaning |
 |---|---|
-| 2 | Also, as in 3.9.0 for bad arguments: `run` with a blank command (`run needs a command`), and a command that the client refuses as bad input (`laya: bad input`). |
+| 2 | Also, as in 3.9.0 for bad arguments: `run` with a blank command (`run needs a command`), a command that the client refuses as bad input (`laya: bad input`), and a line or a command that Laya cannot examine in full (`too long to examine`). |
+| 5 | Also, as in 3.9.0 for a busy companion: another `send` or `run` holds the typing lock, or the cursor line changed while Laya examined it (section 7). |
 | 3 | A credential prompt or a Laya confirmation is in the pane. The user must answer it in the pane. Also: text that the pane did not show is on the line (`send --key C-c` removes it). |
 | 6 | Laya: not installed, not available, refused (`dangerous` on `send`), or output held because Laya did not answer. The message on stderr tells which. The skill uses the message text to select the next step. |
 
@@ -337,7 +346,7 @@ The 3.9.0 codes stay. One code is new.
 ## 12. Repository changes
 
 - `plugins/clux/scripts/laya_client.py` (new). It is not deployed. Add it to the not-deployed list in `test/deploy-manifest.bats` and to the note in the manifest header.
-- `plugins/clux/config/laya/*.json` and `safe-commands.txt` (new). They are read from `CLAUDE_PLUGIN_ROOT` and are not deployed.
+- `plugins/clux/config/laya/*.json` and the two `.txt` files (new). They are read from `CLAUDE_PLUGIN_ROOT` and are not deployed.
 - `plugins/clux/scripts/terminal.sh`: sections 6 to 10.
 - `plugins/clux/skills/terminal/SKILL.md`: section 11.
 - `plugins/clux/.claude-plugin/plugin.json`: version 4.0.0.
@@ -349,7 +358,7 @@ The 3.9.0 codes stay. One code is new.
 
 - **Fake server.** `test/fixtures/fake-laya.py` is a small HTTP server with the two endpoints. It gives fixed answers from a JSON file that each test writes. Thus CI does not need the model. `test_helper` sets `CLUX_LAYA_PYTHON` to the venv Python. [inferred] The default path is `~/.local/share/clux/laya/bin/python3`. [inferred] A bats file that calls the client skips its tests when that Python cannot import `laya`. [inferred] The plan captures one real request and response from `laya-serve` 0.3.21 for a `noul` property, a `choice` property, `/health`, and a 503, into `test/fixtures/`. [inferred] `fake-laya.py` and the client tests use these captures as the source of truth for the wire format. [inferred]
 - `test/laya-client.bats`:
-  1. `command`: the safe list, the simple-command rule (`ls -la` skips, `ls $(rm -rf x)` does not), the three levels, the thresholds.
+  1. `command`: each command goes to Laya (also `ls` and `echo`), the three levels, the thresholds, and exit 3 for a cut command.
   2. `output`: one secret line in a block of 20 is held and the other 19 stay; an injection block is held in full; a PEM block is held as one unit; a block with more than half of its lines flagged is held in full; a long line is held in full.
   3. `pane`: the six states.
   4. The fake server gives 503, then 200: the client tries one time more and gives the result.

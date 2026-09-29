@@ -520,8 +520,11 @@ write_rc_file() {
 unset HISTFILE
 set +o history
 PROMPT_COMMAND=
-# An alias could change what a safe-list word runs (spec section 7).
+# No aliases: the pane shell runs the text that Laya examined.
 shopt -u expand_aliases
+# C-d at an empty prompt must not end the pane shell (spec section 7).
+set -o ignoreeof
+IGNOREEOF=1000000
 __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
 exit() { __clux_refuse; }
 exec() { __clux_refuse; }
@@ -537,13 +540,11 @@ __clux_sum() {
   __clux_o="${__clux_o%% *}"
   printf '%s' "${__clux_o:0:32}"
 }
-# __clux_run N SUM MODE [KIND [PATH]] — run <n>.cmd. terminal.sh types this
-# line after the Laya gate. The line, not a file in the private directory,
-# tells what the gate decided: SUM is the sum of the command that Laya
-# examined, MODE is plain, confirm (dangerous: ask the user) or safe (the
-# safe list). For safe, KIND is builtin or file and PATH is the program that
-# terminal.sh found for the first word. A command that is not the same, or
-# a first word that is not the same program, is refused.
+# __clux_run N SUM MODE — run <n>.cmd. terminal.sh types this line after
+# the Laya gate. The line, not a file in the private directory, tells what
+# the gate decided: SUM is the sum of the command that Laya examined, MODE
+# is plain or confirm (dangerous: ask the user). A command that is not the
+# same is refused.
 #
 # A dangerous run asks the user first. Only "y" runs it. The INT trap keeps
 # Ctrl-C from ending the question: without it, Ctrl-C ends this function and
@@ -551,7 +552,7 @@ __clux_sum() {
 # one time: a run with no .cmd, or with an .rc, is refused, and .cmd is
 # deleted when it is read. Thus a declined run cannot run again.
 __clux_run() {
-  local __clux_n="$1" __clux_s="${2:-}" __clux_m="${3:-}" __clux_k="${4:-}" __clux_p="${5:-}"
+  local __clux_n="$1" __clux_s="${2:-}" __clux_m="${3:-}"
   local __clux_d="$__clux_dir" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
   if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
     printf '%s\n' 'refused: this run is not waiting to start'
@@ -562,20 +563,9 @@ __clux_run() {
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
     __clux_cmd='printf "%s\n" "refused: the command changed after Laya examined it"; (builtin exit 126)'
     __clux_m=plain
-  fi
-  # A safe-list run skipped Laya because of its first word, so that word
-  # must be the program or the builtin that terminal.sh found, not an alias,
-  # a function or a different program on PATH.
-  if [ "$__clux_m" = safe ]; then
-    builtin hash -r
-    __clux_i="${__clux_cmd#"${__clux_cmd%%[![:space:]]*}"}"
-    __clux_i="${__clux_i%%[[:space:]]*}"
-    case "$__clux_k:$(builtin type -t -- "$__clux_i")" in
-      builtin:builtin) ;;
-      file:file) [ "$(builtin type -P -- "$__clux_i")" = "$__clux_p" ] || __clux_k= ;;
-      *) __clux_k= ;;
-    esac
-    [ -n "$__clux_k" ] || __clux_cmd='printf "%s\n" "refused: the first word is not the program that the safe list permits"; (builtin exit 126)'
+  elif [ "$__clux_m" != plain ] && [ "$__clux_m" != confirm ]; then
+    __clux_cmd='printf "%s\n" "refused: the mode is not plain or confirm"; (builtin exit 126)'
+    __clux_m=plain
   fi
   if [ "$__clux_m" = confirm ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
@@ -764,23 +754,22 @@ check_pane() {
 
 GATE_LEVEL=
 GATE_REASON=
-GATE_SAFE_LIST=0
-LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)", "safe_list": (true|false)'
+LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)"'
 
-# laya_gate [--screen] [--no-safe-list] < TEXT — the command gate of the
+# laya_gate [--screen] < TEXT — the command gate of the
 # client (spec section 7). Sets GATE_LEVEL and GATE_REASON. Returns 2 when
-# the client refuses the input (exit 2) and 6 when it fails. [inferred] terminal.sh reads the fixed JSON shape with a
+# the client refuses the input (exit 2), 3 when the text is too long for
+# Laya (exit 3: Laya would examine only its start) and 6 when it fails. [inferred] terminal.sh reads the fixed JSON shape with a
 # bash regular expression, because jq is only recommended for clux.
 laya_gate() {
     local out rc=0
     out=$(laya_call command "$@") || rc=$?
     [ "$rc" -ne 2 ] || return 2
+    [ "$rc" -ne 3 ] || return 3
     [ "$rc" -eq 0 ] || return 6
     [[ "$out" =~ $LEVEL_RE ]] || return 6
     GATE_LEVEL="${BASH_REMATCH[1]}"
     GATE_REASON="${BASH_REMATCH[2]}"
-    GATE_SAFE_LIST=0
-    [ "${BASH_REMATCH[3]}" != true ] || GATE_SAFE_LIST=1
 }
 
 GUARD_HELD=0
@@ -880,10 +869,9 @@ nav_key() {
 
 # send_gate TEXT — the command gate for a send that ends a line (spec
 # section 7). check_pane must run first: it sets CURSOR_LINE and
-# SCREEN_ABOVE. The line is the cursor line plus TEXT. At the clux$ prompt
-# the prompt goes off and the safe list applies. In any other program (ssh,
-# python3, psql) the full cursor line goes, with the 4 lines above it as the
-# screen, and the safe list does not apply. [inferred] The cursor line is the
+# SCREEN_ABOVE. The line is the cursor line plus TEXT. At the clux prompt
+# the prompt goes off. In any other program (ssh, python3, psql) the full
+# cursor line goes, with the 4 lines above it as the screen. The cursor line is the
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
     local line prompt=0
@@ -906,13 +894,11 @@ send_gate() {
             case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
             ;;
     esac
-    # No safe list for send: only run checks that the first word is the
-    # program that terminal.sh found (the typed __clux_run line), so on send
-    # a function of the same name would skip Laya.
-    laya_gate --screen --no-safe-list < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
         0) ;;
         2) fail 'laya: bad input' 2 ;;
+        3) fail 'laya: the line is too long to examine: make it shorter' 2 ;;
         *) refuse_laya; return ;;
     esac
     case "$GATE_LEVEL" in
@@ -1130,6 +1116,65 @@ send_key() { tmux_state send-keys -t "$S_PANE" "$1"; }
 
 release_busy() { rmdir "$D/busy" 2>/dev/null || true; }
 
+TYPING_LOCK=0
+
+# take_typing_lock — one verb at a time reads the cursor line, asks Laya
+# and types (spec section 7). Without it, two sends in parallel read the
+# same cursor line, Laya examines each piece alone, and the two pieces make
+# one line that no gate examined. The lock is a symbolic link to the pid of
+# its holder, so a holder that was killed does not keep it. Returns 5 with
+# the message when a live verb holds it.
+take_typing_lock() {
+    local pid stale="$D/typing.stale.$$"
+    if ! ln -s "$$" "$D/typing" 2>/dev/null; then
+        pid=$(readlink "$D/typing" 2>/dev/null) || pid=
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *) if kill -0 "$pid" 2>/dev/null; then
+                   printf '%s\n' 'another send or run is typing in the pane: try again' >&2
+                   return 5
+               fi ;;
+        esac
+        # Take over a dead holder. mv moves the link away in one step, so
+        # only one verb gets it. When the moved link is not the dead holder
+        # (a new verb took the lock in the meantime), put it back.
+        if mv "$D/typing" "$stale" 2>/dev/null; then
+            if [ "$(readlink "$stale" 2>/dev/null)" = "$pid" ]; then
+                rm -f "$stale"
+            else
+                mv "$stale" "$D/typing" 2>/dev/null || rm -f "$stale"
+                printf '%s\n' 'another send or run is typing in the pane: try again' >&2
+                return 5
+            fi
+        fi
+        ln -s "$$" "$D/typing" 2>/dev/null || {
+            printf '%s\n' 'another send or run is typing in the pane: try again' >&2
+            return 5
+        }
+    fi
+    TYPING_LOCK=1
+    trap release_typing_lock EXIT
+}
+
+release_typing_lock() {
+    [ "$TYPING_LOCK" -eq 1 ] || return 0
+    rm -f "$D/typing"
+    TYPING_LOCK=0
+}
+
+# line_unchanged — the cursor line is still the line that the gate
+# examined (spec section 7). The gate can take some seconds; in that time
+# a program can show a new prompt (Password: in ssh) or change the line.
+# Returns 5 with the message when the line changed.
+line_unchanged() {
+    local gated="$CURSOR_LINE"
+    if capture_cursor_line && [ "$CURSOR_LINE" = "$gated" ]; then
+        return 0
+    fi
+    printf '%s\n' 'the line changed while Laya examined it: read, then send again' >&2
+    return 5
+}
+
 # release_run N — free the lock only for the last run. wait --run on an older
 # run must not free the lock of a run that continues.
 release_run() {
@@ -1262,7 +1307,7 @@ remove_stale_output() {
 }
 
 run_command() {
-    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command first n sum mode word kind
+    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command first n sum mode
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -1294,6 +1339,7 @@ run_command() {
         # The lock of a completed run that no reader took is free.
         [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] || fail 'the companion is busy' 5
     fi
+    take_typing_lock || { release_busy; return 5; }
     # Two seconds, not one test: after a large output the pane shell draws its
     # prompt a moment after the last run reports.
     wait_for_prompt 2 || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
@@ -1302,6 +1348,7 @@ run_command() {
     case $? in
         0) ;;
         2) release_busy; fail 'laya: bad input' 2 ;;
+        3) release_busy; fail 'laya: the command is too long to examine: make it shorter' 2 ;;
         *) release_busy; refuse_laya; return ;;
     esac
     remove_stale_output
@@ -1317,18 +1364,6 @@ run_command() {
     sum=$(command_sum "$command") || { release_busy; fail 'cannot make the sum of the command' 1; }
     mode=plain
     [ "$GATE_LEVEL" != dangerous ] || mode=confirm
-    if [ "$GATE_SAFE_LIST" -eq 1 ]; then
-        # The program of the first word now. The pane shell compares it with
-        # its own, so a function, an alias or a different program on PATH
-        # does not run with no gate.
-        word="${first%%[[:space:]]*}"
-        kind=$(builtin type -t -- "$word") || kind=
-        case "$kind" in
-            builtin) mode="safe builtin" ;;
-            file) printf -v mode 'safe file %q' "$(builtin type -P -- "$word")" ;;
-            *) release_busy; fail "the first word is not a program: $word" 2 ;;
-        esac
-    fi
     n=$(( S_SEQ + 1 ))
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     printf '%s' "$command" > "$D/$n.cmd"
@@ -1344,6 +1379,7 @@ run_command() {
     esac
     printf 'run=%s\n' "$n"
     send_literal "__clux_run $n $sum $mode"; send_key Enter
+    release_typing_lock
     wait_for_run_files "$n" "$timeout" 1
     case $? in
         0) report_run "$n" "$max" ;;
@@ -1386,6 +1422,7 @@ send_command() {
         case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" ;; esac
         return
     fi
+    take_typing_lock || return
     laya_confirm_pending && { refuse_confirm; return; }
     hidden_text && { refuse_hidden; return; }
     check_pane || return
@@ -1398,6 +1435,7 @@ send_command() {
             pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
         esac
         send_gate "" || return
+        line_unchanged || return
         send_key "$key"
         return
     fi
@@ -1410,6 +1448,7 @@ send_command() {
     fi
     before="$CURSOR_LINE"
     send_gate "$text" || return
+    line_unchanged || return
     send_literal "$text"
     if [ "$enter" -eq 1 ]; then
         send_key Enter
@@ -1444,7 +1483,7 @@ read_command() {
 }
 
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --discard) discard=1; shift ;;
@@ -1509,16 +1548,24 @@ wait_command() {
                     3) refuse_credential; return ;;
                     6) refuse_laya; return ;;
                 esac
-                # The guard runs only when the screen changed and the raw
-                # screen matches: the guarded text is the raw text with
-                # some lines replaced, so it cannot match when the raw text
-                # does not. [inferred] A pattern that matches only a held
-                # marker line is not found.
+                # The guard runs on each new screen, and the pattern sees
+                # only the guarded text. No test reads the raw screen: a
+                # raw test that decides whether the guard runs tells, by
+                # the time the verb takes, that a held line matches.
+                # [inferred] A pattern that matches only a held marker line
+                # is not found.
+                # A failed guard counts as a failed probe: 3 in a row end
+                # the wait with exit 6. The same screen is guarded again.
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE"); then
-                    if [ "$screen" != "$sum" ] && printf '%s\n' "$screen" | grep -Eq -- "$value"; then
-                        sum="$screen"
-                        laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
-                        printf '%s\n' "$GUARD_TEXT" | grep -Eq -- "$value" && return 0
+                    if [ "$screen" != "$sum" ]; then
+                        if laya_guard <(printf '%s\n' "$screen"); then
+                            sum="$screen"
+                            guard_fails=0
+                            printf '%s\n' "$GUARD_TEXT" | grep -Eq -- "$value" && return 0
+                        else
+                            guard_fails=$((guard_fails + 1))
+                            [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
+                        fi
                     fi
                 fi
                 [ "$SECONDS" -lt "$deadline" ] || return 1

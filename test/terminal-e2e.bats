@@ -565,7 +565,8 @@ pane_shows() {
     [ "$status" -eq 0 ]
     [ "$output" = $'laya: declined by the user\nexit=126' ]
     [ -d "$two" ]
-    # send has no safe list, so the screen with clux-danger must go first.
+    # Laya examines the screen with each send, so the screen with
+    # clux-danger must go first.
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" clear Enter
     sleep .5
     "$REAL_TMUX" -S "$TMUX_SOCKET" clear-history -t "$(companion_pane)"
@@ -644,15 +645,14 @@ pane_shows() {
     [ ! -e "$BATS_TEST_TMPDIR/never" ]
 }
 
-@test "a safe-list run sends no command request to Laya" {
+@test "each run command goes to Laya, also ls and echo" {
     "$TERMINAL" open >/dev/null
     : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" run -- 'ls'
+    [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'echo hi'
     [ "$status" -eq 0 ]
-    [ -z "$(fake_laya_states destructive)" ]
-    run "$TERMINAL" run -- 'true'
-    [ "$status" -eq 0 ]
-    [ "$(fake_laya_states destructive)" = '"true"' ]
+    [ "$(fake_laya_states destructive)" = $'"ls"\n"echo hi"' ]
 }
 
 @test "run refuses a blank command with exit 2" {
@@ -663,19 +663,25 @@ pane_shows() {
     [ ! -d "$(companion_dir)/busy" ]
 }
 
-@test "a safe-list run refuses an alias or a function of the same name" {
+@test "the pane shell does not expand an alias" {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- "alias ls='touch $BATS_TEST_TMPDIR/alias'"
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'ls'
     [ "$status" -eq 0 ]
     [ ! -e "$BATS_TEST_TMPDIR/alias" ]
-    run "$TERMINAL" run -- "pwd() { touch '$BATS_TEST_TMPDIR/function'; }"
+}
+
+@test "C-d at the prompt does not end the pane shell" {
+    "$TERMINAL" open >/dev/null
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        "$TERMINAL" send --key C-d >/dev/null
+    done
+    sleep .5
+    run "$TERMINAL" run -- 'echo still-here'
     [ "$status" -eq 0 ]
-    run "$TERMINAL" run -- 'pwd'
-    [ "$status" -eq 0 ]
-    [[ "$output" == *$'refused: the first word is not the program that the safe list permits\nexit=126' ]] || false
-    [ ! -e "$BATS_TEST_TMPDIR/function" ]
+    [ "$output" = $'run=1\nstill-here\nexit=0' ]
 }
 
 # Laya 1a
@@ -725,7 +731,7 @@ pane_shows() {
     [ "$status" -eq 0 ]
 }
 
-@test "send does not use the safe list, and a key that a program takes is not hidden text" {
+@test "send takes each line to Laya, and a key that a program takes is not hidden text" {
     "$TERMINAL" open >/dev/null
     : > "$FAKE_LAYA_LOG"
     run "$TERMINAL" send --enter -- 'pwd'
@@ -911,6 +917,49 @@ pane_shows() {
     [[ "$output" == *'visible-marker'* ]] || false
     [[ "$output" == *'[held by laya: secret]'* ]] || false
     [[ "$output" != *'AKIAABCDEFGHIJKLMNOP'* ]] || false
+}
+
+@test "wait --pattern guards each new screen, also when the raw screen does not match" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'echo pattern-marker' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    # Only the guard fails. A verb that tests the raw screen first never asks
+    # the guard for a pattern that is not on the screen, and so its time and
+    # exit tell what the raw screen holds.
+    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    run "$TERMINAL" wait --timeout 6 --pattern 'clux-no-match'
+    [ "$status" -eq 6 ] || { echo "$status $output"; false; }
+}
+
+@test "wait --pattern goes on after one failed guard" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- 'echo pattern-marker' >/dev/null
+    "$TERMINAL" wait --timeout 5 --idle >/dev/null
+    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    ( sleep 1.5; set_fake_laya '{}' ) 3>&- &
+    local switch=$!
+    run "$TERMINAL" wait --timeout 8 --pattern 'pattern-marker'
+    wait "$switch"
+    [ "$status" -eq 0 ] || { echo "$status $output"; false; }
+}
+
+@test "send and run take the typing lock, and take over the lock of a dead holder" {
+    "$TERMINAL" open >/dev/null
+    sleep 30 3>&- & local live=$!
+    ln -s "$live" "$(companion_dir)/typing"
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" send -- 'echo x'
+    [ "$status" -eq 5 ]
+    [ "$output" = 'another send or run is typing in the pane: try again' ]
+    run "$TERMINAL" run -- 'echo x'
+    [ "$status" -eq 5 ]
+    [ ! -d "$(companion_dir)/busy" ]
+    [ -z "$(fake_laya_states destructive)" ]
+    kill "$live"; wait "$live" 2>/dev/null || true
+    run "$TERMINAL" run -- 'echo taken'
+    [ "$status" -eq 0 ]
+    [ "$output" = $'run=1\ntaken\nexit=0' ]
+    [ ! -L "$(companion_dir)/typing" ]
 }
 
 @test "run holds all output and exits 6 when the guard fails, and wait --run gives it later" {
