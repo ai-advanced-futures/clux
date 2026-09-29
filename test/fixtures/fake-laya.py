@@ -16,7 +16,8 @@ two verbs:
       {"equals": "hunter2", "answers": {"secret": 0.18}},
       {"contains": "AKIA", "min_lines": 2, "min_length": 10, "answers": {}},
       {"contains": "cut", "input_tokens": 512},  tokens of each question row
-      {"asks": "prompt_injection", "fail": 500}
+      {"asks": "prompt_injection", "fail": 500},
+      {"contains": "slow", "delay": 3}             waits, then the other rules answer
     ],
     "status": [503],       the first requests get these codes, then 200
     "retry_after": "1",    the Retry-After header of a 503 (as laya-serve)
@@ -187,6 +188,10 @@ class Handler(BaseHTTPRequestHandler):
         for rule in conf.get("rules", []):
             if "fail" in rule and matches(rule, text, questions):
                 return self.reply(rule["fail"], {"detail": "inference failed"})
+        for rule in conf.get("rules", []):
+            if "delay" in rule and matches(rule, text, questions):
+                time.sleep(float(rule["delay"]))
+                break
         if conf.get("delay"):
             time.sleep(float(conf["delay"]))
         if "body" in conf:

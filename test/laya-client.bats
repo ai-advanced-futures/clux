@@ -118,7 +118,7 @@ PY
     [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
 }
 
-@test "command: a boolean at its threshold is not dangerous, and a user policy replaces the shipped one" {
+@test "command: a boolean at its threshold is not dangerous, and a user copy of a policy has no effect" {
     start_fake_laya '{"answers": {"destructive": 0.8}}'
     run client command <<<'make clean'
     [ "$output" = '{"level": "safe", "reason": "destructive 0.80"}' ]
@@ -131,8 +131,10 @@ pol["thresholds"]["destructive"] = 0.5
 with open(sys.argv[2], "w", encoding="utf-8") as f:
     json.dump(pol, f)
 PY
+    # A command in the companion can write this file: it must not change
+    # the gate.
     run client command <<<'make clean'
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.80"}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.80"}' ]
 }
 
 @test "command --screen sends the input line and the screen" {
@@ -295,12 +297,28 @@ PY
     [ "$output" = $'held=1\n[held by laya: secret]\nnext line' ]
 }
 
-@test "output: the time limit ends: exit 1 and no text" {
+@test "output: text that the time limit leaves not examined is held" {
     start_fake_laya '{"delay": 3}'
     run --separate-stderr client output --render --limit 1 <<<'UNIQUE-MARKER-5e0b'
-    [ "$status" -eq 1 ]
-    [ -z "$output" ]
+    [ "$status" -eq 0 ]
+    [ "$output" = $'held=1\n[held by laya: not_examined, 1 lines]' ]
     [[ "$stderr" != *'UNIQUE-MARKER-5e0b'* ]] || false
+    # The line check too: the lines of a flagged block that do not get an
+    # answer in time are held, and the other blocks stay.
+    stop_fake_laya
+    start_fake_laya '{"rules": [
+        {"asks": "prompt_injection", "contains": "flag-me", "answers": {"secret": 0.9}},
+        {"asks": "prompt_injection", "answers": {"secret": 0.0}},
+        {"equals": "flag-me here", "delay": 3}]}'
+    local text
+    text=$(for i in $(seq 1 40); do echo "plain line $i of the output"; done; echo 'flag-me here')
+    run --separate-stderr client output --render --limit 2 < <(printf '%s\n' "$text")
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [[ "$output" == *'plain line 1 of the output'* ]] || false
+    # After the time limit, the pair requests of the flagged block get no
+    # answer too, so all lines of that block are held.
+    [[ "$output" == *$'\n[held by laya: not_examined, '*' lines]'* ]] || { echo "$output"; false; }
+    [[ "$output" != *'flag-me here'* ]] || false
 }
 
 @test "output: a failed request exits 1 with no text, and bad arguments exit 2" {
@@ -396,10 +414,16 @@ PY
     [ "$output" = $'held=4\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 4 lines]\nend' ]
     run client output --render < <(printf 'c1\nc2\nc3\nc4\nc5\nc6\nstart\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n')
     [ "$output" = $'held=3\nc1\nc2\nc3\nc4\nc5\nc6\nstart\n[held by laya: secret, 3 lines]' ]
-    # A cut output can start inside a key: an END with no BEGIN holds from
-    # the first line.
-    run client output --render < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
+    # A cut output can start inside a key: the END line of a private key
+    # with no BEGIN holds from the first line.
+    run client output --render --cut < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\ne2\ne3\ne4\ne5\ne6\ne7\n')
     [ "$output" = $'held=3\n[held by laya: secret, 3 lines]\ne1\ne2\ne3\ne4\ne5\ne6\ne7' ]
+    # Text that is not cut starts at its first line, so the rule does not
+    # apply. Other END lines (a certificate, a report) never apply.
+    run client output --render < <(printf 'b3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1\n')
+    [ "$output" = $'held=1\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n[held by laya: secret]\ne1' ] || [ "$output" = $'held=0\nb3BlbnNzaC1rZXktdjEAAAAA\nmore\n-----END OPENSSH PRIVATE KEY-----\ne1' ]
+    run client output --render --cut < <(printf 'r1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1\n')
+    [ "$output" = $'held=0\nr1\nr2\nfile.pem: -----END CERTIFICATE-----\n-----END OF REPORT-----\ne1' ]
 }
 
 @test "output: secret-values.txt holds an AKIA line when Laya gives 0" {
@@ -617,6 +641,63 @@ for n in range(21, 60):
     assert base[1:] == other[-(len(base) - 1):] or other[1:] == base[-(len(other) - 1):], n
 top = c.make_blocks(["short"] + ["y" * 99] * 5)
 assert len(top) == 1, [len(b) for b in top]
+PY
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "command --screen: each screen line is cut to its end, so a long screen line does not stop a short line" {
+    start_fake_laya '{"rules": [{"min_length": 900, "input_tokens": 512}]}'
+    local wide
+    wide="$(printf 'x%.0s' $(seq 1 1000))END"
+    run --separate-stderr client command --screen < <(printf '%s\nls\n' "$wide")
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    run python3 - "$FAKE_LAYA_LOG" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    state = json.loads(f.readline())["state"]
+assert state["line"] == "ls", state
+assert len(state["screen"]) == 200 and state["screen"].endswith("END"), len(state["screen"])
+PY
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "command: a function definition or enable changes the shell for later commands and is dangerous" {
+    start_fake_laya '{}'
+    local cmd
+    for cmd in 'f() { :; }' 'function ls { rm -rf ~; }' 'cd() { :; }; ls' 'enable -n cd' 'ls; enable cd'; do
+        run --separate-stderr client command <<<"$cmd"
+        [ "$status" -eq 0 ]
+        [ "$output" = '{"level": "dangerous", "reason": "changes the shell for later commands"}' ] \
+            || { echo "$cmd: $output"; false; }
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "dangerous", "reason": "changes the shell for later commands"}' ] \
+            || { echo "--shell $cmd: $output"; false; }
+    done
+    # In a program that is not the shell, the same text changes no shell.
+    run --separate-stderr client command --screen < <(printf 'mysql> \nf() { :; }\n')
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    # Text that only looks near the rule stays with Laya.
+    for cmd in 'echo "f()"' 'ls -la' 'grep enabled log.txt' 'x=1'; do
+        run --separate-stderr client command <<<"$cmd"
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
+    done
+}
+
+@test "output: a line that secret-values.txt holds sends no line request" {
+    start_fake_laya '{"answers": {"secret": 0.9}}'
+    run client output --render < <(printf 'a\nkey AKIAIOSFODNN7EXAMPLE\nb\n')
+    [ "$status" -eq 0 ]
+    run python3 - "$FAKE_LAYA_LOG" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as log:
+    for raw in log:
+        request = json.loads(raw)
+        if request["questions"] != ["secret"]:
+            continue
+        state = request["state"]
+        text = state if isinstance(state, str) else json.dumps(state)
+        assert "AKIA" not in text, text
 PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }

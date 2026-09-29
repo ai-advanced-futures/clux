@@ -8,12 +8,15 @@ from CLUX_LAYA_KEY. The URL must use http and name a loopback host.
 Subcommands that ask Laya (input on stdin, one result on stdout):
 
   health                          {"ok": true}
-  command [--screen]               {"level": "safe|caution|dangerous", "reason": "..."}
+  command [--screen] [--shell]    {"level": "safe|caution|dangerous", "reason": "..."}
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
                                   screen. Each command goes to Laya.
-  output [--render] [--limit S]   {"text": "...", "held": [{"kind": "...", "lines": k}]}
+                                  --shell: the line is at the clux prompt.
+  output [--render] [--cut] [--limit S]
+                                  {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>", then the text.
+                                  --cut: the text can start inside a key.
   pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
 
 Helpers that do not ask Laya: checkpoint, port, version,
@@ -82,15 +85,11 @@ def read_stdin():
     return sys.stdin.buffer.read().decode("utf-8", "replace")
 
 
-def config_home():
-    return os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-
-
 def policy(name):
-    """Read config/laya/<name>.json. A user copy in
-    $XDG_CONFIG_HOME/clux/laya/<name>.json replaces the shipped file."""
-    user = os.path.join(config_home(), "clux", "laya", name + ".json")
-    path = user if os.path.isfile(user) else os.path.join(CONFIG, name + ".json")
+    """Read config/laya/<name>.json. There is no user copy: a command in the
+    companion can write the files of the user, and a copy with a threshold
+    of 2 would turn off the gate or the guard (spec section 6)."""
+    path = os.path.join(CONFIG, name + ".json")
     try:
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle)
@@ -275,15 +274,23 @@ def level_of(answer, pol):
     return "safe", reason
 
 
+# A shell command that changes what later commands run: a function
+# definition (name() or function name) or enable. The gate examines each
+# command alone, so such a command always asks the user (spec section 7).
+SHELL_STATE = re.compile(
+    r"(^|[\s;&|(){}])(function\s+[^\s;&|(){}]+|[^\s;&|(){}=$`\"'<>]+\s*\(\s*\)|enable(\s|$))")
+
+
 def cmd_command(args):
-    if any(arg != "--screen" for arg in args):
+    if any(arg not in ("--screen", "--shell") for arg in args):
         raise Fail(2)
     text = read_stdin()
     if "--screen" in args:
         # Only the last newline goes: a blank input line stays the line.
         lines = (text[:-1] if text.endswith("\n") else text).split("\n")
         command = lines[-1]
-        screen = "\n".join(lines[:-1])
+        # The screen is only context: each line keeps its end, as in pane.
+        screen = "\n".join(line[-PANE_ABOVE:] for line in lines[:-1])
         state = {"line": command, "screen": screen}
         # A blank line in a program can accept a default ([Y/n]), so it goes
         # to Laya with the screen above it.
@@ -296,11 +303,17 @@ def cmd_command(args):
             raise Fail(2)
     # Each command goes to Laya: no safe list (spec section 7). Laya cuts a
     # long state and examines only its start, so a cut state is refused.
-    pol = policy("command")
-    answer = ask(remote(GATE_LIMIT), pol, state)
+    pol, runner = policy("command"), remote(GATE_LIMIT)
+    answer = ask(runner, pol, state)
+    # When Laya cuts the line and the screen, the line goes alone: a long
+    # screen must not stop a short line. A blank line needs its screen.
+    if is_cut(answer, pol) and isinstance(state, dict) and state["screen"] and command.strip():
+        answer = ask(runner, pol, {"line": command, "screen": ""})
     if is_cut(answer, pol):
         raise Fail(3)
     level, reason = level_of(answer, pol)
+    if ("--screen" not in args or "--shell" in args) and SHELL_STATE.search(command):
+        level, reason = "dangerous", "changes the shell for later commands"
     print(json.dumps({"level": level, "reason": reason}))
 
 
@@ -420,25 +433,44 @@ def is_cut(answer, pol):
     return answer.tokens() / rows >= CUT_TOKENS - ROW_MARGIN
 
 
+TIME_MARGIN = 0.05         # a failure this near the end of the time limit is the limit
+
+
+def in_time(runner, request):
+    """Run one request of the guard. Give None when the time limit of the
+    guard ended before Laya answered: the caller holds that text as not
+    examined. Any other failure (Laya does not answer) stops the guard."""
+    try:
+        return request()
+    except Fail as fail:
+        if fail.code == 1 and time.monotonic() >= runner.deadline - TIME_MARGIN:
+            return None
+        raise
+
+
 def check_blocks(pool, runner, pol, blocks):
     """Send each block with the block policy. laya-serve gives
     usage.input_tokens as the sum over the question rows (one row for each
     boolean question of this policy), and it cuts each row at CUT_TOKENS.
     When the mean row is within ROW_MARGIN of CUT_TOKENS, the longest row
     can be cut: send the halves of the block again. Give the list of
-    (block, answer)."""
-    done, pending = [], blocks
+    (block, answer) and the list of blocks that the time limit left not
+    examined."""
+    done, late, pending = [], [], blocks
     while pending:
-        answers = list(pool.map(lambda block: ask(runner, pol, block_text(block)), pending))
+        answers = list(pool.map(
+            lambda block: in_time(runner, lambda: ask(runner, pol, block_text(block))), pending))
         again = []
         for block, answer in zip(pending, answers):
-            if is_cut(answer, pol):
+            if answer is None:
+                late.append(block)
+            elif is_cut(answer, pol):
                 again.extend(half for half in halve(block)
                              if any(unit.text.strip() for unit in half))
             else:
                 done.append((block, answer))
         pending = again
-    return done
+    return done, late
 
 
 def block_ranges(checked, pol):
@@ -468,12 +500,14 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     when it alone is above the threshold, also when its own block was not
     flagged. `cleared` are the lines that not-secret.txt clears: the check
     never holds them and sends no request for them, and the pair rule reads
-    such a line above as not held.
+    such a line above as not held. A line in `values` is held whatever Laya
+    answers, so it gets no request either.
 
     Phase 1 sends the alone requests, phase 2 only the pairs that can change
     the result. A pair has only the end of the unit above (PAIR_ABOVE), so
     that Laya does not cut the unit below. A request that Laya cuts holds
-    its unit: Laya did not examine all of it."""
+    its unit: Laya did not examine all of it. Give (held, late): late are
+    the lines that the time limit left not examined."""
     limit = threshold(pol, "secret", 0.75)
 
     def above_of(position):
@@ -485,11 +519,14 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
         return None
 
     def score(text):
-        answer = ask(runner, pol, text)
+        answer = in_time(runner, lambda: ask(runner, pol, text))
+        if answer is None:
+            return None
         return 1.0 if is_cut(answer, pol) else answer.p("secret")
 
     targets = [position for position, unit in enumerate(units)
-               if id(unit) in flagged and unit.text.strip() and unit.line not in cleared]
+               if id(unit) in flagged and unit.text.strip() and unit.line not in cleared
+               and unit.line not in values]
     alone_ids = set(targets)
     for position in targets:
         above = above_of(position)
@@ -497,16 +534,18 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
             alone_ids.add(position - 1)
     order = sorted(alone_ids)
     alone = dict(zip(order, pool.map(lambda position: score(units[position].text), order)))
+    late = {units[position].line for position, value in alone.items() if value is None}
     held = set()
     for position in targets:
-        if alone[position] > limit:
+        if alone[position] is not None and alone[position] > limit:
             held.add(units[position].line)
-        if position - 1 in alone and above_of(position) is not None and alone[position - 1] > limit:
+        if (position - 1 in alone and above_of(position) is not None
+                and alone[position - 1] is not None and alone[position - 1] > limit):
             held.add(units[position - 1].line)
     pairs = []
     for position in targets:
         above = above_of(position)
-        if units[position].line in held or above is None:
+        if units[position].line in held | late or above is None:
             continue
         if above.line in held or above.line in values:
             continue
@@ -515,20 +554,22 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     # In line order: a line that its pair holds stops the pair of the line
     # below it.
     for position, value in zip(pairs, list(pool.map(score, texts))):
-        if value > limit and units[position - 1].line not in held:
+        if value is None:
+            late.add(units[position].line)
+        elif value > limit and units[position - 1].line not in held:
             held.add(units[position].line)
-    return held
+    return held, late - held
 
 
 def render(lines, ranges):
     """Replace each held range with one marker line. Ranges that share a line
-    become one range; it is prompt_injection when one part is. Give
-    (lines, held)."""
+    become one range; it is prompt_injection when one part is, else
+    not_examined when one part is. Give (lines, held)."""
     merged = []
     for first, last, kind in sorted(ranges):
         if merged and first <= merged[-1][1]:
             top = merged[-1]
-            kind = "prompt_injection" if "prompt_injection" in (kind, top[2]) else "secret"
+            kind = next(k for k in ("prompt_injection", "not_examined", "secret") if k in (kind, top[2]))
             merged[-1] = (top[0], max(top[1], last), kind)
         else:
             merged.append((first, last, kind))
@@ -548,6 +589,9 @@ def render(lines, ranges):
 
 PEM_BEGIN = "-----BEGIN"
 PEM_END = "-----END"
+# The END line of a private key. Only such a line holds the lines above it
+# when the text has no BEGIN: a certificate or "-----END OF REPORT-----" does not.
+PEM_KEY_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
 
 
 def compile_lines(name):
@@ -576,11 +620,11 @@ def never_secret(line, patterns):
     return False
 
 
-def pem_ranges(lines):
+def pem_ranges(lines, cut=False):
     """Step 6: -----BEGIN to -----END is one held unit. [inferred] A BEGIN with
-    no END holds to the end of the text, and an END with no BEGIN holds from
-    the first line (a cut output can start inside a key). The rule holds each
-    range whatever Laya answers."""
+    no END holds to the end of the text. When the text is cut (it can start
+    inside a key), the END line of a private key with no BEGIN holds from
+    the first line. The rule holds each range whatever Laya answers."""
     ranges, begin, seen = [], None, False
     for index, line in enumerate(lines):
         if begin is None and PEM_BEGIN in line:
@@ -588,7 +632,7 @@ def pem_ranges(lines):
         if PEM_END in line:
             if begin is not None:
                 ranges.append((begin, index, "secret"))
-            elif not seen:
+            elif not seen and cut and PEM_KEY_END.search(line):
                 ranges.append((0, index, "secret"))
             begin, seen = None, True
         elif begin is not None:
@@ -610,7 +654,7 @@ def half_rule(checked, ranges):
     return result
 
 
-def guard(text, limit):
+def guard(text, limit, cut=False):
     """The output guard (spec section 8). Give (guarded text, held)."""
     if not text.strip():
         return text, []
@@ -622,29 +666,34 @@ def guard(text, limit):
     runner = remote(limit)
     pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL)
     try:
-        checked = check_blocks(pool, runner, block_pol, make_blocks(lines))
+        checked, late_blocks = check_blocks(pool, runner, block_pol, make_blocks(lines))
         ranges, flagged = block_ranges(checked, block_pol)
         units = sorted((unit for block, _answer in checked for unit in block),
                        key=lambda unit: (unit.line, unit.start))
         # not-secret.txt runs before the pair rule and before the half rule
         # counts, and it removes only holds of the line check.
         cleared = {index for index, line in enumerate(lines) if never_secret(line, shapes)}
-        held = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
+        held, late = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     ranges += [(line, line, "secret") for line in sorted(held | values)]
-    ranges += pem_ranges(lines)
+    # Text that the time limit left not examined is held (spec section 8).
+    ranges += [(block[0].line, block[-1].line, "not_examined") for block in late_blocks]
+    ranges += [(line, line, "not_examined") for line in sorted(late - values)]
+    ranges += pem_ranges(lines, cut)
     ranges += half_rule(checked, ranges)
     out, summary = render(lines, ranges)
     return "\n".join(out) + tail, summary
 
 
 def cmd_output(args):
-    render_mode, limit, rest = False, DEFAULT_OUTPUT_LIMIT, list(args)
+    render_mode, cut, limit, rest = False, False, DEFAULT_OUTPUT_LIMIT, list(args)
     while rest:
         arg = rest.pop(0)
         if arg == "--render":
             render_mode = True
+        elif arg == "--cut":
+            cut = True
         elif arg == "--limit" and rest:
             try:
                 limit = float(rest.pop(0))
@@ -654,7 +703,7 @@ def cmd_output(args):
                 raise Fail(2)
         else:
             raise Fail(2)
-    text, held = guard(read_stdin(), limit)
+    text, held = guard(read_stdin(), limit, cut)
     if render_mode:
         sys.stdout.write("held=%d\n%s" % (sum(item["lines"] for item in held), text))
     else:
