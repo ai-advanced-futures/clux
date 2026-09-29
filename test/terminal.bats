@@ -621,7 +621,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "${lines[1]}" = 'args: output --render --cut --limit 15' ]
     [ "${lines[2]}" = 'args: output --render --cut --limit 15' ]
     # report_run over --max-lines, read and wait --pattern pass 1.
-    [ "$(grep -cE 'laya_guard <\(.*\) 1( 1)?( \|\||;)' "$TERMINAL")" -eq 3 ]
+    [ "$(grep -cE 'laya_guard <\(.*\) 1( 1( "[^"]*")?)?( \|\||;)' "$TERMINAL")" -eq 3 ]
 }
 
 @test "rc.bash runs its external programs from the system PATH, not from a PATH that a run gave back" {
@@ -847,9 +847,13 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 
 @test "new_screen_lines gives the new lines, each with the line above it" {
     run bash -c "source '$TERMINAL'; new_screen_lines \$'a\\nb\\nc' \$'a\\nb\\nd'"
-    [ "$output" = $'b\nd' ]
+    [ "$output" = $'0\nb\nd' ]
     run bash -c "source '$TERMINAL'; new_screen_lines \$'a\\nb' \$'b\\na'"
     [ -z "$output" ]
+    # The first line gives the start of each run of lines that are next to
+    # each other on the screen: x and y are apart.
+    run bash -c "source '$TERMINAL'; new_screen_lines \$'a\\nb\\nc\\nd\\ne' \$'a\\nx\\nc\\nd\\ny'"
+    [ "$output" = $'0,2\na\nx\nd\ny' ] || { echo "$output"; false; }
 }
 
 @test "wait --pattern sends a line that the time limit left not examined to the guard again" {
@@ -879,7 +883,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
         held=x; value=zzz; guard_fresh \$'line one\\nline two\\nline three' \$((SECONDS + 60)); echo \"rc=\$? found=\$FRESH_FOUND\""
     [ "$output" = 'rc=0 found=0' ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = 'output --render --pieces 10 --cut --limit 15' ] || { cat "$log"; false; }
+    [ "$(cat "$log")" = 'output --render --pieces 10 --runs 0 --cut --limit 15' ] || { cat "$log"; false; }
 }
 
 @test "a run whose output the time limit left not examined keeps the output and the lock" {
@@ -1844,7 +1848,26 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
         wait_command --pattern '^PASS\$' --timeout 3"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = 'output --render --pieces 40 --cut --limit 15' ] || { cat "$log"; false; }
+    [ "$(cat "$log")" = 'output --render --pieces 40 --runs 0 --cut --limit 15' ] || { cat "$log"; false; }
+}
+
+@test "wait --pattern gives the client the runs of new lines, so an END line does not hold a line far above it" {
+    local log="$BATS_TEST_TMPDIR/runs" n="$BATS_TEST_TMPDIR/n"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() {
+            [ \"\$1\" != display-message ] || return 1
+            echo x >> '$n'
+            if [ \$(wc -l < '$n') -lt 2 ]; then printf 'status 1\nA\nB\nC\nD\n'
+            else printf 'status 2 READY\nA\nB\nC\n-----END RSA PRIVATE KEY-----\n'; fi
+        }
+        laya_pid_check() { :; }
+        laya_call() { echo \"\$*\" >> '$log'; printf 'held=0\\n'; cat; }
+        wait_command --pattern 'READY' --timeout 3"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # The new lines: status (row 0), and C with the END line (rows 3 and 4).
+    [ "$(sed -n 2p "$log")" = 'output --render --pieces 32768 --runs 0,1 --cut --limit 15' ] || { cat "$log"; false; }
 }
 
 @test "wait --pattern starts no guard of a piece after its time limit" {

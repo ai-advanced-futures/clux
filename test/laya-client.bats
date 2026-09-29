@@ -400,6 +400,27 @@ assert c.half_rule(block, [(0, 2, 'secret')]) == [(0, 3, 'secret')]
     [[ "$output" != *'plain top'* ]] || { echo "$output"; false; }
 }
 
+@test "output --runs: the PEM rule does not cross the gap between two runs of lines" {
+    start_fake_laya '{}'
+    # A status line far above, then the END of a key whose BEGIN an
+    # earlier guard examined. With --cut the END holds the lines above
+    # it, but only in its own run.
+    run --separate-stderr client output --render --cut --runs 0,2 < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "$output" = $'held=2\nstatus 12:01\nbuild ok\n[held by laya: secret, 2 lines]' ] || { echo "$output"; false; }
+    # One run (no --runs): the END holds all the lines above it.
+    run client output --render --cut < <(printf 'status 12:01\nbuild ok\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\n')
+    [ "$output" = $'held=4\n[held by laya: secret, 4 lines]' ] || { echo "$output"; false; }
+    # A key with its BEGIN and END in one run, in pieces, is held in full.
+    run client output --render --pieces 40 --runs 0,1 < <(printf 'top\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAkeybody\n-----END RSA PRIVATE KEY-----\nafter\n')
+    [[ "$output" != *keybody* ]] && [[ "$output" == *top* ]] && [[ "$output" == *after* ]] || { echo "$output"; false; }
+    local bad
+    for bad in 1,2 0,0 0,3,2 x ''; do
+        run client output --runs "$bad" <<<'x'
+        [ "$status" -eq 2 ] || { echo "--runs '$bad' gave $status"; false; }
+    done
+}
+
 @test "output --pieces reads the policies one time and makes one pool for all pieces" {
     start_fake_laya '{}'
     run "$CLUX_LAYA_PYTHON" -c "

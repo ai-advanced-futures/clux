@@ -19,7 +19,7 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   prompt), then the text that clux typed. Laya
                                   gets them as one line. Typed text that can
                                   change that shell is dangerous.
-  output [--render] [--cut] [--limit S] [--pieces BYTES]
+  output [--render] [--cut] [--limit S] [--pieces BYTES] [--runs 0,I,...]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>" (with " not_examined=<m>"
                                   when the time limit left <m> lines not examined),
@@ -27,6 +27,9 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   --cut: the text can start inside a key.
                                   --pieces: guard pieces of whole lines of at most
                                   BYTES each, with one time limit for all.
+                                  --runs: the first line of each run of lines
+                                  that are next to each other; the PEM rule
+                                  does not cross from one run to the next.
   pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
 
 Helpers that do not ask Laya: checkpoint, ready, port, version,
@@ -849,7 +852,7 @@ def guard_lines(lines, pem, runner, pool, setup):
     return render(lines, ranges)
 
 
-def guard(text, limit, cut=False, size=0):
+def guard(text, limit, cut=False, size=0, runs=(0,)):
     """The output guard (spec section 8). Give (guarded text, held).
 
     With SIZE, the text goes in pieces of whole lines, each at most SIZE
@@ -857,8 +860,13 @@ def guard(text, limit, cut=False, size=0):
     one piece never starts inside a line (wait --pattern). All pieces share
     one time limit, one pool and one read of the policies. The bottom
     piece goes first, as the bottom blocks do in check_blocks. The PEM rule
-    runs one time on the full text, because a key can go over the edge of
-    a piece; each piece gets its part of the ranges."""
+    runs on the full text, not in each piece, because a key can go over
+    the edge of a piece; each piece gets its part of the ranges.
+
+    RUNS are the first lines of the runs of lines that are next to each
+    other in the source (wait --pattern sends the new lines of a screen,
+    which come from more than one place). The PEM rule runs in each run and
+    never crosses the gap to the run above."""
     if not text.strip():
         return text, []
     tail = "\n" if text.endswith("\n") else ""
@@ -872,7 +880,11 @@ def guard(text, limit, cut=False, size=0):
         part.append(line)
         used += count
     parts.append(part if size else lines)
-    pem = pem_ranges(lines, cut)
+    pem = []
+    edges = [start for start in runs if start < len(lines)] + [len(lines)]
+    for start, end in zip(edges, edges[1:]):
+        pem += [(first + start, last + start, kind)
+                for first, last, kind in pem_ranges(lines[start:end], cut)]
     starts = [sum(len(part) for part in parts[:index]) for index in range(len(parts))]
     setup = (policy("output-block"), policy("output-line"),
              compile_lines("secret-values.txt"), compile_lines("not-secret.txt"))
@@ -891,8 +903,18 @@ def guard(text, limit, cut=False, size=0):
             [item for result in results for item in result[1]])
 
 
+def parse_runs(value):
+    """--runs 0,4,9: the first line of each run, from 0, going up."""
+    if not re.fullmatch(r"0(,[1-9][0-9]*)*", value):
+        raise Fail(2)
+    runs = [int(start) for start in value.split(",")]
+    if any(b <= a for a, b in zip(runs, runs[1:])):
+        raise Fail(2)
+    return runs
+
+
 def cmd_output(args):
-    render_mode, cut, limit, size, rest = False, False, DEFAULT_OUTPUT_LIMIT, 0, list(args)
+    render_mode, cut, limit, size, runs, rest = False, False, DEFAULT_OUTPUT_LIMIT, 0, (0,), list(args)
     while rest:
         arg = rest.pop(0)
         if arg == "--render":
@@ -901,13 +923,15 @@ def cmd_output(args):
             cut = True
         elif arg == "--pieces" and rest and rest[0].isdigit() and int(rest[0]) > 0:
             size = int(rest.pop(0))
+        elif arg == "--runs" and rest:
+            runs = parse_runs(rest.pop(0))
         elif arg == "--limit" and rest:
             limit = finite(rest.pop(0))
             if limit <= 0:
                 raise Fail(2)
         else:
             raise Fail(2)
-    text, held = guard(read_stdin(), limit, cut, size)
+    text, held = guard(read_stdin(), limit, cut, size, runs)
     if render_mode:
         # not_examined=N only when the time limit left lines not examined:
         # the caller can then try again, which it must not do for a secret.

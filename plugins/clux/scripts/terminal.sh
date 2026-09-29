@@ -1114,11 +1114,12 @@ GUARD_CUT=0
 # A marker line that the guard puts in place of held text.
 HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 
-# laya_guard FILE [CUT] [PIECES] — the output guard (spec section 8). CUT=1:
-# the text can start inside a key (a screen, or the last lines of an
+# laya_guard FILE [CUT] [PIECES] [RUNS] — the output guard (spec section 8).
+# CUT=1: the text can start inside a key (a screen, or the last lines of an
 # output). PIECES=1: no cut to LAYA_GUARD_BYTES; the client guards all of
 # the text in pieces of whole lines of at most LAYA_GUARD_BYTES, with one
-# time limit (wait --pattern). Sets GUARD_TEXT (the
+# time limit (wait --pattern). RUNS (with PIECES): the first line of each
+# run of lines that are next to each other (0,4,9). Sets GUARD_TEXT (the
 # guarded text), GUARD_HELD (the count of held lines), GUARD_LATE (the
 # count of held lines that the time limit left not examined: a later guard
 # can show them) and GUARD_CUT (1 when
@@ -1132,7 +1133,7 @@ laya_guard() {
         GUARD_CUT=0
         data=$(LC_ALL=C tr -d '\000' 2>/dev/null < "$1" && printf x) || return 6
         data="${data%x}"
-        args+=(--pieces "$LAYA_GUARD_BYTES")
+        args+=(--pieces "$LAYA_GUARD_BYTES" --runs "${4:-0}")
         [ "$cut" -eq 0 ] || args+=(--cut)
         laya_guard_call "$data" "${args[@]}"
         return
@@ -2321,13 +2322,22 @@ read_command() {
 }
 
 # new_screen_lines SEEN SCREEN — the lines of SCREEN that are not lines of
-# SEEN, each with the line above it, in screen order. Empty when each line
-# of SCREEN is in SEEN.
+# SEEN, each with the line above it, in screen order. The first line gives
+# the first line of each run of lines that are next to each other on the
+# screen (0,4,9), so the guard does not join lines across a gap. Only an
+# empty line when each line of SCREEN is in SEEN.
 new_screen_lines() {
     awk 'NR == FNR { seen[$0]; next }
         { line[++n] = $0; fresh[n] = !($0 in seen) }
-        END { for (i = 1; i <= n; i++) if (fresh[i] || (i < n && fresh[i + 1])) print line[i] }' \
-        <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+        END {
+            k = 0; prev = -1; runs = ""
+            for (i = 1; i <= n; i++) if (fresh[i] || (i < n && fresh[i + 1])) {
+                if (prev != i - 1) runs = runs (runs == "" ? "" : ",") k
+                out[k++] = line[i]; prev = i
+            }
+            print runs
+            for (i = 0; i < k; i++) print out[i]
+        }' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
 # held_lines TEXT GUARDED [KIND] — the lines of TEXT that the guard held:
@@ -2374,10 +2384,12 @@ add_seen_lines() {
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
-# guard_fresh FRESH DEADLINE — the guard of wait --pattern. One client
+# guard_fresh FRESH DEADLINE RUNS — the guard of wait --pattern. One client
 # guards all of FRESH in pieces of whole lines that fit in
 # LAYA_GUARD_BYTES: a guard of a cut text starts inside a line, and
-# held_lines cannot line it up. Adds the held lines to held and tests the
+# held_lines cannot line it up. RUNS (from new_screen_lines) are the first
+# lines of the runs of FRESH that are next to each other on the screen.
+# Adds the held lines to held and tests the
 # pattern (value) on the text that the pattern can see: both are locals of
 # wait_command. Sets FRESH_FOUND=1 on a match, and FRESH_LATE to the lines
 # that the time limit left not examined: they are not held, and the next
@@ -2391,7 +2403,7 @@ guard_fresh() {
     FRESH_FOUND=0
     FRESH_LATE=
     [ "$SECONDS" -lt "$2" ] || return 1
-    laya_guard <(printf '%s\n' "$1") 1 1 || return 6
+    laya_guard <(printf '%s\n' "$1") 1 1 "${3:-0}" || return 6
     lines=$(held_lines "$1" "$GUARD_TEXT")
     if [ "$GUARD_LATE" -gt 0 ]; then
         FRESH_LATE=$(held_lines "$1" "$GUARD_TEXT" not_examined)
@@ -2405,7 +2417,7 @@ guard_fresh() {
 }
 
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh runs
     local hist="" hist_now hist_limit back
     # The lines of the last capture that a guard examined. The first line is
     # a mark that no screen line is, so the set is never empty.
@@ -2517,11 +2529,14 @@ wait_command() {
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE" ${back:+-S "-$back"}); then
                     if [ "$screen" != "$sum" ]; then
                         fresh=$(new_screen_lines "$seen" "$screen")
+                        runs="${fresh%%$'\n'*}"
+                        fresh="${fresh#"$runs"}"
+                        fresh="${fresh#$'\n'}"
                         if [ -z "$fresh" ]; then
                             sum="$screen"
                             [ -z "$hist_now" ] || hist="$hist_now"
                         else
-                            guard_fresh "$fresh" "$deadline"
+                            guard_fresh "$fresh" "$deadline" "$runs"
                             case $? in
                                 0)
                                     guard_fails=0
