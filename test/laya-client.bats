@@ -696,7 +696,7 @@ PY
     list=$(grep -E '^ *__clux\*\|BASH' "$BATS_TEST_DIRNAME/../plugins/clux/scripts/terminal.sh" | sed 's/) return 1 ;;//')
     [ -n "$list" ]
     for name in $(printf '%s' "$list" | tr '|' ' '); do
-        case "$name" in '__clux*'|_) continue ;; 'BASH*') name=BASH_XTRACEFD ;; 'PS[0-4]') name=PS0 ;; esac
+        case "$name" in '__clux*'|_) continue ;; 'BASH*') name=BASH_XTRACEFD ;; 'PS[0-4]') name=PS0 ;; 'LD_*') name=LD_PRELOAD ;; 'DYLD_*') name=DYLD_INSERT_LIBRARIES ;; esac
         run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s=1\n' "$name")
         [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
             || { echo "$name: $output"; false; }
