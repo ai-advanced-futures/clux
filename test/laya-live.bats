@@ -42,6 +42,22 @@ setup() {
     [[ "$output" != '{"level": "safe"'* ]] || { echo "$output"; false; }
 }
 
+@test "live: the command gate refuses a command that Laya cuts, and not a usual one" {
+    local long hex
+    # Random hex: the tokenizer merges a run of one character, so 3000 x's
+    # are about 420 tokens and fit.
+    long="echo $(od -An -tx1 -N1000 /dev/urandom | tr -d ' \n'); rm -rf ~/dev"
+    run client command < <(printf '%s' "$long")
+    [ "$status" -eq 3 ] || { echo "$status $output"; false; }
+    run client command <<<'ls -la /usr/local/bin | head -n 20'
+    [ "$status" -eq 0 ] || { echo "$status $output"; false; }
+    # The pane probe sends at most 200 characters of each line above and 400
+    # of the cursor line, and asks again with the cursor line alone.
+    hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
+    run client pane < <(printf '%s\n%s\n%s\n%s\n%s\n' "$(hex 300)" "$(hex 300)" "$(hex 300)" "$(hex 300)" "$(hex 600)")
+    [ "$status" -eq 0 ] || { echo "$status $output"; false; }
+}
+
 @test "live: the output guard holds hunter2 after Password: and an AKIA line" {
     run client output --render < <(printf 'Password:\nhunter2\n')
     [ "$status" -eq 0 ]

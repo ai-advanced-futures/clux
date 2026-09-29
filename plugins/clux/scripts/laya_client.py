@@ -8,11 +8,10 @@ from CLUX_LAYA_KEY. The URL must use http and name a loopback host.
 Subcommands that ask Laya (input on stdin, one result on stdout):
 
   health                          {"ok": true}
-  command [--screen] [--no-safe-list]
-                                  {"level": "safe|caution|dangerous", "reason": "..."}
+  command [--screen]               {"level": "safe|caution|dangerous", "reason": "..."}
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
-                                  screen. --no-safe-list skips the safe list.
+                                  screen. Each command goes to Laya.
   output [--render] [--limit S]   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>", then the text.
   pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
@@ -21,7 +20,7 @@ Helpers that do not ask Laya: checkpoint, port, version,
 pip-install SECONDS PACKAGE, scrub.
 
 Exit codes: 0 a decision; 1 Laya is not available or gave a bad answer;
-2 bad input. On a failure, stdout is empty and stderr has one fixed message.
+2 bad input; 3 the text is too long: Laya would examine only its start. On a failure, stdout is empty and stderr has one fixed message.
 The client never writes terminal text to stderr or to a log.
 """
 import http.client
@@ -42,7 +41,7 @@ LOOPBACK = ("127.0.0.1", "localhost", "::1")
 REQUEST_LIMIT = 5.0
 RETRY_DELAY = 1.0   # the Retry-After of the server, and the most that the client waits
 GATE_LIMIT = 2 * REQUEST_LIMIT + RETRY_DELAY   # one request, the pause and the retry after a 503
-MESSAGES = {1: "laya: not available", 2: "laya: bad input"}
+MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long to examine"}
 
 
 class Fail(Exception):
@@ -256,25 +255,7 @@ def cmd_health(args):
     print(json.dumps({"ok": True}))
 
 
-# Bash changes a word with quotes, a backslash, braces, a glob or ~ before
-# the command sees it (git diff '--output=FILE' is --output=FILE), so the
-# safe list examines only plain words.
-UNSAFE = frozenset(";|&<>$`()\n\r'\"\\{}*?[]~!")
 LEVELS = ("safe", "caution", "dangerous")
-
-
-def on_safe_list(command):
-    """True when the command skips Laya (spec section 7, Safe list)."""
-    if any(char in UNSAFE for char in command):
-        return False
-    words = command.split()
-    for line in shipped_lines("safe-commands.txt"):
-        entry = line.split()
-        # A long option can write a file (git diff --output=FILE), so it
-        # ends the safe list.
-        if words[:len(entry)] == entry:
-            return not any(word.startswith("--") for word in words[len(entry):])
-    return False
 
 
 def level_of(answer, pol):
@@ -295,7 +276,7 @@ def level_of(answer, pol):
 
 
 def cmd_command(args):
-    if any(arg not in ("--screen", "--no-safe-list") for arg in args):
+    if any(arg != "--screen" for arg in args):
         raise Fail(2)
     text = read_stdin()
     if "--screen" in args:
@@ -313,18 +294,20 @@ def cmd_command(args):
         state = command
         if not command.strip():
             raise Fail(2)
-    # safe_list is its own field: terminal.sh writes the .safe marker from
-    # it, not from the reason text.
-    if "--no-safe-list" not in args and on_safe_list(command):
-        level, reason, listed = "safe", "safe list", True
-    else:
-        pol = policy("command")
-        level, reason = level_of(ask(remote(GATE_LIMIT), pol, state), pol)
-        listed = False
-    print(json.dumps({"level": level, "reason": reason, "safe_list": listed}))
+    # Each command goes to Laya: no safe list (spec section 7). Laya cuts a
+    # long state and examines only its start, so a cut state is refused.
+    pol = policy("command")
+    answer = ask(remote(GATE_LIMIT), pol, state)
+    if is_cut(answer, pol):
+        raise Fail(3)
+    level, reason = level_of(answer, pol)
+    print(json.dumps({"level": level, "reason": reason}))
 
 
 PANE_STATES = ("credential", "yes_no", "menu", "pager", "shell_prompt", "other")
+PANE_CURSOR = 400          # the end of the cursor line that goes to Laya
+PANE_ABOVE = 200           # the end of each line above it
+PAIR_ABOVE = 200           # the end of the line above in a pair of the line check
 
 
 def cmd_pane(args):
@@ -336,10 +319,22 @@ def cmd_pane(args):
     text = read_stdin()
     text = text[:-1] if text.endswith("\n") else text
     if not text.strip():
-        state = "other"
-    else:
-        state = ask(remote(GATE_LIMIT), policy("pane"), text).choice("state", PANE_STATES)
-    print(json.dumps({"state": state}))
+        print(json.dumps({"state": "other"}))
+        return
+    # Laya cuts a long state from the right, and the prompt is at the end of
+    # the cursor line. Thus each line keeps only its end: PANE_CURSOR
+    # characters of the cursor line and PANE_ABOVE of each line above it.
+    # When Laya still cuts the text, the cursor line goes alone.
+    lines = text.split("\n")
+    cursor = lines[-1][-PANE_CURSOR:]
+    above = [line[-PANE_ABOVE:] for line in lines[:-1]]
+    pol, runner = policy("pane"), remote(GATE_LIMIT)
+    answer = ask(runner, pol, "\n".join(above + [cursor]))
+    if above and is_cut(answer, pol):
+        answer = ask(runner, pol, cursor)
+    if is_cut(answer, pol):
+        raise Fail(3)
+    print(json.dumps({"state": answer.choice("state", PANE_STATES)}))
 
 
 BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
@@ -366,23 +361,35 @@ def make_blocks(lines):
     """Split the lines into blocks of complete lines, at most BLOCK_CHARS
     characters each. A line longer than BLOCK_CHARS is cut into pieces, and
     each piece is a block of its own. [inferred] A block of only blank lines
-    is not sent."""
+    is not sent.
+
+    The blocks start at the last line and go up. Each cut of the text
+    (read --lines, --max-lines, the byte cut) keeps the end, so a line keeps
+    the same block when the cut changes; only the top block changes. A top
+    block under half of BLOCK_CHARS joins the block below it."""
     blocks, block, size = [], [], 0
-    for index, line in enumerate(lines):
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
         if len(line) > BLOCK_CHARS:
             if block:
                 blocks.append(block)
                 block, size = [], 0
-            for start in range(0, len(line), BLOCK_CHARS):
+            starts = range(0, len(line), BLOCK_CHARS)
+            for start in reversed(starts):
                 blocks.append([Unit(index, start, line[start:start + BLOCK_CHARS])])
             continue
         if block and size + len(line) + 1 > BLOCK_CHARS:
             blocks.append(block)
             block, size = [], 0
-        block.append(Unit(index, 0, line))
+        block.insert(0, Unit(index, 0, line))
         size += len(line) + 1
     if block:
-        blocks.append(block)
+        below = blocks[-1] if blocks else None
+        if size < BLOCK_CHARS // 2 and below and all(len(lines[unit.line]) <= BLOCK_CHARS for unit in below):
+            blocks[-1] = block + below
+        else:
+            blocks.append(block)
+    blocks.reverse()
     return [block for block in blocks if any(unit.text.strip() for unit in block)]
 
 
@@ -404,6 +411,15 @@ def halve(block):
             [Unit(unit.line, unit.start + middle, unit.text[middle:])]]
 
 
+def is_cut(answer, pol):
+    """laya-serve gives usage.input_tokens as the sum over the question rows
+    (one row for each question of the policy), and it cuts each row at
+    CUT_TOKENS. When the mean row is within ROW_MARGIN of CUT_TOKENS, the
+    longest row can be cut."""
+    rows = max(1, len(pol["schema"]["properties"]))
+    return answer.tokens() / rows >= CUT_TOKENS - ROW_MARGIN
+
+
 def check_blocks(pool, runner, pol, blocks):
     """Send each block with the block policy. laya-serve gives
     usage.input_tokens as the sum over the question rows (one row for each
@@ -411,13 +427,12 @@ def check_blocks(pool, runner, pol, blocks):
     When the mean row is within ROW_MARGIN of CUT_TOKENS, the longest row
     can be cut: send the halves of the block again. Give the list of
     (block, answer)."""
-    rows = max(1, len(pol["schema"]["properties"]))
     done, pending = [], blocks
     while pending:
         answers = list(pool.map(lambda block: ask(runner, pol, block_text(block)), pending))
         again = []
         for block, answer in zip(pending, answers):
-            if answer.tokens() / rows >= CUT_TOKENS - ROW_MARGIN:
+            if is_cut(answer, pol):
                 again.extend(half for half in halve(block)
                              if any(unit.text.strip() for unit in half))
             else:
@@ -441,8 +456,9 @@ def block_ranges(checked, pol):
 
 def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     """Step 5, the line check. `units` are all units of the text in order.
-    Each flagged unit goes to Laya alone and with the unit above it. Give the
-    set of line indexes that the check holds.
+    Each flagged unit goes to Laya alone, and with the unit above it when
+    the alone score does not decide. Give the set of line indexes that the
+    check holds.
 
     A unit is held when it alone is above the threshold, or when the pair is
     above the threshold and the unit above is not: not above the threshold
@@ -451,43 +467,56 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     line after `hunter2` is held because of `hunter2`. The unit above is held
     when it alone is above the threshold, also when its own block was not
     flagged. `cleared` are the lines that not-secret.txt clears: the check
-    never holds them, and the pair rule reads such a line above as not held,
-    so the line after it is not let through because of it."""
+    never holds them and sends no request for them, and the pair rule reads
+    such a line above as not held.
+
+    Phase 1 sends the alone requests, phase 2 only the pairs that can change
+    the result. A pair has only the end of the unit above (PAIR_ABOVE), so
+    that Laya does not cut the unit below. A request that Laya cuts holds
+    its unit: Laya did not examine all of it."""
     limit = threshold(pol, "secret", 0.75)
-    targets, alone_ids, pairs = [], set(), []
-    for position, unit in enumerate(units):
-        if id(unit) not in flagged or not unit.text.strip():
-            continue
-        targets.append(position)
-        alone_ids.add(position)
-        if position > 0:
-            above = units[position - 1]
-            if above.text.strip() and above.line in (unit.line, unit.line - 1):
-                alone_ids.add(position - 1)
-                pairs.append(position)
-    jobs = [("alone", position, units[position].text) for position in sorted(alone_ids)]
-    jobs += [("pair", position, units[position - 1].text + "\n" + units[position].text)
-             for position in pairs]
-    scores = list(pool.map(lambda job: ask(runner, pol, job[2]).p("secret"), jobs))
-    alone, pair = {}, {}
-    for (kind, position, _text), score in zip(jobs, scores):
-        (alone if kind == "alone" else pair)[position] = score
+
+    def above_of(position):
+        if position == 0:
+            return None
+        above, unit = units[position - 1], units[position]
+        if above.text.strip() and above.line in (unit.line, unit.line - 1):
+            return above
+        return None
+
+    def score(text):
+        answer = ask(runner, pol, text)
+        return 1.0 if is_cut(answer, pol) else answer.p("secret")
+
+    targets = [position for position, unit in enumerate(units)
+               if id(unit) in flagged and unit.text.strip() and unit.line not in cleared]
+    alone_ids = set(targets)
+    for position in targets:
+        above = above_of(position)
+        if above is not None and above.line not in cleared and above.line not in values:
+            alone_ids.add(position - 1)
+    order = sorted(alone_ids)
+    alone = dict(zip(order, pool.map(lambda position: score(units[position].text), order)))
     held = set()
     for position in targets:
-        line = units[position].line
-        # The unit above has its own score: hold it also when its block was
-        # not flagged.
-        above = units[position - 1] if position in pair else None
-        above_high = above is not None and alone[position - 1] > limit and above.line not in cleared
-        if above_high:
-            held.add(above.line)
-        if line in cleared:
-            continue
         if alone[position] > limit:
-            held.add(line)
-        elif above is not None and pair[position] > limit:
-            if not above_high and above.line not in held and above.line not in values:
-                held.add(line)
+            held.add(units[position].line)
+        if position - 1 in alone and above_of(position) is not None and alone[position - 1] > limit:
+            held.add(units[position - 1].line)
+    pairs = []
+    for position in targets:
+        above = above_of(position)
+        if units[position].line in held or above is None:
+            continue
+        if above.line in held or above.line in values:
+            continue
+        pairs.append(position)
+    texts = [units[position - 1].text[-PAIR_ABOVE:] + "\n" + units[position].text for position in pairs]
+    # In line order: a line that its pair holds stops the pair of the line
+    # below it.
+    for position, value in zip(pairs, list(pool.map(score, texts))):
+        if value > limit and units[position - 1].line not in held:
+            held.add(units[position].line)
     return held
 
 

@@ -76,7 +76,6 @@ plugins/clux/
 │       ├── output-block.json    # The block check of the output guard
 │       ├── output-line.json     # The line check of the output guard
 │       ├── pane.json            # The prompt type of the pane
-│       ├── safe-commands.txt    # Commands that do not go to Laya
 │       ├── secret-values.txt    # Secret values that are always held
 │       └── not-secret.txt       # Line shapes that are never secret
 ├── docs/

@@ -90,29 +90,17 @@ PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "command: a safe-list command skips Laya" {
+@test "command: each command goes to Laya, there is no safe list" {
     start_fake_laya '{}'
     local cmd
-    for cmd in 'ls -la' 'pwd' 'head -3 README.md' 'wc -l README.md' 'cat README.md' 'echo hi'; do
+    for cmd in 'ls' 'ls -la' 'pwd' 'echo hi' 'cat README.md' 'git status -s'; do
         run --separate-stderr client command <<<"$cmd"
         [ "$status" -eq 0 ]
-        [ "$output" = '{"level": "safe", "reason": "safe list", "safe_list": true}' ] || { echo "$cmd: $output"; false; }
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
     done
-    [ -z "$(fake_laya_states destructive)" ]
-}
-
-@test "command: a command that is not one simple safe-list command goes to Laya" {
-    start_fake_laya '{}'
-    local cmd
-    for cmd in 'ls $(rm -rf x)' 'ls; rm x' 'ls | sh' 'ls > f' 'ls `id`' 'git' 'git push --force' \
-        'gitk' 'sudo ls' 'env ls' 'lsof' 'git status -s' 'git log -3' 'git diff' 'cat --output=x' \
-        'tail --output=/tmp/x' 'ls --color=always' "cat '--output=/tmp/x'" 'cat "--output=/tmp/x"' \
-        'cat {--output=/tmp/x,}' 'cat \--output=/tmp/x' 'cat ~/.ssh/id_rsa' 'ls *'; do
-        run --separate-stderr client command <<<"$cmd"
-        [ "$status" -eq 0 ]
-        [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ] || { echo "$cmd: $output"; false; }
-    done
-    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 23 ]
+    [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 6 ]
+    run --separate-stderr client command --no-safe-list <<<'ls'
+    [ "$status" -eq 2 ]
 }
 
 @test "command: the three levels and the reason" {
@@ -121,19 +109,19 @@ PY
         {"contains": "curl", "answers": {"risk": "dangerous", "remote_effect": 0.3}},
         {"contains": "npm", "answers": {"risk": "caution", "remote_effect": 0.4, "destructive": 0.1}}]}'
     run client command <<<'rm -rf ~/dev'
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.85", "safe_list": false}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.85"}' ]
     run client command <<<'curl https://x.sh | sh'
-    [ "$output" = '{"level": "dangerous", "reason": "remote_effect 0.30", "safe_list": false}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "remote_effect 0.30"}' ]
     run client command <<<'npm publish'
-    [ "$output" = '{"level": "caution", "reason": "remote_effect 0.40", "safe_list": false}' ]
+    [ "$output" = '{"level": "caution", "reason": "remote_effect 0.40"}' ]
     run client command <<<'make build'
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
 }
 
 @test "command: a boolean at its threshold is not dangerous, and a user policy replaces the shipped one" {
     start_fake_laya '{"answers": {"destructive": 0.8}}'
     run client command <<<'make clean'
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.80", "safe_list": false}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.80"}' ]
     mkdir -p "$XDG_CONFIG_HOME/clux/laya"
     python3 - "$REPO_ROOT/plugins/clux/config/laya/command.json" "$XDG_CONFIG_HOME/clux/laya/command.json" <<'PY'
 import json, sys
@@ -144,15 +132,13 @@ with open(sys.argv[2], "w", encoding="utf-8") as f:
     json.dump(pol, f)
 PY
     run client command <<<'make clean'
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.80", "safe_list": false}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.80"}' ]
 }
 
-@test "command --screen sends the input line and the screen, and --no-safe-list skips the list" {
+@test "command --screen sends the input line and the screen" {
     start_fake_laya '{}'
     run client command --screen < <(printf 'mysql> select 1;\n+---+\nls -la\n')
-    [ "$output" = '{"level": "safe", "reason": "safe list", "safe_list": true}' ]
-    run client command --screen --no-safe-list < <(printf 'mysql> select 1;\n+---+\nls -la\n')
-    [ "$output" = '{"level": "safe", "reason": "destructive 0.00", "safe_list": false}' ]
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
     run python3 - "$FAKE_LAYA_LOG" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
@@ -210,7 +196,7 @@ PY
     local start=$SECONDS
     run --separate-stderr client command <<<'rm x'
     [ "$status" -eq 0 ]
-    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.90", "safe_list": false}' ]
+    [ "$output" = '{"level": "dangerous", "reason": "destructive 0.90"}' ]
     [ "$(fake_laya_states destructive | wc -l | tr -d ' ')" -eq 2 ]
     python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import laya_client as c
 assert c.retry_after({"Retry-After": "1"}) == 1.0
@@ -346,9 +332,9 @@ PY
     start_fake_laya '{"rules": [{"contains": "cut", "min_lines": 2, "input_tokens": 512}]}'
     local text
     text=$(for i in $(seq 1 20); do echo "cut line $i"; done)
-    run client output --render <<<"$text"
+    run client output --render < <(printf '%s' "$text")
     [ "$status" -eq 0 ]
-    [ "$output" = "held=0"$'\n'"$text" ]
+    [ "$output" = "held=0"$'\n'"${text%$'\n'}" ] || { echo "$output"; false; }
     run python3 - "$FAKE_LAYA_LOG" <<'PY'
 import json, sys
 states = [json.loads(line)["state"] for line in open(sys.argv[1], encoding="utf-8")]
@@ -527,9 +513,110 @@ PY
 
 @test "command --screen: a blank line goes to Laya with the screen, a blank screen too exits 2" {
     start_fake_laya '{}'
-    run --separate-stderr client command --screen --no-safe-list < <(printf 'Delete all? [Y/n]\n\n')
+    run --separate-stderr client command --screen < <(printf 'Delete all? [Y/n]\n\n')
     [ "$status" -eq 0 ]
     [ "$(fake_laya_states destructive | tail -n 1)" = '""' ]
-    run --separate-stderr client command --screen --no-safe-list < <(printf '\n\n')
+    run --separate-stderr client command --screen < <(printf '\n\n')
     [ "$status" -eq 2 ]
+}
+
+# line_requests — the states of the requests that ask only "secret": the
+# line check (the block check asks two questions).
+line_requests() {
+    python3 - "$FAKE_LAYA_LOG" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as log:
+    for raw in log:
+        request = json.loads(raw)
+        if request["questions"] == ["secret"]:
+            print(json.dumps(request["state"]))
+PY
+}
+
+@test "command: a command that Laya cuts exits 3, also with --screen" {
+    start_fake_laya '{"rules": [{"min_length": 1500, "input_tokens": 512}]}'
+    local long
+    long="echo $(printf 'word %.0s' $(seq 1 400)); rm -rf ~"
+    run --separate-stderr client command <<<"$long"
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+    [ "$stderr" = 'laya: too long to examine' ]
+    run --separate-stderr client command --screen < <(printf 'screen\n%s\n' "$long")
+    [ "$status" -eq 3 ]
+    run --separate-stderr client command <<<'echo short'
+    [ "$status" -eq 0 ]
+}
+
+@test "pane: only the end of each line goes to Laya, and a cut screen gives the cursor line alone" {
+    start_fake_laya '{"rules": [
+        {"min_length": 700, "input_tokens": 512},
+        {"equals": "Enter token:", "answers": {"state": "credential"}}]}'
+    local dump
+    dump=$(printf '{"k": "%s"}' "$(printf 'v%.0s' $(seq 1 2000))")
+    run client pane < <(printf '%s\n%s\n%s\n%s\nEnter token:\n' "$dump" "$dump" "$dump" "$dump")
+    [ "$status" -eq 0 ]
+    [ "$output" = '{"state": "credential"}' ]
+    run python3 - "$FAKE_LAYA_LOG" <<'PY'
+import json, sys
+states = [json.loads(raw)["state"] for raw in open(sys.argv[1], encoding="utf-8")]
+assert len(states) == 2, states
+assert all(len(line) <= 200 for line in states[0].split("\n")[:-1]), states[0]
+assert states[0].endswith("\nEnter token:") and states[1] == "Enter token:", states
+PY
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # A cursor line that Laya still cuts alone exits 3.
+    stop_fake_laya
+    start_fake_laya '{"rules": [{"min_length": 1, "input_tokens": 512}]}'
+    run client pane <<<'Enter token:'
+    [ "$status" -eq 3 ]
+}
+
+@test "output: a pair that Laya cuts holds the line, and a pair has only the end of the line above" {
+    local dense
+    dense=$(printf 'QUJD%.0s' $(seq 1 140))
+    start_fake_laya '{"rules": [
+        {"asks": "prompt_injection", "answers": {"secret": 0.9}},
+        {"contains": "\nhunter2", "input_tokens": 512},
+        {"equals": "hunter2", "answers": {"secret": 0.18}}]}'
+    run client output --render < <(printf '%s\nhunter2\n' "$dense")
+    [ "$status" -eq 0 ]
+    [ "$output" = "held=1"$'\n'"$dense"$'\n[held by laya: secret]' ]
+    [ "$(line_requests | grep -c 'hunter2')" -eq 2 ]
+    line_requests | grep -q "^\"${dense: -200}\\\\nhunter2\"$"
+}
+
+@test "output: a line that its lone score or not-secret.txt decides sends no pair request" {
+    start_fake_laya '{"answers": {"secret": 0.9}}'
+    local text i
+    for i in $(seq 1 15); do
+        text+="-rw-r--r--  1 jazz  staff  $i Sep 28 10:15 f$i.txt"$'\n'
+    done
+    run client output --render < <(printf '%s' "$text")
+    [ "$status" -eq 0 ]
+    [ "$output" = "held=0"$'\n'"${text%$'\n'}" ] || { echo "$output"; false; }
+    [ -z "$(line_requests)" ]
+    : > "$FAKE_LAYA_LOG"
+    run client output --render < <(printf 'one\ntwo\n')
+    [ "$output" = $'held=2\n[held by laya: secret, 2 lines]' ]
+    [ "$(line_requests | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "output: the blocks start at the last line, so a longer text keeps the blocks at its end" {
+    run "$CLUX_LAYA_PYTHON" - "$LAYA_CLIENT" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1])
+c = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(c)
+def blocks(lines):
+    return [[(u.line - len(lines), u.start) for u in b] for b in c.make_blocks(lines)]
+text = ["line %03d %s" % (i, "x" * (i % 37)) for i in range(120)]
+base = blocks(text[20:])
+for n in range(21, 60):
+    other = blocks(text[20 - (n - 20):]) if n <= 40 else blocks(text[n - 20:])
+    # The blocks that do not hold the top line are the same.
+    assert base[1:] == other[-(len(base) - 1):] or other[1:] == base[-(len(other) - 1):], n
+top = c.make_blocks(["short"] + ["y" * 99] * 5)
+assert len(top) == 1, [len(b) for b in top]
+PY
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
