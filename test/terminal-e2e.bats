@@ -238,6 +238,16 @@ pane_shows() {
     [[ "$output" == *'hello:Ada'* ]] || false
 }
 
+@test "a sh -c script that reads a line takes Enter from send, as npm or make start it" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run --timeout 2 -- "sh -c 'read -p \"Name? \" n; echo \"hello:\$n\"'"
+    [ "$status" -eq 1 ] || { echo "$status $output"; false; }
+    run "$TERMINAL" send --enter -- Ada
+    [ "$status" -eq 0 ] || { echo "$status $output"; false; }
+    run "$TERMINAL" wait --timeout 10 --run 1
+    [[ "$output" == *$'hello:Ada\nexit=0' ]] || { echo "$output"; false; }
+}
+
 # wait --idle must actually wait. A `wait` that returns 0 immediately also
 # passes the case above, so this case pins the busy answer.
 @test "wait --idle reports busy while a command runs, idle once it ends" {

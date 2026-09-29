@@ -1531,7 +1531,8 @@ pane_nested_shell() {
 # shell, or runs under a nested shell and is not a known program: text that
 # sleep does not read goes to that shell at its next prompt. A nested shell
 # is a shell that is not a fork of the pane shell (the __clux_sub subshell
-# has the same arguments) and runs no script file (bash ./x.sh), or a tool
+# has the same arguments) and reads commands from the terminal: no script
+# file (bash ./x.sh) and no -c (sh -c of npm or make), or -i or -s. Or a tool
 # that gives a shell (ssh, docker exec, kubectl exec, su, tmux). A shell on a
 # pty of its own (pty.spawn, :terminal) is in the front group of that pty.
 # A shell with a name that is not in the list (a copy of bash, exec -a x
@@ -1555,14 +1556,31 @@ front_kinds() {
         function program(n) {
             return n ~ /^(i?python.*|bpython.*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh|node|deno|bun|irb|pry|ghci|lua.*|r|julia|erl|iex|scala|sbcl|gdb|lldb|php|vi|vim|nvim|view|nano|pico|emacs|less|more|most|man|top|htop|btop|tig|fzf)$/
         }
+        # A shell reads commands from the terminal when it has no script
+        # file and no -c, or when it has -i or -s. sh -c "read -p x" of npm,
+        # make or a git hook, and bash ./x.sh, are not nested shells. An
+        # option that takes a value (-o, -O, --rcfile, --init-file) skips
+        # it. -c with no text is an error: it counts as reading (fail closed).
+        function reads(p,   w, n, i, c) {
+            n = split(args[p], w, " "); c = 0
+            for (i = 2; i <= n; i++) {
+                if (w[i] == "--") return (i == n && !c)
+                if (w[i] ~ /^[-+][oO]$/ || w[i] == "--rcfile" || w[i] == "--init-file") { i++; continue }
+                if (w[i] ~ /^--/) continue
+                if (w[i] !~ /^[-+]/) return 0
+                if (w[i] ~ /^-[a-zA-Z]*[is]/) return 1
+                if (w[i] ~ /^-[a-zA-Z]*c/) c = 1
+            }
+            return 1
+        }
         function nest(p) {
             if (remote(name[p])) return 1
             if (grp[p] == p && !program(name[p]) && (up[p] != root || args[p] != args[root])) return 1
-            return shell(name[p]) && args[p] != args[root] && !(second[p] != "" && second[p] !~ /^-/)
+            return shell(name[p]) && args[p] != args[root] && reads(p)
         }
         { a = $5; for (i = 6; i <= NF; i++) a = a " " $i
           up[$1] = $2; grp[$1] = $3; args[$1] = a; front[$1] = ($4 ~ /\+/)
-          name[$1] = base($5); second[$1] = (NF >= 6 ? $6 : "") }
+          name[$1] = base($5) }
         END {
             if (!(root in up)) { print "1 0 1"; exit }
             nested = 0; found = 0; inner = 0

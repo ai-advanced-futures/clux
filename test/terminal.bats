@@ -1794,6 +1794,33 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$output" = '0 0 0' ]
 }
 
+@test "front_kinds: a shell that runs -c text or a script file is not a nested shell, one that reads the terminal is" {
+    check() {
+        run bash -c "source '$TERMINAL'; ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\n200 100 200 S+ bash --rcfile /d/rc.bash -i\n$1'; }; front_kinds 100"
+        [ "${output%% *}" = "$2" ] || { echo "$1 -> $output"; false; }
+    }
+    # npm, make or a git hook start sh -c: the script reads a line, and
+    # send can end it with Enter.
+    check '300 200 200 S+ node npm run setup\n400 300 200 S+ sh -c read -p name: n\n' 0
+    check '300 200 200 S+ make\n400 300 200 S+ /bin/sh -c ./configure --x\n' 0
+    check '300 200 200 S+ bash -ec read x\n' 0
+    check '300 200 200 S+ zsh -c read x\n' 0
+    check '300 200 200 S+ dash -c read x\n' 0
+    check '300 200 200 S+ bash -e ./x.sh\n' 0
+    check '300 200 200 S+ bash -- ./x.sh\n' 0
+    check '300 200 200 S+ bash -o errexit ./x.sh\n' 0
+    # A shell that reads commands from the terminal: -i, -s, no script, or
+    # an option that takes the next word as its value.
+    check '300 200 200 S+ bash -ic read x\n' 1
+    check '300 200 200 S+ sh -s\n' 1
+    check '300 200 200 S+ sh -c\n' 1
+    check '300 200 200 S+ bash --\n' 1
+    check '300 200 200 S+ bash --rcfile /tmp/x\n' 1
+    check '300 200 200 S+ bash -o vi\n' 1
+    # A nested shell under sh -c is still a nested shell.
+    check '300 200 200 S+ sh -c bash\n400 300 200 S+ bash\n' 1
+}
+
 @test "send refuses all but an interrupt key when the clux shell is in front and no clux prompt shows" {
     local log="$BATS_TEST_TMPDIR/noprompt.log" d="$BATS_TEST_TMPDIR/noprompt" k line
     mkdir -p "$d"
