@@ -138,6 +138,18 @@ pane_shows() {
     [[ "$output" != *trap-ran* ]] || false
 }
 
+@test "run of cat of a certificate with no newline at its end and a key shows no line of the key" {
+    printf '%s\n%s\n%s' '-----BEGIN CERTIFICATE-----' 'MIIBszCCAVmgAwIBAgIUcert' '-----END CERTIFICATE-----' > "$BATS_TEST_TMPDIR/c.pem"
+    printf '%s\n' '-----BEGIN RSA PRIVATE KEY-----' 'MIIEowIBAAKCAQEAkeybodyline1' 'kkeybodyline2xxxxxxxxxxxxxx' '-----END RSA PRIVATE KEY-----' > "$BATS_TEST_TMPDIR/k.pem"
+    "$TERMINAL" open >/dev/null
+    # head -n 5 cuts the output before the END line of the key.
+    # A key with no END holds to the end of the text. The plain lines above
+    # keep the half rule from a hold of the full block.
+    run "$TERMINAL" run -- "seq 1 20 | sed 's/^/plain line /'; cat '$BATS_TEST_TMPDIR/c.pem' '$BATS_TEST_TMPDIR/k.pem' | head -n 5"
+    [[ "$output" != *keybody* ]] || { echo "$output"; false; }
+    [[ "$output" == *'plain line 20'*'[held by laya: secret'*'exit=0' ]] || { echo "$output"; false; }
+}
+
 @test "run of the end of a key file shows no line of the key" {
     printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ' \
         'QyNTUxOQAAACBkeybodyline2xxxxxxxxxxxxxxxxx' '-----END OPENSSH PRIVATE KEY-----' > "$BATS_TEST_TMPDIR/k"

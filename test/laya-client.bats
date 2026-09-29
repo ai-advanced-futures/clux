@@ -667,6 +667,20 @@ for line in ["-----BEGIN CERTIFICATE-----", "-----BEGIN PGP PUBLIC KEY BLOCK----
     assert not c.PEM_KEY_BEGIN.search(line) and not c.PEM_KEY_END.search(line), line
     assert c.value_lines([line], patterns) == set(), line
 assert c.pem_ranges(["body", "-----END PGP PUBLIC KEY BLOCK-----"]) == []
+# More than one marker on a line (cat of a file with no newline at its
+# end): the markers count in their order.
+cert_b, cert_e = "-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"
+key_b, key_e = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+# END, then BEGIN of a key: the key body below is held to its END.
+assert c.pem_ranges([cert_b, "MIIB", cert_e + key_b, "body", key_e, "after"]) == [(0, 2, "secret"), (2, 4, "secret")]
+# The same with no END of the key: it holds to the end of the text.
+assert c.pem_ranges([cert_b, "MIIB", cert_e + key_b, "body", "body"]) == [(0, 2, "secret"), (2, 4, "secret")]
+# BEGIN and END on one line: one line.
+assert c.pem_ranges(["x", key_b + "body" + key_e, "y"]) == [(1, 1, "secret")]
+# Two keys on one line, the second one open.
+assert c.pem_ranges([key_b + "a" + key_e + key_b, "body", key_e, "after"]) == [(0, 0, "secret"), (0, 2, "secret")]
+# The END of a key with no BEGIN, then a BEGIN on the same line.
+assert c.pem_ranges(["body", "body" + key_e + key_b, "b2"]) == [(0, 1, "secret"), (1, 2, "secret")]
 PY
 }
 

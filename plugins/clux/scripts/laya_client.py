@@ -750,8 +750,8 @@ def render(lines, ranges):
     return out, held
 
 
-PEM_BEGIN = "-----BEGIN"
-PEM_END = "-----END"
+# Each BEGIN or END marker of a line, in order.
+PEM_MARKER = re.compile(r"-----(BEGIN|END)")
 # The END line of a private key. Only such a line holds the lines above it
 # when the text has no BEGIN: a certificate or "-----END OF REPORT-----" does not.
 PEM_KEY_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----")
@@ -798,17 +798,21 @@ def pem_ranges(lines):
     end of a key with no BEGIN. Round 7 limited it to cut text so that a
     lone -----END OF REPORT----- held no output; the END side must now name
     PRIVATE KEY, so that case holds nothing. The rule holds each range
-    whatever Laya answers."""
+    whatever Laya answers. A line can hold more than one marker (cat of a
+    file with no newline at its end gives -----END CERTIFICATE----------BEGIN
+    RSA PRIVATE KEY-----), so the markers of a line count in their order."""
     ranges, begin, key, start = [], None, None, 0
     for index, line in enumerate(lines):
-        if begin is None and PEM_BEGIN in line:
-            begin = index
-        if key is None and PEM_KEY_BEGIN.search(line):
-            key = index
-        if PEM_END in line:
+        for marker in PEM_MARKER.finditer(line):
+            if marker.group(1) == "BEGIN":
+                if begin is None:
+                    begin = index
+                if key is None and PEM_KEY_BEGIN.match(line, marker.start()):
+                    key = index
+                continue
             if begin is not None:
                 ranges.append((begin, index, "secret"))
-            elif PEM_KEY_END.search(line):
+            elif PEM_KEY_END.match(line, marker.start()):
                 ranges.append((start, index, "secret"))
             begin, key, start = None, None, index + 1
     if key is not None:
