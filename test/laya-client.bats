@@ -509,6 +509,42 @@ PY
     [ "$output" = $'held=2\ncommit 0123456789abcdef0123456789abcdef01234567\n-rw-r--r--@  1 jazz  staff  1234 Sep 28 10:15 notes.txt\ndrwxr-xr-x   5 jazz  staff   160 Jan  3  2025 src\n 2 files changed, 10 insertions(+)\n[held by laya: secret]\n[held by laya: secret]\ntotal 48' ]
 }
 
+@test "not-secret.txt: no anchored pattern clears a line with KEY=value or user:pass in a free field" {
+    run python3 -c "
+import re, sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+shapes = c.compile_lines('not-secret.txt')
+# The rule: in a pattern with ^ and $, no part matches any text. Each
+# negated set leaves out = and :, and \\\\S and a bare . are not used.
+for p in shapes:
+    text = p.pattern
+    if not (text.startswith('^') and text.endswith('$')):
+        continue
+    bare = re.sub(r'\[(\\\\.|[^]])*\]', '', re.sub(r'\\\\.', lambda m: '' if m.group() == '\\\\S' else 'x', text))
+    assert '\\\\S' not in text, text
+    assert '.' not in bare, text
+    for group in re.findall(r'\[\^((?:\\\\.|[^]])*)\]', text):
+        assert '=' in group and ':' in group, (text, group)
+# The samples: each line is cleared, and each change of a free field to a
+# secret is not.
+cases = [
+    ('-rw-r--r--@  1 jazz  staff  1234 Sep 28 10:15 notes.txt', ['jazz', 'staff', 'notes.txt']),
+    ('drwxr-xr-x   5 jazz  staff   160 Jan  3  2025 src', ['jazz', 'staff', 'src']),
+    (' src/app.py   |  12 ++--', ['src/app.py']),
+    ('Author: Some One <one@example.com>', ['Some One', 'one']),
+]
+for line, fields in cases:
+    assert c.never_secret(line, shapes), line
+    for field in fields:
+        for secret in ('API_KEY=sk-live-abc123', 'admin:hunter2', 'user@db.example'):
+            changed = line.replace(field, secret, 1)
+            if secret.endswith('@db.example') and field == 'one':
+                continue
+            assert not c.never_secret(changed, shapes), changed
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
 @test "output: a line that not-secret.txt clears does not stop the pair rule for the line after it" {
     start_fake_laya '{"rules": [
         {"asks": "prompt_injection", "answers": {"secret": 0.9}},
