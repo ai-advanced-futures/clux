@@ -358,6 +358,31 @@ PY
     [ "$status" -eq 2 ]
 }
 
+@test "render: a secret or a prompt_injection wins over not_examined, and only the lines not examined keep the retry" {
+    run python3 -c "
+import sys; sys.path.insert(0, '$BATS_TEST_DIRNAME/../plugins/clux/scripts')
+import laya_client as c
+out, held = c.render(list('abcd'), [(0, 3, 'not_examined'), (1, 1, 'secret')])
+assert out == ['[held by laya: not_examined, 1 lines]', '[held by laya: secret]', '[held by laya: not_examined, 2 lines]'], out
+out, held = c.render(list('abcde'), [(0, 2, 'not_examined'), (2, 4, 'prompt_injection')])
+assert out == ['[held by laya: not_examined, 2 lines]', '[held by laya: prompt_injection, 3 lines]'], out
+out, held = c.render(list('abc'), [(1, 1, 'not_examined'), (0, 2, 'secret')])
+assert out == ['[held by laya: secret, 3 lines]'] and held == [{'kind': 'secret', 'lines': 3}], out
+# The half rule counts held lines only: lines not examined keep their retry.
+block = [(tuple(c.Unit(i, 0, 'x') for i in range(4)), None)]
+assert c.half_rule(block, [(0, 2, 'not_examined')]) == []
+assert c.half_rule(block, [(0, 2, 'secret')]) == [(0, 3, 'secret')]
+"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # The full client: the time limit leaves the block not examined, and
+    # secret-values.txt holds one line of it. That line is a secret, with
+    # no retry; the other line is not examined.
+    start_fake_laya '{"delay": 3}'
+    run --separate-stderr client output --render --limit 1 < <(printf 'key AKIAABCDEFGHIJKLMNOP\nplain line\n')
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "$output" = $'held=2 not_examined=1\n[held by laya: secret]\n[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
+}
+
 @test "output: one request that reaches the request limit holds only its block" {
     start_fake_laya '{"rules": [{"contains": "slow-block", "delay": 6}]}'
     local text

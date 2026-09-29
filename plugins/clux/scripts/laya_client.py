@@ -685,18 +685,42 @@ def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
     return held, late - held
 
 
-def render(lines, ranges):
-    """Replace each held range with one marker line. Ranges that share a line
-    become one range; it is prompt_injection when one part is, else
-    not_examined when one part is. Give (lines, held)."""
+def merge(ranges, order):
+    """Ranges that share a line become one range, of the first kind in
+    ORDER that one part has."""
     merged = []
     for first, last, kind in sorted(ranges):
         if merged and first <= merged[-1][1]:
             top = merged[-1]
-            kind = next(k for k in ("prompt_injection", "not_examined", "secret") if k in (kind, top[2]))
+            kind = next(k for k in order if k in (kind, top[2]))
             merged[-1] = (top[0], max(top[1], last), kind)
         else:
             merged.append((first, last, kind))
+    return merged
+
+
+def render(lines, ranges):
+    """Replace each held range with one marker line. Give (lines, held).
+
+    A secret or a prompt_injection wins over not_examined: its lines are
+    held, and a retry (wait --run again) must not give them back. So the
+    held ranges merge first (prompt_injection wins when one part is), and a
+    not_examined range keeps only the lines that no held range covers. Those
+    lines are really not examined, and they keep the retry."""
+    held_ranges = merge([r for r in ranges if r[2] != "not_examined"], ("prompt_injection", "secret"))
+    covered = {line for first, last, _kind in held_ranges for line in range(first, last + 1)}
+    late = []
+    for first, last, kind in ranges:
+        if kind != "not_examined":
+            continue
+        start = None
+        for line in range(first, last + 2):
+            if line <= last and line not in covered:
+                start = line if start is None else start
+            elif start is not None:
+                late.append((start, line - 1, "not_examined"))
+                start = None
+    merged = sorted(held_ranges + merge(late, ("not_examined",)))
     out, held, index = [], [], 0
     for first, last, kind in merged:
         out.extend(lines[index:first])
@@ -775,8 +799,10 @@ def pem_ranges(lines, cut=False):
 
 def half_rule(checked, ranges):
     """Step 6: when more than half of the lines of a block are held (by any
-    rule), the full block is held."""
-    held = {line for first, last, _kind in ranges for line in range(first, last + 1)}
+    rule), the full block is held. A line that is not examined is not held:
+    it must keep its retry, so it does not count here."""
+    held = {line for first, last, kind in ranges if kind != "not_examined"
+            for line in range(first, last + 1)}
     result = []
     for block, _answer in checked:
         block_lines = sorted({unit.line for unit in block})
