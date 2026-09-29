@@ -207,21 +207,15 @@ laya_checkpoint_present() {
 }
 
 laya_installed() {
-    [ -f "$LAYA_MARKER" ] && laya_checkpoint_present && laya_client_ready
+    [ -f "$LAYA_MARKER" ] && laya_checkpoint_present && laya_python_ready "$LAYA_PY"
 }
 
-# laya_venv_ready — the venv python runs and imports laya. A Python upgrade
-# (Homebrew) can break a venv and keep its marker.
-laya_venv_ready() {
-    [ -x "$LAYA_VENV/bin/python3" ] || return 1
-    "$LAYA_VENV/bin/python3" -c 'import laya.structured' >/dev/null 2>&1
-}
-
-# laya_client_ready — LAYA_PY (the venv, or CLUX_LAYA_PYTHON) runs and can
-# import the laya package that the client uses.
-laya_client_ready() {
-    [ -x "$LAYA_PY" ] || return 1
-    "$LAYA_PY" -c 'import laya.structured' >/dev/null 2>&1
+# laya_python_ready PY — PY runs and can import the laya package that the
+# client uses. For the venv python: a Python upgrade (Homebrew) can break a
+# venv and keep its marker.
+laya_python_ready() {
+    [ -x "$1" ] || return 1
+    "$1" -c 'import laya.structured' >/dev/null 2>&1
 }
 
 # The Laya checks of open, before it makes $D. Each refusal exits 6.
@@ -229,7 +223,7 @@ laya_open_check() {
     if [ -n "${CLUX_LAYA_URL:-}" ]; then
         # The client needs a Python that can import laya, also for a server
         # that the user starts.
-        laya_client_ready || fail 'laya not installed: run terminal.sh laya install' 6
+        laya_python_ready "$LAYA_PY" || fail 'laya not installed: run terminal.sh laya install' 6
         laya_url_is_loopback "$CLUX_LAYA_URL" \
             || fail 'CLUX_LAYA_URL must name a loopback host: 127.0.0.1, localhost or ::1' 6
         S_LAYA_URL="$CLUX_LAYA_URL"
@@ -539,7 +533,10 @@ PROMPT_COMMAND=
 shopt -u expand_aliases
 # C-d at an empty prompt must not end the pane shell (spec section 7).
 set -o ignoreeof
-IGNOREEOF=1000000
+# Read-only: a line that sets IGNOREEOF=0 or TMOUT=1 would let C-d (an
+# interrupt key, with no gate) or the idle time end the pane shell. bash
+# still lets set +o ignoreeof remove it; send refuses the word set.
+readonly IGNOREEOF=1000000 TMOUT=0
 __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
 exit() { __clux_refuse; }
 exec() { __clux_refuse; }
@@ -560,7 +557,9 @@ __clux_keep() {
   local __clux_v
   (umask 077
    { printf '%s\0' "$PWD"
-     for __clux_v in $(compgen -e); do printf '%s=%s\0' "$__clux_v" "${!__clux_v}"; done
+     # One name on each line, read with no word split: the command can
+     # leave any IFS.
+     while IFS= read -r __clux_v; do printf '%s=%s\0' "$__clux_v" "${!__clux_v}"; done < <(compgen -e)
      printf '=\0'
    } > "$1")
 }
@@ -664,10 +663,13 @@ __clux_run() {
   # commands (a function, an alias, a trap, an option, enable). The
   # directory and the exported variables come back through __clux_load.
   command rm -f "$__clux_d/$__clux_n.keep"
-  { ( eval "$__clux_cmd"
-      __clux_rc=$?
-      __clux_keep "$__clux_d/$__clux_n.keep"
-      builtin exit "$__clux_rc" ); } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
+  # In the subshell, exit, exec and logout are the builtins again: exit
+  # ends the command (cd dir || exit 1), not only this shell. The EXIT trap
+  # writes the keep file also after exit, and keeps the exit code. The path
+  # goes into the trap now: the locals are gone when the trap runs.
+  { ( unset -f exit exec logout
+      trap "__clux_keep $(printf '%q' "$__clux_d/$__clux_n.keep")" EXIT
+      eval "$__clux_cmd" ); } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
   __clux_load "$__clux_d/$__clux_n.keep"
   __clux_i=0
@@ -986,13 +988,20 @@ send_gate() {
             ;;
     esac
     # At a shell prompt (the clux prompt, or a prompt that Laya calls
-    # shell_prompt, for example a nested bash) the line runs in that shell:
-    # a line that can change the shell for later commands, or (when this
-    # send ends the line) a line that is not complete, is dangerous.
-    { [ "$prompt" -eq 1 ] || [ "$PANE_STATE" = shell_prompt ]; } && shell=1
+    # shell_prompt in a shell process, for example a nested bash) the line
+    # runs in that shell: a line that can change the shell for later
+    # commands is dangerous. python3 or psql can also be shell_prompt, and
+    # the shell rules do not apply there. Only at the clux prompt is the
+    # prompt known, so only there does the line that this send ends go to
+    # the complete-command check.
+    if [ "$prompt" -eq 1 ]; then
+        shell=1
+    elif [ "$PANE_STATE" = shell_prompt ] && pane_runs_shell; then
+        shell=1
+    fi
     flags=--screen
     [ "$shell" -eq 0 ] || flags="$flags --shell"
-    [ "$enter" -eq 0 ] || flags="$flags --enter"
+    [ "$enter" -eq 0 ] || [ "$prompt" -eq 0 ] || flags="$flags --enter"
     # shellcheck disable=SC2086
     laya_gate $flags < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
@@ -1015,6 +1024,18 @@ send_gate() {
             ;;
     esac
     return 0
+}
+
+# pane_runs_shell — the process in the front of the pane is a shell. When
+# tmux cannot tell, the answer is yes: the shell rules only refuse more.
+pane_runs_shell() {
+    local name
+    name=$(tmux_state display-message -p -t "$S_PANE" '#{pane_current_command}') || return 0
+    name="${name#-}"
+    case "${name##*/}" in
+        bash|sh|zsh|dash|ksh|mksh|oksh|yash|ash|busybox|fish|csh|tcsh|'') return 0 ;;
+    esac
+    return 1
 }
 
 # wait_for_echo TEXT BEFORE — after a send with no Enter, wait at most 2 s
@@ -1276,6 +1297,14 @@ take_typing_lock() {
     trap verb_exit EXIT
 }
 
+# lock_and_load — take the typing lock, then read the state again: a run
+# that another verb started before the lock has a new seq (and maybe a
+# .confirm), and each decision after the lock needs it.
+lock_and_load() {
+    take_typing_lock || return 5
+    state_load || fail 'no companion is open for this owner' 4
+}
+
 # pid_link LINK — make LINK a symbolic link to the pid of this verb, in one
 # step (ln -s makes it or fails). A link whose pid is not alive is taken
 # over: mv moves it away in one step, so only one verb gets it, and when the
@@ -1470,7 +1499,7 @@ remove_stale_output() {
 }
 
 run_command() {
-    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command first n sum mode
+    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command n sum mode
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -1489,17 +1518,13 @@ run_command() {
     esac
     positive_integer "$timeout" || usage
     positive_integer "$max" || usage
-    first="${command#"${command%%[![:space:]]*}"}"
-    case "${first%%[[:space:]]*}" in
-        exit|exec|logout|return) fail 'refused command first word' 2 ;;
-    esac
     reserved_word "$command"
     ensure_open
+    # The typing lock first: only one run at a time decides on the busy lock.
+    lock_and_load || return 5
     # run types __clux_run on the same line, after the hidden text.
     hidden_text && { refuse_hidden; return; }
     output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ, or wait --run $S_SEQ --discard" 5
-    # The typing lock first: only one run at a time decides on the busy lock.
-    take_typing_lock || return 5
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader takes now is free.
         [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! reader_live "$S_SEQ" \
@@ -1596,7 +1621,7 @@ send_command() {
         case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden"; run_not_started ;; esac
         return
     fi
-    take_typing_lock || return
+    lock_and_load || return
     laya_confirm_pending && { refuse_confirm; return; }
     hidden_text && { refuse_hidden; return; }
     check_pane || return
@@ -1670,8 +1695,21 @@ read_command() {
     [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
 }
 
+# new_screen_lines SEEN SCREEN — the lines of SCREEN that are not lines of
+# SEEN, each with the line above it, in screen order. Empty when each line
+# of SCREEN is in SEEN.
+new_screen_lines() {
+    awk 'NR == FNR { seen[$0]; next }
+        { line[++n] = $0; fresh[n] = !($0 in seen) }
+        END { for (i = 1; i <= n; i++) if (fresh[i] || (i < n && fresh[i + 1])) print line[i] }' \
+        <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh
+    # The lines that a guard examined. The first line is a mark that no
+    # screen line is, so the set is never empty.
+    local seen=$'\001clux-seen'
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --discard) discard=1; shift ;;
@@ -1744,10 +1782,18 @@ wait_command() {
                 # is not found.
                 # A failed guard counts as a failed probe: 3 in a row end
                 # the wait with exit 6. The same screen is guarded again.
+                # Only lines that no earlier guard examined go to Laya, each
+                # with the line above it for context: a progress bar sends
+                # 2 lines, not the full screen, each second. A line that
+                # an earlier guard examined did not match.
                 if screen=$(tmux_state capture-pane -p -J -t "$S_PANE"); then
                     if [ "$screen" != "$sum" ]; then
-                        if laya_guard <(printf '%s\n' "$screen") 1; then
+                        fresh=$(new_screen_lines "$seen" "$screen")
+                        if [ -z "$fresh" ]; then
                             sum="$screen"
+                        elif laya_guard <(printf '%s\n' "$fresh") 1; then
+                            sum="$screen"
+                            seen="$seen"$'\n'"$screen"
                             guard_fails=0
                             # The marker lines of held text are not pane
                             # text: the pattern does not see them.
@@ -1868,11 +1914,11 @@ laya_install() {
     # open uses the client Python: install cannot make CLUX_LAYA_PYTHON
     # ready, so it says so, and open and install do not send the user in a
     # circle.
-    if [ -n "${CLUX_LAYA_PYTHON:-}" ] && ! laya_client_ready; then
+    if [ -n "${CLUX_LAYA_PYTHON:-}" ] && ! laya_python_ready "$LAYA_PY"; then
         fail "CLUX_LAYA_PYTHON cannot import laya: install laya $LAYA_VERSION in that Python, or unset CLUX_LAYA_PYTHON" 2
     fi
     # A venv that does not run is made again: its marker goes.
-    [ ! -f "$LAYA_MARKER" ] || laya_venv_ready || rm -f "$LAYA_MARKER"
+    [ ! -f "$LAYA_MARKER" ] || laya_python_ready "$LAYA_VENV/bin/python3" || rm -f "$LAYA_MARKER"
     # An installed venv needs no base python3.
     if [ -f "$LAYA_MARKER" ] && laya_checkpoint_present; then
         version=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" version 2>/dev/null) || version=unknown

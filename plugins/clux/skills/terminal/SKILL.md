@@ -91,7 +91,7 @@ terminal.sh run -- 'git status --short'
 - When Laya finds a risk, the line `laya: caution (<reason>)` comes before `exit=<rc>`. The command ran. Tell the user about the risk when it is important.
 - For `run`, the output is not a TTY. For a command that needs a TTY (ssh, vim, a password prompt), use `send`.
 - For a command that starts a background process, use `send`. With `run`, you get the note `output may be incomplete`.
-- Do not start a command with `exit`, `exec`, `logout` or `return`. The script refuses it.
+- `exit` in a command ends only that command (for example `cd dir || exit 1`), not the companion.
 - The command must be one line. A newline, a tab or another control character gives exit code 2.
 - Each command goes to Laya, also `ls` and `echo`.
 - Laya examines at most about 500 tokens. A longer command gives exit code 2 and `laya: the command is too long to examine: make it shorter`. Nothing runs. Make the command shorter, for example with a script file.
@@ -124,7 +124,7 @@ terminal.sh run -- 'git status --short'
 Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. In a pager or a menu, the keys `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp` and `PageDown` also go to the pane with no Laya check of the line. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 
 - The cursor must be at the end of the line, in the shell and in other programs. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. When the script cannot read the cursor, you get exit code 5 and `cannot read the cursor position: try again`.
-- At a shell prompt, `send` does not send a line that can change the shell (for example `eval`, `source`, `export`, `alias`, `trap`, `set`, a function, or an assignment to `PATH`), or a line that is not a complete command. You get exit code 6 and `laya: dangerous (can change the shell for later commands): use run, it asks the user` or `laya: dangerous (the line is not a complete command): use run, it asks the user`. Use `run` for these commands.
+- At a shell prompt, `send` does not send a line that can change the shell (for example `eval`, `source`, `export`, `alias`, `trap`, `set`, a function, or an assignment to `PATH`, `IGNOREEOF` or `TMOUT`). At the clux prompt, it also does not send with `--enter` a line that is not a complete command. In `python3`, `psql` and other programs that are not a shell, these rules do not apply. You get exit code 6 and `laya: dangerous (can change the shell for later commands): use run, it asks the user` or `laya: dangerous (the line is not a complete command): use run, it asks the user`. Use `run` for these commands.
 - When the pane shell waits for the rest of a command (its continuation prompt), `send` gives exit code 5 and `the pane shell waits for the rest of a command: send --key C-c, then send the full command on one line`.
 - At a shell prompt, text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 

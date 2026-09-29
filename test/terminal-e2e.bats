@@ -297,11 +297,15 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     local pane
     pane=$(companion_pane)
+    # exit ends only the subshell of the run.
     run "$TERMINAL" run -- 'exit'
-    [ "$status" -eq 2 ]
-    run "$TERMINAL" run -- 'echo a; exit'
     [ "$status" -eq 0 ]
-    [[ "$output" == *'a'* ]] || false
+    [[ "$output" == *'exit=0' ]] || false
+    run "$TERMINAL" run -- 'echo a; exit 7'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'a\nexit=7' ]] || { echo "$output"; false; }
+    run "$TERMINAL" run -- 'exec true'
+    [[ "$output" == *'exit=0' ]] || { echo "$output"; false; }
     "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null
     run "$TERMINAL" run -- 'echo alive'
     [[ "$output" == *$'alive\nexit=0' ]] || false
@@ -339,8 +343,13 @@ pane_shows() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'D=oops; echo hi'
     [[ "$output" == *$'hi\nexit=0' ]] || false
-    run "$TERMINAL" run -- 'return'
-    [ "$status" -eq 2 ]
+    # return ends only the subshell of the command; the wrapper reports.
+    run "$TERMINAL" run -- 'return 5; echo AFTER-RETURN'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" != *$'\nAFTER-RETURN'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'exit=5' ]] || { echo "$output"; false; }
+    run "$TERMINAL" run -- 'echo hi'
+    [[ "$output" == *$'hi\nexit=0' ]] || false
 }
 
 # 21
@@ -1164,4 +1173,35 @@ pane_shows() {
     [ "$status" -eq 6 ]
     [ "$output" = 'laya: dangerous (destructive 0.95): ask the user to type this line in the pane' ]
     "$TERMINAL" send --key C-d >/dev/null
+}
+
+@test "exit in a run stops the command, and a later run still works" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'cd /clux-no-such-dir 2>/dev/null || exit 4; echo AFTER-EXIT'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" != *$'\nAFTER-EXIT'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'exit=4' ]] || { echo "$output"; false; }
+    run "$TERMINAL" run -- 'echo still-here'
+    [[ "$output" == *$'\nstill-here\n'* ]] || { echo "$output"; false; }
+}
+
+@test "a run that changes IFS does not unset PATH in the pane shell" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" run -- 'IFS=:; for p in $PATH; do :; done'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" run -- 'ls / >/dev/null && echo path-ok'
+    [[ "$output" == *$'\npath-ok\n'* ]] || { echo "$output"; false; }
+}
+
+@test "send refuses IGNOREEOF=0 and TMOUT=1, so C-d cannot end the companion" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send --enter -- 'IGNOREEOF=0'
+    [ "$status" -eq 6 ]
+    [ "$output" = 'laya: dangerous (can change the shell for later commands): use run, it asks the user' ]
+    run "$TERMINAL" send --enter -- 'TMOUT=1'
+    [ "$status" -eq 6 ]
+    run "$TERMINAL" send --key C-d
+    [ "$status" -eq 0 ]
+    run "$TERMINAL" run -- 'echo alive'
+    [[ "$output" == *$'\nalive\n'* ]] || { echo "$output"; false; }
 }

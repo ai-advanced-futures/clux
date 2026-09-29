@@ -695,6 +695,107 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [[ "$output" == *'CLUX_LAYA_PYTHON cannot import laya'* ]] || false
 }
 
+@test "exit in a run ends the command, and the directory still comes back" {
+    local d="$BATS_TEST_TMPDIR/ex"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '%s' 'cd /tmp; false || exit 3; echo AFTER' > "$d/1.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_run 1 \$(__clux_sum \"\$(cat '$d/1.cmd')\") plain
+        echo \"pwd=\$PWD\""
+    [[ "$output" != *$'\nAFTER'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'pwd=/tmp'* ]] || { echo "$output"; false; }
+    [ "$(cat "$d/1.rc")" = 3 ]
+}
+
+@test "a run that changes IFS keeps the exported variables of the pane shell" {
+    local d="$BATS_TEST_TMPDIR/ifs"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '%s' 'IFS=:; for p in $PATH; do :; done; export NEW=1' > "$d/1.cmd"
+    run bash -c "source '$d/rc.bash'; export KEEP=k; __clux_run 1 \$(__clux_sum \"\$(cat '$d/1.cmd')\") plain >/dev/null 2>&1
+        echo \"\${KEEP-}|\${NEW-}|\${PATH:+path}|\${HOME:+home}\""
+    [ "$output" = 'k|1|path|home' ]
+}
+
+@test "IGNOREEOF and TMOUT are read-only in the pane shell" {
+    local d="$BATS_TEST_TMPDIR/ro"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    # An assignment to a read-only name stops a shell that is not
+    # interactive, so each one runs in its own shell.
+    run bash -c "source '$d/rc.bash'; declare -p IGNOREEOF TMOUT"
+    [ "$output" = $'declare -r IGNOREEOF="1000000"\ndeclare -r TMOUT="0"' ]
+    run bash -c "source '$d/rc.bash'; IGNOREEOF=0; echo changed"
+    [[ "$output" == *'IGNOREEOF: readonly variable'* ]] && [[ "$output" != *changed* ]] || false
+    run bash -c "source '$d/rc.bash'; TMOUT=1; echo changed"
+    [[ "$output" == *'TMOUT: readonly variable'* ]] && [[ "$output" != *changed* ]] || false
+}
+
+@test "send and run read the state again after the typing lock" {
+    local d="$BATS_TEST_TMPDIR/seq"
+    mkdir -p "$d"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    printf '0\n' > "$d/5.rc"
+    # Another run starts (seq 6, a question) after this verb read the state
+    # and before it has the typing lock.
+    local later="printf 'mode=split\\npane=%%1\\nsocket=\\nseq=6\\ntoken=ab12cd34\\n' > '$d/state'; : > '$d/6.confirm'; mkdir -p '$d/busy'"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }
+        take_typing_lock() { $later; TYPING_LOCK=1; }
+        send_command --enter -- y"
+    [ "$status" -eq 3 ]
+    [ "$stderr" = 'laya confirmation in the companion pane: the user must answer it there' ]
+    rm -rf "$d/6.confirm" "$d/busy"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }
+        take_typing_lock() { $later; rm -f '$d/6.confirm'; TYPING_LOCK=1; }
+        wait_for_prompt() { echo TAKEOVER; return 1; }
+        run_command -- 'ls'"
+    [ "$status" -eq 5 ]
+    [ "$stderr" = 'the companion is busy' ]
+    [[ "$output" != *TAKEOVER* ]] || false
+}
+
+@test "one function checks that a Python can import laya" {
+    [ "$(grep -c 'import laya.structured' "$TERMINAL")" -eq 1 ]
+    ! grep -qE 'laya_(venv|client)_ready' "$TERMINAL" || false
+}
+
+@test "new_screen_lines gives the new lines, each with the line above it" {
+    run bash -c "source '$TERMINAL'; new_screen_lines \$'a\\nb\\nc' \$'a\\nb\\nd'"
+    [ "$output" = $'b\nd' ]
+    run bash -c "source '$TERMINAL'; new_screen_lines \$'a\\nb' \$'b\\na'"
+    [ -z "$output" ]
+}
+
+@test "wait --pattern sends only the new lines of a changed screen to the guard" {
+    local log="$BATS_TEST_TMPDIR/guard.log" top
+    top=$(seq 1 20 | sed 's/^/row /')
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() { echo x >> '$BATS_TEST_TMPDIR/n'; n=\$(wc -l < '$BATS_TEST_TMPDIR/n'); n=\$((n)); printf '%s\\nprogress %s\\n' '$top' \"\$n\"; [ \"\$n\" -lt 3 ] || echo DONE; }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); printf '%s\\n' \"\$GUARD_TEXT\" | wc -l | tr -d ' ' >> '$log'; }
+        wait_command --pattern DONE --timeout 5"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tr '\n' ' ' < "$log")" = '21 2 3 ' ]
+}
+
+@test "the shell rules of send apply only in a shell, and the complete check only at the clux prompt" {
+    local log="$BATS_TEST_TMPDIR/flags"
+    run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=x
+        laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
+        PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
+        tmux_state() { echo python3.12; }; send_gate 'print(1)' 1
+        tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls' 1
+        tmux_state() { return 1; }; send_gate 'ls' 1
+        PANE_STATE=other; tmux_state() { echo bash; }; CURSOR_LINE='Delete? [y/N] '; send_gate 'y' 1
+        CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls' 1; send_gate 'ls' 0"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen --shell --enter\n--screen --shell' ]
+}
+
 @test "rc.bash sets ignoreeof, so C-d at the prompt does not end the pane shell" {
     local d="$BATS_TEST_TMPDIR/rc"
     mkdir -p "$d"
