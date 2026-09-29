@@ -1583,7 +1583,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     # stay in the group 200.
     check() {
         run bash -c "source '$TERMINAL'; ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\n$1'; }; front_kinds 100"
-        [ "${output% *}" = "$2" ] || { echo "$1 -> $output"; false; }
+        [ "${output%% *}" = "$2" ] || { echo "$1 -> $output"; false; }
     }
     check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n' 0
     check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ python3 -q\n' 0
@@ -1612,7 +1612,45 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     check '300 100 300 S+ terraform apply\n' 1
     check '300 100 300 S+ python3\n' 0
     run bash -c "source '$TERMINAL'; ps() { :; }; front_kinds 100"
-    [ "$output" = '1 0' ]
+    [ "$output" = '1 0 1' ]
+    # The third field: the pane shell itself is in the front group.
+    run bash -c "source '$TERMINAL'; ps() { printf '100 1 100 Ss+ bash --rcfile /d/rc.bash -i\n'; }; front_kinds 100"
+    [ "$output" = '0 0 1' ]
+    run bash -c "source '$TERMINAL'; ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\n200 100 200 S+ bash --rcfile /d/rc.bash -i\n'; }; front_kinds 100"
+    [ "$output" = '0 0 0' ]
+}
+
+@test "send refuses all but an interrupt key when the clux shell is in front and no clux prompt shows" {
+    local log="$BATS_TEST_TMPDIR/noprompt.log" d="$BATS_TEST_TMPDIR/noprompt" k line
+    mkdir -p "$d"
+    local stubs="source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'; S_PANE=%1
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }; wait_for_echo() { :; }
+        capture_cursor_line() { CURSOR_LINE=\"\$L\"; }; check_pane() { CURSOR_LINE=\"\$L\"; PANE_STATE=other; }
+        tmux_state() { echo 100; }
+        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
+    # A typed line longer than the pane (the prompt row is in the history),
+    # and output before the prompt comes back: the pane shell is in front.
+    for line in 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; rm -rf ~' 'build done'; do
+        for k in "--enter -- x" "-- x" "--key Enter" "--key Home" "--key Tab"; do
+            run --separate-stderr bash -c "$stubs; L='$line'
+                ps() { printf '100 1 100 Ss+ bash --rcfile /d/rc.bash -i\n'; }; send_command $k"
+            [ "$status" -eq 5 ] || { echo "$line / $k: $status $stderr"; false; }
+            [ "$stderr" = 'the clux prompt is not on the screen: send --key C-c, then try again' ]
+        done
+    done
+    [ ! -e "$log" ]
+    run bash -c "$stubs; L='build done'; ps() { printf '100 1 100 Ss+ bash --rcfile /d/rc.bash -i\n'; }
+        run_not_started() { :; }; send_command --key C-c"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$log")" = 'key C-c' ]
+    # A run in front (the subshell leads the front group) takes the text.
+    rm -f "$log"
+    run bash -c "$stubs; L='Password: '; pane_state() { PANE_STATE=other; }
+        ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\n200 100 200 S+ bash --rcfile /d/rc.bash -i\n'; }
+        send_command --enter -- 'y'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(tr '\n' '|' < "$log")" = 'text y|key Enter|' ]
 }
 
 @test "the cursor line goes to its end: rows below the cursor row that the line wraps to are in it" {
@@ -1662,20 +1700,24 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "Escape and M- keys are refused whenever the clux shell is in front, also when no prompt shows" {
     local stubs="source '$TERMINAL'; D='$BATS_TEST_TMPDIR'; PROMPT_MARK='clux-ab12cd34\$'; S_PANE=%1
         ensure_open() { :; }; capture_cursor_line() { CURSOR_LINE='output of the last run'; }
-        pane_nested_shell() { return 1; }; send_key() { echo \"sent \$1\"; }
+        send_key() { echo \"sent \$1\"; }
         lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='output of the last run'; PANE_STATE=other; }
         send_gate() { :; }; line_unchanged() { :; }
-        tmux_state() { echo 4242; }"
-    local k
-    for k in Escape M-f C-M-e 'C-['; do
-        run --separate-stderr bash -c "$stubs; ps() { echo 'Ss+'; }; send_command --key '$k'"
-        [ "$status" -eq 2 ] || { echo "$k: $status $output $stderr"; false; }
-        [ "$stderr" = 'the clux shell is in front: Escape and M- keys are not permitted: use send --key C-c' ] || { echo "$k: $stderr"; false; }
+        tmux_state() { echo 100; }"
+    local front="ps() { printf '100 1 100 Ss+ bash --rcfile /d/rc.bash -i\\n'; }" k
+    run --separate-stderr bash -c "$stubs; $front; send_command --key Escape"
+    [ "$status" -eq 2 ] || { echo "$status $output $stderr"; false; }
+    [ "$stderr" = 'the clux shell is in front: Escape is not permitted: use send --key C-c' ]
+    [ -z "$output" ]
+    for k in M-f C-M-e 'C-['; do
+        run --separate-stderr bash -c "$stubs; $front; send_command --key '$k'"
+        [ "$status" -eq 5 ] || { echo "$k: $status $output $stderr"; false; }
+        [ "$stderr" = 'the clux prompt is not on the screen: send --key C-c, then try again' ]
         [ -z "$output" ]
     done
     # A run in front (the pane shell is not in the front group) gets the key.
-    run bash -c "$stubs; ps() { echo 'Ss'; }; send_command --key Escape"
+    run bash -c "$stubs; ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\\n200 100 200 S+ vim\\n'; }; send_command --key Escape"
     [ "$output" = 'sent Escape' ] || { echo "$output"; false; }
     # ps cannot tell: refused.
     run --separate-stderr bash -c "$stubs; ps() { return 1; }; send_command --key Escape"

@@ -1394,28 +1394,23 @@ key_is() {
     return "$rc"
 }
 
-# meta_key KEY — Escape (also C-[ and ^[), or a key with M-.
-meta_key() { key_is "$1" Escape 'C-\[' '^\[' '*M-*'; }
-
 # pane_shell_front — the pane shell (the clux shell) is in the front group
-# of the pane: no run and no program is in front. Also true when tmux or ps
-# cannot tell: the rule then only refuses more.
+# of the pane (PANE_SHELL of pane_front): no run and no program is in front.
+# Also true when tmux or ps cannot tell: the rule then only refuses more.
 pane_shell_front() {
-    local pid stat
-    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
-    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-    stat=$(ps -o stat= -p "$pid" 2>/dev/null) || return 0
-    case "$stat" in *+*|'') return 0 ;; esac
-    return 1
+    [ "$PANE_FRONT_SET" = 1 ] || pane_front
+    [ "$PANE_SHELL" = 1 ]
 }
 
-# refuse_meta_front — Escape, or a key with M-, is a Meta prefix in
-# readline. When the clux shell is in front (at its prompt, or just before
-# the prompt comes back, when __clux_flush already ran), the key can stay
-# in readline, and the next C-e is then M-C-e (shell-expand-line). A run
-# or a program in front gets the key, so it goes.
+# refuse_meta_front — Escape is a Meta prefix in readline. When the clux
+# shell is in front (at its prompt, or just before the prompt comes back,
+# when __clux_flush already ran), it can stay in readline, and the next C-e
+# is then M-C-e (shell-expand-line). A run or a program in front gets the
+# key, so it goes. Other Meta keys (M-f, C-[) are not interrupt keys: the
+# clux prompt takes only edit keys, and with no prompt on the screen send
+# refuses each key but an interrupt key while the clux shell is in front.
 refuse_meta_front() {
-    ! pane_shell_front || fail 'the clux shell is in front: Escape and M- keys are not permitted: use send --key C-c' 2
+    ! pane_shell_front || fail 'the clux shell is in front: Escape is not permitted: use send --key C-c' 2
 }
 
 # accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
@@ -1444,19 +1439,29 @@ send_line() {
 
 # The front of the pane, from pane_front: PANE_NESTED=1 when a nested shell
 # is in front (only the user ends a line there), PANE_PROGRAM=1 when a known
-# program that is not a shell is in front (no shell rules). send reads the
-# tree one time (PANE_FRONT_SET=1), so its two checks see the same state.
+# program that is not a shell is in front (no shell rules), PANE_SHELL=1
+# when the pane shell itself is in the front group (no run and no program:
+# keys go to its readline). send reads the tree one time (PANE_FRONT_SET=1),
+# so its checks see the same state. When tmux or ps cannot tell, NESTED and
+# SHELL are 1: the rules then only refuse more.
 PANE_NESTED=1
 PANE_PROGRAM=0
+PANE_SHELL=0
 PANE_FRONT_SET=0
 pane_front() {
     local pid out
     PANE_NESTED=1
     PANE_PROGRAM=0
+    PANE_SHELL=1
     pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
     case "$pid" in ''|*[!0-9]*) return 0 ;; esac
     out=$(front_kinds "$pid")
-    case "$out" in [01]' '[01]) PANE_NESTED="${out% *}"; PANE_PROGRAM="${out#* }" ;; esac
+    case "$out" in
+        [01]' '[01]' '[01])
+            PANE_NESTED="${out%% *}"; out="${out#* }"
+            PANE_PROGRAM="${out% *}"; PANE_SHELL="${out#* }"
+            ;;
+    esac
     return 0
 }
 
@@ -1520,7 +1525,7 @@ front_kinds() {
           up[$1] = $2; grp[$1] = $3; args[$1] = a; front[$1] = ($4 ~ /\+/)
           name[$1] = base($5); second[$1] = (NF >= 6 ? $6 : "") }
         END {
-            if (!(root in up)) { print "1 0"; exit }
+            if (!(root in up)) { print "1 0 1"; exit }
             nested = 0; found = 0; inner = 0
             for (p in up) {
                 if (p == root) continue
@@ -1536,7 +1541,7 @@ front_kinds() {
                 if (program(name[p])) found = 1
                 if (nest(p) || (under && !program(name[p]))) nested = 1
             }
-            print nested " " ((found && !inner) ? 1 : 0)
+            print nested " " ((found && !inner) ? 1 : 0) " " front[root]
         }'
 }
 
@@ -2219,8 +2224,13 @@ send_command() {
             fi
         fi
         PANE_FRONT_SET=1
+        # The pane shell itself is in front, but the capture shows no clux
+        # prompt: a typed line longer than the pane put the prompt row in
+        # the history, or the prompt did not come back yet. A line or a key
+        # would then go to this shell with no __clux_line: refuse. Only the
+        # interrupt keys (C-c clears the line) go.
+        ! pane_shell_front || fail 'the clux prompt is not on the screen: send --key C-c, then try again' 5
     fi
-    [ -z "$key" ] || ! meta_key "$key" || refuse_meta_front
     if [ -n "$key" ] && [ "$enter" -eq 0 ]; then
         case "$PANE_STATE" in
             pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
