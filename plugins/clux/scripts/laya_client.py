@@ -62,11 +62,23 @@ MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long t
             4: "laya: the server refused the API key"}
 
 
+# The HTTP error codes of laya-serve, and what each one means to the
+# client: the exit code. The one table for all requests. 503 (a queue: at
+# most LAYA_MAX_CONCURRENT requests at one time) is not here: predict tries
+# one time more, and a second 503 is a late request (Fail late=True), which
+# the guard holds as not examined. 413: the state is longer than
+# MAX_STATE_CHARS (50000) of the server; the guard sends at most a block,
+# so only a command or a pane state can get it. Each other code is an error
+# of the server with its own message, and the client exits 1.
+HTTP_ERRORS = {401: 4, 403: 4, 413: 3}
+
+
 class Fail(Exception):
     """End the client with this exit code. With message (the default),
     stderr gets the fixed message of the code; the helpers end with none.
-    late: one request reached REQUEST_LIMIT (the server is slow or has a
-    queue); the guard holds only that text as not examined."""
+    A message text replaces the fixed message.
+    late: one request reached REQUEST_LIMIT, or the server had a queue two
+    times (503); the guard holds only that text as not examined."""
 
     def __init__(self, code, message=True, late=False):
         Exception.__init__(self, code)
@@ -199,9 +211,9 @@ class Remote:
         except urllib.error.HTTPError as error:
             if error.code == 503:
                 raise Busy(retry_after(error.headers))
-            if error.code in (401, 403):
-                raise Fail(4)
-            raise Fail(1)
+            if error.code in HTTP_ERRORS:
+                raise Fail(HTTP_ERRORS[error.code])
+            raise Fail(1, message="laya: the server gave error %d" % error.code)
         except TimeoutError:
             raise Fail(1, late=True)
         except urllib.error.URLError as error:
@@ -227,7 +239,7 @@ class Remote:
             try:
                 result = self.call("POST", "/v1/systemone", body)
             except Busy:
-                raise Fail(1)
+                raise Fail(1, late=True)
         if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
             raise Fail(1)
         return result
@@ -1102,7 +1114,9 @@ def run(argv):
         code = 0
     except Fail as error:
         code = error.code
-        if error.message:
+        if isinstance(error.message, str):
+            message = error.message
+        elif error.message:
             message = MESSAGES.get(error.code, MESSAGES[1])
     except BaseException:
         code, message = 1, MESSAGES[1]

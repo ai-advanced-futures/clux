@@ -155,7 +155,7 @@ PY
     run --separate-stderr client command <<<'deploy --token UNIQUE-MARKER-7f3a'
     [ "$status" -eq 1 ]
     [ -z "$output" ]
-    [ "$stderr" = 'laya: not available' ]
+    [ "$stderr" = 'laya: the server gave error 500' ]
     run --separate-stderr client command <<<''
     [ "$status" -eq 2 ]
     [ "$stderr" = 'laya: bad input' ]
@@ -223,6 +223,31 @@ assert c.retry_after({}) == c.RETRY_DELAY' "$(dirname "$LAYA_CLIENT")"
     run --separate-stderr client command <<<'rm x'
     [ "$status" -eq 1 ]
     [ -z "$output" ]
+}
+
+@test "each HTTP error of laya-serve has its meaning, from one table, and an unknown code its own message" {
+    start_fake_laya '{"rules": [{"contains": "M401", "fail": 401}, {"contains": "M403", "fail": 403}, {"contains": "M413", "fail": 413}, {"contains": "M500", "fail": 500}, {"contains": "M418", "fail": 418}]}'
+    # code exit stderr — one row for each code of HTTP_ERRORS, and two
+    # codes that are not in it.
+    local rows=$'401|4|laya: the server refused the API key\n403|4|laya: the server refused the API key\n413|3|laya: too long to examine\n500|1|laya: the server gave error 500\n418|1|laya: the server gave error 418'
+    local code want msg
+    while IFS='|' read -r code want msg; do
+        run --separate-stderr client command <<<"echo M$code"
+        [ "$status" -eq "$want" ] && [ "$stderr" = "$msg" ] && [ -z "$output" ] || { echo "$code: $status $stderr"; false; }
+    done <<<"$rows"
+    # The table has no code that has no row.
+    run python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import laya_client as c; print(" ".join(map(str, sorted(c.HTTP_ERRORS))))' "$(dirname "$LAYA_CLIENT")"
+    [ "$output" = '401 403 413' ]
+    # The pane state goes through the same table.
+    run --separate-stderr client pane <<<"x M413"
+    [ "$status" -eq 3 ] || { echo "$status $stderr"; false; }
+}
+
+@test "output: two 503 answers hold the text as not examined, not as laya not available" {
+    start_fake_laya '{"status": [503, 503]}'
+    run --separate-stderr client output --render <<<'plain line'
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    [ "$output" = $'held=1 not_examined=1\n[held by laya: not_examined, 1 lines]' ] || { echo "$output"; false; }
 }
 
 @test "a time-out, bad JSON or no server: exit 1, a wrong key: exit 4, and no input text" {
@@ -495,7 +520,7 @@ assert c.threshold({'thresholds': {'secret': 0.7}}, 'secret', 0.5) == 0.7
     run --separate-stderr client output <<<'UNIQUE-MARKER-18aa'
     [ "$status" -eq 1 ]
     [ -z "$output" ]
-    [ "$stderr" = 'laya: not available' ]
+    [ "$stderr" = 'laya: the server gave error 500' ]
     run client output --limit
     [ "$status" -eq 2 ]
     run client output --limit 0 <<<'x'

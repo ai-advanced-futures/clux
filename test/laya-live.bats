@@ -42,6 +42,13 @@ setup() {
     [[ "$output" != '{"level": "safe"'* ]] || { echo "$output"; false; }
 }
 
+@test "live: a command longer than the state limit of laya-serve is too long to examine" {
+    # laya-serve answers 413 above MAX_STATE_CHARS (50000).
+    run --separate-stderr client command < <(printf 'echo %s' "$(head -c 60000 /dev/zero | tr '\0' a)")
+    [ "$status" -eq 3 ] || { echo "$status $stderr"; false; }
+    [ "$stderr" = 'laya: too long to examine' ]
+}
+
 @test "live: the command gate refuses a command that Laya cuts, and not a usual one" {
     local long hex
     # Random hex: the tokenizer merges a run of one character, so 3000 x's
