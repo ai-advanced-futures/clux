@@ -214,6 +214,8 @@ From 4.0.0, the companion needs Laya, a local model. Laya examines each command 
 - A line with a secret goes back to Claude as `[held by laya: secret]`. The raw text stays in the pane.
 - Text that Laya cannot examine in its time limit goes back as `[held by laya: not_examined, <k> lines]`. On a machine with no GPU (no MPS or CUDA), a large output takes more time, so more lines can be held this way.
 - When Laya does not answer, the companion stops with exit code 6 and sends no pane text to Claude.
+- Each command and each line that Claude ends at the companion prompt runs in a subshell. Only the directory and the exported variables persist. A command that Laya passed can still write any file of your user; Laya is the only check before it runs.
+- When the Laya server that the companion started stops, `open` again starts a new one.
 
 Install Laya one time. Claude asks you before it runs the install:
 

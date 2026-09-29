@@ -336,6 +336,25 @@ laya_wait_ready() {
     done
 }
 
+# laya_restart_if_down — open on a live companion: when the Laya server that
+# open started does not answer (it ended, or the user stopped it), start a
+# new one, so open again is enough after "close and open the companion". A
+# server that the user started (CLUX_LAYA_URL, no laya_pid) is not changed.
+laya_restart_if_down() {
+    [ -n "$S_LAYA_PID" ] || return 0
+    laya_call health >/dev/null && return 0
+    laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
+    laya_stop_server "$S_LAYA_PID"
+    LAYA_PID=
+    laya_start_server "$D/laya.log" 1 || fail 'laya not available: the server did not start' 6
+    # laya_call reads the URL and the key from state, so write them first.
+    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ" "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
+    if ! laya_wait_ready; then
+        laya_stop_server "$LAYA_PID"
+        fail 'laya not available: the server did not answer' 6
+    fi
+}
+
 # open_abort PANE_MADE MESSAGE [CODE] — undo a failed open and exit CODE
 # (default 6, spec section 6, step 8). PANE_MADE is 1 when the pane exists.
 open_abort() {
@@ -547,7 +566,7 @@ __clux_clear() { printf '\033[2J\033[H'; }
 __clux_carry() {
   case "$1" in
     ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
-    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|_) return 1 ;;
+    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|_) return 1 ;;
   esac
   return 0
 }
@@ -594,7 +613,22 @@ __clux_load() {
     __clux_i=$((__clux_i + 1))
   done
   builtin cd -- "$__clux_w" 2>/dev/null
+  # In POSIX mode exit and exec run before the functions above.
+  set +o posix
   return 0
+}
+# __clux_sub CMD KEEP — run CMD in a subshell, then take back the directory
+# and the exported variables. In the subshell, exit, exec and logout are the
+# builtins again: exit ends the command (cd dir || exit 1), not only this
+# shell. The EXIT trap writes the keep file also after exit, and keeps the
+# exit code. The path goes into the trap now: the locals are gone when the
+# trap runs.
+__clux_sub() {
+  command rm -f "$2"
+  ( unset -f exit exec logout
+    trap "__clux_keep $(printf '%q' "$2")" EXIT
+    __clux_c="$1"; set --
+    eval "$__clux_c" )
 }
 __clux_sum() {
   local __clux_o
@@ -662,14 +696,7 @@ __clux_run() {
   # The command runs in a subshell: it cannot change this shell for later
   # commands (a function, an alias, a trap, an option, enable). The
   # directory and the exported variables come back through __clux_load.
-  command rm -f "$__clux_d/$__clux_n.keep"
-  # In the subshell, exit, exec and logout are the builtins again: exit
-  # ends the command (cd dir || exit 1), not only this shell. The EXIT trap
-  # writes the keep file also after exit, and keeps the exit code. The path
-  # goes into the trap now: the locals are gone when the trap runs.
-  { ( unset -f exit exec logout
-      trap "__clux_keep $(printf '%q' "$__clux_d/$__clux_n.keep")" EXIT
-      eval "$__clux_cmd" ); } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
+  __clux_sub "$__clux_cmd" "$__clux_d/$__clux_n.keep" > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
   __clux_load "$__clux_d/$__clux_n.keep"
   __clux_i=0
@@ -677,6 +704,33 @@ __clux_run() {
   (umask 077; printf '%s\n' "$__clux_rc" > "$__clux_d/$__clux_n.rc.tmp") \
     && command mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
 }
+# __clux_line SUM — the line that send ends at the clux prompt. terminal.sh
+# writes it to line.cmd after the Laya gate and types this call, so no line
+# from Claude runs in this shell: it runs in a subshell, on the terminal, as
+# a run command does. SUM is the sum of the line that Laya examined; a
+# line.cmd with a different sum, or none, runs nothing. line.cmd is deleted
+# when it is read.
+__clux_line() {
+  local __clux_s="${1:-}" __clux_d="$__clux_dir" __clux_cmd __clux_rc
+  if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/line.cmd" ]; then
+    printf '%s\n' 'refused: no line is waiting'
+    return 1
+  fi
+  __clux_cmd=$(<"$__clux_d/line.cmd")
+  command rm -f "$__clux_d/line.cmd"
+  if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
+    printf '%s\n' 'refused: the line changed after Laya examined it'
+    return 1
+  fi
+  printf '$ %s\n' "${__clux_cmd//[[:cntrl:]]/?}"
+  __clux_sub "$__clux_cmd" "$__clux_d/line.keep"
+  __clux_rc=$?
+  __clux_load "$__clux_d/line.keep"
+  return "$__clux_rc"
+}
+# A line cannot make a new __clux_run that skips the question. exit, exec
+# and logout stay plain functions: the subshell of a command unsets them.
+readonly -f __clux_refuse __clux_clear __clux_carry __clux_keep __clux_load __clux_sub __clux_sum __clux_run __clux_line
 EOF
     } > "$D/rc.bash"
 }
@@ -967,7 +1021,7 @@ nav_key() {
 # cursor line goes, with the 4 lines above it as the screen. The cursor line is the
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
-    local line prompt=0 shell=0 enter="${2:-0}" flags
+    local line prompt=0 shell=0 flags
     if prompt_input; then
         line="$PROMPT_INPUT$1"
         prompt=1
@@ -987,21 +1041,17 @@ send_gate() {
             case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
             ;;
     esac
-    # At a shell prompt (the clux prompt, or a prompt that Laya calls
-    # shell_prompt in a shell process, for example a nested bash) the line
-    # runs in that shell: a line that can change the shell for later
-    # commands is dangerous. python3 or psql can also be shell_prompt, and
-    # the shell rules do not apply there. Only at the clux prompt is the
-    # prompt known, so only there does the line that this send ends go to
-    # the complete-command check.
-    if [ "$prompt" -eq 1 ]; then
-        shell=1
-    elif [ "$PANE_STATE" = shell_prompt ] && pane_runs_shell; then
+    # At the clux prompt a line runs in a subshell (__clux_line), so it
+    # cannot change the pane shell. At a prompt that Laya calls
+    # shell_prompt in another shell process (a nested bash) the line runs
+    # in that shell: a line that can change it for later lines is
+    # dangerous. python3 or psql can also be shell_prompt, and the shell
+    # rules do not apply there.
+    if [ "$prompt" -eq 0 ] && [ "$PANE_STATE" = shell_prompt ] && pane_runs_shell; then
         shell=1
     fi
     flags=--screen
     [ "$shell" -eq 0 ] || flags="$flags --shell"
-    [ "$enter" -eq 0 ] || [ "$prompt" -eq 0 ] || flags="$flags --enter"
     # shellcheck disable=SC2086
     laya_gate $flags < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
@@ -1024,6 +1074,46 @@ send_gate() {
             ;;
     esac
     return 0
+}
+
+# accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
+accept_key() {
+    local rc=1 nocase
+    nocase=$(shopt -p nocasematch)
+    shopt -s nocasematch
+    case "$1" in
+        Enter|KPEnter|C-m|C-j|'^m'|'^j') rc=0 ;;
+    esac
+    $nocase
+    return "$rc"
+}
+
+# edit_key KEY — a key that only moves in the line or deletes text at the
+# clux prompt (the default readline keys; history is off).
+edit_key() {
+    local rc=1 nocase
+    nocase=$(shopt -p nocasematch)
+    shopt -s nocasematch
+    case "$1" in
+        Left|Right|Home|End|Up|Down|BSpace|DC|Delete|Tab|Space) rc=0 ;;
+        C-a|C-b|C-e|C-f|C-h|C-k|C-u|C-w|C-l|'^a'|'^b'|'^e'|'^f'|'^h'|'^k'|'^u'|'^w'|'^l') rc=0 ;;
+    esac
+    $nocase
+    return "$rc"
+}
+
+# send_line LINE — end a line at the clux prompt: LINE runs in a subshell
+# through __clux_line (spec section 7), not in the pane shell. A blank line
+# runs nothing, so it gets a plain Enter.
+send_line() {
+    local sum
+    case "$1" in
+        *[![:space:]]*) ;;
+        *) send_key Enter; return 0 ;;
+    esac
+    sum=$(command_sum "$1") || fail 'cannot make the sum of the line' 1
+    printf '%s' "$1" > "$D/line.cmd"
+    send_key C-u; send_literal "__clux_line $sum"; send_key Enter
 }
 
 # pane_runs_shell — the process in the front of the pane is a shell. When
@@ -1178,7 +1268,11 @@ open_command() {
     terminal_init
     check_tmux_version
     mkdir -p "$ROOT"; chmod 700 "$ROOT"; reap_companions
-    current_companion_alive && { report_open; return; }
+    if current_companion_alive; then
+        laya_restart_if_down
+        report_open
+        return
+    fi
     laya_open_check
     # [inferred] A dead companion of this owner can still own a Laya server,
     # so its directory goes through remove_companion_dir, not rm -rf.
@@ -1616,6 +1710,16 @@ send_command() {
     # is open: C-c there declines the run, it cannot accept it.
     if [ -n "$key" ] && interrupt_key "$key"; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
+        # Escape and then a key is a Meta key: at the clux prompt, M-C-e
+        # (shell-expand-line) runs $(...) of the line in the pane shell. The
+        # check needs tmux only, not Laya.
+        case "$key" in
+            [Ee]scape)
+                if ! capture_cursor_line || prompt_input; then
+                    fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2
+                fi
+                ;;
+        esac
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
         case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden"; run_not_started ;; esac
@@ -1638,30 +1742,50 @@ send_command() {
     # the text, so text typed in pieces is examined as one line.
     if [ -n "$key" ]; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
+        if prompt_input; then
+            # At the clux prompt a key that ends the line goes through
+            # __clux_line, as send --enter does. Only keys that edit the
+            # line go to the pane: another key can run a readline command
+            # (C-x C-e runs the line in this shell).
+            if accept_key "$key"; then
+                enter=1
+            else
+                edit_key "$key" || fail "at the clux prompt, only Enter and keys that edit the line work: $key: use send --enter or run" 2
+            fi
+        fi
+    fi
+    if [ -n "$key" ] && [ "$enter" -eq 0 ]; then
         case "$PANE_STATE" in
             pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
         esac
         # Each key goes to the gate as the end of the line: bind can make
         # any key end a line.
-        send_gate "" 1 || return
+        send_gate "" || return
         line_unchanged || return
         send_key "$key"
         return
     fi
-    [ -n "$text" ] || usage
+    [ -n "$text" ] || [ -n "$key" ] || usage
     # The gate examines the cursor line plus the text, so the text must go
     # at the end of the line. After Home or Left it goes in the middle. This
     # is true in each program, so the check runs on each send, and a send
-    # that cannot tell refuses.
-    cursor_mid_line
-    case $? in
-        0) fail 'the cursor is not at the end of the line: send --key End or --key C-c first' 2 ;;
-        1) ;;
-        *) fail 'cannot read the cursor position: try again' 5 ;;
-    esac
+    # that cannot tell refuses. A line that ends at the clux prompt with no
+    # new text goes whole, so the cursor does not matter.
+    if [ -n "$text" ]; then
+        cursor_mid_line
+        case $? in
+            0) fail 'the cursor is not at the end of the line: send --key End or --key C-c first' 2 ;;
+            1) ;;
+            *) fail 'cannot read the cursor position: try again' 5 ;;
+        esac
+    fi
     before="$CURSOR_LINE"
-    send_gate "$text" "$enter" || return
+    send_gate "$text" || return
     line_unchanged || return
+    if [ "$enter" -eq 1 ] && prompt_input; then
+        send_line "$PROMPT_INPUT$text"
+        return
+    fi
     send_literal "$text"
     if [ "$enter" -eq 1 ]; then
         send_key Enter
@@ -1702,6 +1826,13 @@ new_screen_lines() {
     awk 'NR == FNR { seen[$0]; next }
         { line[++n] = $0; fresh[n] = !($0 in seen) }
         END { for (i = 1; i <= n; i++) if (fresh[i] || (i < n && fresh[i + 1])) print line[i] }' \
+        <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
+# add_seen_lines SEEN SCREEN — SEEN with each line of SCREEN that it does
+# not have, so the set grows by the new lines only.
+add_seen_lines() {
+    awk 'NR == FNR { seen[$0]; print; next } !($0 in seen) { seen[$0]; print }' \
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
@@ -1791,9 +1922,13 @@ wait_command() {
                         fresh=$(new_screen_lines "$seen" "$screen")
                         if [ -z "$fresh" ]; then
                             sum="$screen"
+                        elif [ "$SECONDS" -ge "$deadline" ]; then
+                            # A guard can take 15 s: none starts after the
+                            # time limit (spec section 11).
+                            return 1
                         elif laya_guard <(printf '%s\n' "$fresh") 1; then
                             sum="$screen"
-                            seen="$seen"$'\n'"$screen"
+                            seen=$(add_seen_lines "$seen" "$screen")
                             guard_fails=0
                             # The marker lines of held text are not pane
                             # text: the pattern does not see them.

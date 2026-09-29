@@ -1125,21 +1125,51 @@ pane_shows() {
     [[ "$output" == *$'\n/\nt=1\n'* ]] || { echo "$output"; false; }
 }
 
-@test "send refuses a line that can change the pane shell, also inside eval" {
+@test "a line that send ends at the clux prompt runs in a subshell, also a split eval" {
+    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" send --enter -- "eval 'ls() { echo HIJACKED; }'"
-    [ "$status" -eq 6 ]
-    [ "$output" = 'laya: dangerous (can change the shell for later commands): use run, it asks the user' ]
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
+    # A quote split gets past each word rule: the line still runs in a
+    # subshell, and __clux_run is read-only.
+    run "$TERMINAL" send --enter -- 'e""val "__clu""x_run"$'"'"'\x28\x29 { true; }'"'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
     run "$TERMINAL" send -- 'echo "open'
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     run "$TERMINAL" send --key Enter
-    [ "$status" -eq 6 ]
-    [ "$output" = 'laya: dangerous (the line is not a complete command): use run, it asks the user' ]
-    "$TERMINAL" send --key C-c >/dev/null
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
     run "$TERMINAL" run -- 'type ls | head -1'
-    [[ "$output" != *function* ]] || false
+    [[ "$output" != *function* ]] || { echo "$output"; false; }
+    # A dangerous run still asks the user.
+    run "$TERMINAL" run --timeout 2 -- 'true clux-danger'
+    pane_shows 'run? [y/N]'
+    "$TERMINAL" send --key C-c >/dev/null
 }
 
+@test "at the clux prompt send refuses Escape and keys that do not edit the line" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send --key Escape
+    [ "$status" -eq 2 ]
+    [ "$output" = 'at the clux prompt, Escape is not permitted: use send --key C-c' ]
+    run "$TERMINAL" send --key C-x
+    [ "$status" -eq 2 ]
+    [[ "$output" == 'at the clux prompt, only Enter and keys that edit the line work: C-x'* ]] || false
+    run "$TERMINAL" send --key C-a
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "a send line gives back its directory and exported variables, and a background job keeps running" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send --enter -- 'cd /tmp; export CLUX_SENT=1; sleep 31.7 & echo started'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" run -- 'pwd; echo "s=$CLUX_SENT"; pgrep -f "sleep 31.7" >/dev/null && echo bg-alive'
+    pkill -f 'sleep 31.7' || true
+    [[ "$output" == *$'\n/tmp\ns=1\nbg-alive\n'* ]] || { echo "$output"; false; }
+}
 @test "send refuses text at a continuation line of the pane shell" {
     "$TERMINAL" open >/dev/null
     local mark
@@ -1193,15 +1223,33 @@ pane_shows() {
     [[ "$output" == *$'\npath-ok\n'* ]] || { echo "$output"; false; }
 }
 
-@test "send refuses IGNOREEOF=0 and TMOUT=1, so C-d cannot end the companion" {
+@test "IGNOREEOF=0 and TMOUT=1 from send do not let C-d end the companion" {
     "$TERMINAL" open >/dev/null
-    run "$TERMINAL" send --enter -- 'IGNOREEOF=0'
-    [ "$status" -eq 6 ]
-    [ "$output" = 'laya: dangerous (can change the shell for later commands): use run, it asks the user' ]
-    run "$TERMINAL" send --enter -- 'TMOUT=1'
-    [ "$status" -eq 6 ]
+    run "$TERMINAL" send --enter -- 'IGNOREEOF=0; TMOUT=1'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
+    sleep 2
     run "$TERMINAL" send --key C-d
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'echo alive'
     [[ "$output" == *$'\nalive\n'* ]] || { echo "$output"; false; }
+}
+
+@test "open starts a new laya server when the server that it started is gone" {
+    local data="$BATS_TEST_TMPDIR/data" d pid new
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    export CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf"
+    "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    kill -9 "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep .1; done
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    new=$(sed -n 's/^laya_pid=//p' "$d/state")
+    [ -n "$new" ] && [ "$new" != "$pid" ]
+    kill -0 "$new"
+    run "$TERMINAL" run -- 'echo back'
+    [[ "$output" == *$'\nback\n'* ]] || { echo "$output"; false; }
+    "$TERMINAL" close
 }

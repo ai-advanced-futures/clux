@@ -782,18 +782,91 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(tr '\n' ' ' < "$log")" = '21 2 3 ' ]
 }
 
-@test "the shell rules of send apply only in a shell, and the complete check only at the clux prompt" {
+@test "the shell rules of send apply only in a nested shell, not at the clux prompt or in python3" {
     local log="$BATS_TEST_TMPDIR/flags"
     run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=x
         laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
         PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
-        tmux_state() { echo python3.12; }; send_gate 'print(1)' 1
-        tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls' 1
-        tmux_state() { return 1; }; send_gate 'ls' 1
-        PANE_STATE=other; tmux_state() { echo bash; }; CURSOR_LINE='Delete? [y/N] '; send_gate 'y' 1
-        CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls' 1; send_gate 'ls' 0"
+        tmux_state() { echo python3.12; }; send_gate 'print(1)'
+        tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls'
+        tmux_state() { return 1; }; send_gate 'ls'
+        PANE_STATE=other; tmux_state() { echo bash; }; CURSOR_LINE='Delete? [y/N] '; send_gate 'y'
+        PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen --shell --enter\n--screen --shell' ]
+    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen' ]
+}
+
+@test "at the clux prompt a line that ends goes through __clux_line, and only edit keys go raw" {
+    local log="$BATS_TEST_TMPDIR/keys" d="$BATS_TEST_TMPDIR/cl" k
+    mkdir -p "$d"
+    local stubs="source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; CONT_MARK='clux-ab12cd34> '
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        check_pane() { CURSOR_LINE='clux-ab12cd34\$ echo hi'; PANE_STATE=shell_prompt; }
+        capture_cursor_line() { CURSOR_LINE='clux-ab12cd34\$ echo hi'; }
+        send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
+        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
+    for k in M-x C-x C-o M-C-e C-r; do
+        run --separate-stderr bash -c "$stubs; send_command --key $k"
+        [ "$status" -eq 2 ] || { echo "$k: $status $stderr"; false; }
+        [[ "$stderr" == 'at the clux prompt, only Enter and keys that edit the line work: '* ]] || false
+    done
+    run --separate-stderr bash -c "$stubs; send_command --key Escape"
+    [ "$status" -eq 2 ]
+    [ "$stderr" = 'at the clux prompt, Escape is not permitted: use send --key C-c' ]
+    [ ! -e "$log" ]
+    run bash -c "$stubs; send_command --key C-a; send_command --key Enter"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$d/line.cmd")" = 'echo hi' ]
+    [ "$(sed -n 1p "$log")" = 'key C-a' ]
+    [ "$(sed -n 2p "$log")" = 'key C-u' ]
+    [[ "$(sed -n 3p "$log")" == 'text __clux_line '* ]] || false
+    [ "$(sed -n 4p "$log")" = 'key Enter' ]
+    rm -f "$log"
+    run bash -c "$stubs; send_command --enter -- ' | wc -c'"
+    [ "$(cat "$d/line.cmd")" = 'echo hi | wc -c' ]
+}
+
+@test "__clux_line runs the line in a subshell once, and only with its sum" {
+    local d="$BATS_TEST_TMPDIR/li"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '%s' "cd /tmp; export LI=1; f() { :; }; exit 4" > "$d/line.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_line \$(__clux_sum \"\$(cat '$d/line.cmd')\")
+        echo \"rc=\$? \$PWD \${LI-} \$(declare -F f | wc -l | tr -d ' ')\"; __clux_line x"
+    [[ "$output" == *$'rc=4 /tmp 1 0\nrefused: no line is waiting' ]] || { echo "$output"; false; }
+    printf '%s' 'echo RAN' > "$d/line.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_line 0123456789abcdef0123456789abcdef"
+    [ "$output" = 'refused: the line changed after Laya examined it' ]
+    [ ! -e "$d/line.cmd" ]
+}
+
+@test "the __clux functions of rc.bash are read-only, and POSIX mode does not stay" {
+    local d="$BATS_TEST_TMPDIR/rof"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    run --separate-stderr bash -c "source '$d/rc.bash'; __clux_run() { echo NEW; }; declare -f __clux_run | grep -c NEW"
+    [ "$output" = 0 ]
+    [ "$stderr" = 'bash: __clux_run: readonly function' ]
+    printf '/tmp\0POSIXLY_CORRECT=1\0=\0' > "$d/k"
+    run bash -c "source '$d/rc.bash'; set -o posix; __clux_load '$d/k'; echo \"\${POSIXLY_CORRECT-none}\"; shopt -qo posix && echo posix-on || echo posix-off"
+    [ "$output" = $'none\nposix-off' ]
+}
+
+@test "add_seen_lines adds only the lines that the set does not have" {
+    run bash -c "source '$TERMINAL'; add_seen_lines \$'a\\nb' \$'b\\nc\\na\\nc'"
+    [ "$output" = $'a\nb\nc' ]
+}
+
+@test "wait --pattern starts no guard after its time limit" {
+    local log="$BATS_TEST_TMPDIR/late.log"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { command sleep 1.2; }; sleep() { :; }
+        tmux_state() { echo screen; }
+        laya_guard() { echo x >> '$log'; GUARD_TEXT=\$(cat \"\$1\"); }
+        wait_command --pattern NEVER --timeout 1"
+    [ "$status" -eq 1 ]
+    [ ! -e "$log" ]
 }
 
 @test "rc.bash sets ignoreeof, so C-d at the prompt does not end the pane shell" {
