@@ -697,6 +697,35 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
 }
 
+@test "a wait probe settles on the cursor line and the line above it, so a timer above a prompt does not stop the request" {
+    local count="$BATS_TEST_TMPDIR/count"
+    run bash -c "source '$TERMINAL'
+        capture_to_cursor() { CAPTURE=\"\$W\"; }
+        laya_call() { echo x >> '$count'; case \"\$W\" in *'[y/N] ') echo '{\"state\": \"yes_no\"}' ;; *) echo '{\"state\": \"other\"}' ;; esac; }
+        W=\$'building\\nstep 1'; PANE_SETTLE=1 pane_state; echo \$PANE_STATE
+        for t in 2 3 4 5; do W=\"elapsed \$t s\"\$'\\nremove 3 files\\nContinue? [y/N] '; PANE_SETTLE=1 pane_state; echo \$PANE_STATE; done"
+    # The prompt lines change once (no request), then they settle: one
+    # request, and the next probes keep its answer while the timer runs.
+    [ "$output" = $'other\nother\nyes_no\nyes_no\nyes_no' ] || { echo "$output"; false; }
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 2 ]
+    # A spinner on the cursor line: the prompt lines never settle, so no
+    # request after the first.
+    rm -f "$count"
+    run bash -c "source '$TERMINAL'
+        capture_to_cursor() { CAPTURE=\"\$W\"; }
+        laya_call() { echo x >> '$count'; echo '{\"state\": \"other\"}'; }
+        for t in 1 2 3 4; do W=\$'npm install\\n'\"working \$t\"; PANE_SETTLE=1 pane_state; done; echo \$PANE_STATE"
+    [ "$output" = other ] && [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || { echo "$output"; false; }
+    # A probe with no settle (send) uses the full window: a changed row
+    # above sends a request.
+    rm -f "$count"
+    run bash -c "source '$TERMINAL'
+        capture_to_cursor() { CAPTURE=\"\$W\"; }
+        laya_call() { echo x >> '$count'; echo '{\"state\": \"credential\"}'; }
+        W=\$'t 1\\nPassword:'; pane_state; W=\$'t 2\\nPassword:'; pane_state; echo \$PANE_STATE"
+    [ "$output" = credential ] && [ "$(wc -l < "$count" | tr -d ' ')" -eq 2 ] || { echo "$output"; false; }
+}
+
 @test "pane_state sends no request when only rows above the last 5 change" {
     local count="$BATS_TEST_TMPDIR/count"
     run bash -c "source '$TERMINAL'

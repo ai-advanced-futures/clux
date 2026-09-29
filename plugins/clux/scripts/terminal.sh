@@ -957,6 +957,7 @@ prompt_input() {
 PANE_STATE=
 PANE_TEXT=
 PANE_TEXT_STATE=
+PANE_TEXT_KEY=
 PANE_LAST=
 SCREEN_ABOVE=
 PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
@@ -973,7 +974,7 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 # answer (PANE_TEXT_STATE): a probe that gave "other" for changed output
 # does not change it, so a window that comes back (A, B, A) gets its answer.
 pane_state() {
-    local window out
+    local window out key
     capture_to_cursor || return 1
     CURSOR_LINE="${CAPTURE##*$'\n'}"
     # The last 5 lines, with no fork: the poll loops call this each second.
@@ -987,9 +988,14 @@ pane_state() {
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
     esac
-    if [ -n "$PANE_TEXT_STATE" ] && [ "$window" = "$PANE_TEXT" ]; then
+    # A wait probe settles on the cursor line and the line above it (the
+    # prompt and its label), not on the full window: a live timer or a
+    # status line above a password prompt must not stop the request.
+    key="${SCREEN_ABOVE##*$'\n'}"$'\n'"$CURSOR_LINE"
+    if [ -n "$PANE_TEXT_STATE" ] && { [ "$window" = "$PANE_TEXT" ] \
+        || { [ "${PANE_SETTLE:-0}" -eq 1 ] && [ "$key" = "$PANE_TEXT_KEY" ]; }; }; then
         PANE_STATE="$PANE_TEXT_STATE"
-        PANE_LAST="$window"
+        PANE_LAST="$key"
         return 0
     fi
     # At the clux prompt the state is known: it is not a credential prompt,
@@ -998,20 +1004,23 @@ pane_state() {
         PANE_STATE=shell_prompt
         ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
         PANE_TEXT="$window"
+        PANE_TEXT_KEY="$key"
         PANE_TEXT_STATE="$PANE_STATE"
         return 0
     fi
-    # A wait probe (PANE_SETTLE=1): output that changed since the probe before
-    # is not a prompt that waits for input, so it sends no request (npm
-    # install would send one each second to the one-worker server). The first
-    # probe of a verb sends. The local patterns apply.
-    if [ "${PANE_SETTLE:-0}" -eq 1 ] && [ -n "$PANE_LAST" ] && [ "$window" != "$PANE_LAST" ]; then
-        PANE_LAST="$window"
+    # A wait probe (PANE_SETTLE=1): a cursor line, or the line above it,
+    # that changed since the probe before is not a prompt that waits for
+    # input, so it sends no request (npm install would send one each second
+    # to the one-worker server). When the two lines stay, one request goes,
+    # and its answer stays while only the rows above change. The first probe
+    # of a verb sends. The local patterns apply.
+    if [ "${PANE_SETTLE:-0}" -eq 1 ] && [ -n "$PANE_LAST" ] && [ "$key" != "$PANE_LAST" ]; then
+        PANE_LAST="$key"
         PANE_STATE=other
         ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
         return 0
     fi
-    PANE_LAST="$window"
+    PANE_LAST="$key"
     PANE_STATE=
     laya_pid_check || return 6
     out=$(printf '%s\n' "$window" | laya_call pane)
@@ -1020,6 +1029,7 @@ pane_state() {
     PANE_STATE="${BASH_REMATCH[1]}"
     [ "$PANE_STATE" = credential ] || ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
     PANE_TEXT="$window"
+    PANE_TEXT_KEY="$key"
     PANE_TEXT_STATE="$PANE_STATE"
     return 0
 }
