@@ -1480,15 +1480,17 @@ send_line() {
 # is in front (only the user ends a line there), PANE_PROGRAM=1 when a known
 # program that is not a shell is in front (no shell rules), PANE_SHELL=1
 # when the pane shell itself is in the front group (no run and no program:
-# keys go to its readline). send reads the tree one time (PANE_FRONT_SET=1),
-# so its checks see the same state. When tmux or ps cannot tell, NESTED and
-# SHELL are 1: the rules then only refuse more.
+# keys go to its readline). A verb reads the tree one time: pane_front sets
+# PANE_FRONT_SET=1, and each check uses that read, so the checks of send
+# see the same state. No wait loop uses these checks. When tmux or ps
+# cannot tell, NESTED and SHELL are 1: the rules then only refuse more.
 PANE_NESTED=1
 PANE_PROGRAM=0
 PANE_SHELL=0
 PANE_FRONT_SET=0
 pane_front() {
     local pid out
+    PANE_FRONT_SET=1
     PANE_NESTED=1
     PANE_PROGRAM=0
     PANE_SHELL=1
@@ -1518,7 +1520,7 @@ pane_runs_program() {
 # user ends a line there (spec section 7). Also true when tmux or ps cannot
 # tell: the rule then only refuses more.
 pane_nested_shell() {
-    pane_front
+    [ "$PANE_FRONT_SET" = 1 ] || pane_front
     [ "$PANE_NESTED" = 1 ]
 }
 
@@ -2323,7 +2325,6 @@ send_command() {
                 fail 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' 2
             fi
         fi
-        PANE_FRONT_SET=1
         # The pane shell itself is in front, but the capture shows no clux
         # prompt: a typed line longer than the pane put the prompt row in
         # the history, or the prompt did not come back yet. A line or a key

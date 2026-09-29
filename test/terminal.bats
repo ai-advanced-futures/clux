@@ -1025,17 +1025,19 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
         ps() { printf '100 1 100 Ss -bash\\n200 100 200 S+ bash\\n300 200 200 S+ %s\\n' \"\$P\"; }
         tmux_state() { echo 100; }
+        # One send is one verb: each reads the process tree again.
+        g() { PANE_FRONT_SET=0; send_gate \"\$@\"; }
         PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
-        P=python3.12; send_gate 'print(1)'
-        P=-bash; CURSOR_LINE='user@host\$ '; send_gate 'ls'
-        tmux_state() { return 1; }; send_gate 'ls'; tmux_state() { echo 100; }
-        PANE_STATE=other; P=bash; CURSOR_LINE='Delete? [y/N] '; send_gate 'y'
-        PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'
-        CURSOR_LINE='user@remote\$ '; P=ssh; send_gate 'ls'
-        P=kubectl; send_gate 'ls'
-        CURSOR_LINE='> '; P=node; send_gate '1'
-        PANE_STATE=other; CURSOR_LINE='➜ proj '; P=zsh; send_gate 'ls'
-        PANE_STATE=pager; CURSOR_LINE=':'; P=less; send_gate 'q'"
+        P=python3.12; g 'print(1)'
+        P=-bash; CURSOR_LINE='user@host\$ '; g 'ls'
+        tmux_state() { return 1; }; g 'ls'; tmux_state() { echo 100; }
+        PANE_STATE=other; P=bash; CURSOR_LINE='Delete? [y/N] '; g 'y'
+        PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; g 'ls'
+        CURSOR_LINE='user@remote\$ '; P=ssh; g 'ls'
+        P=kubectl; g 'ls'
+        CURSOR_LINE='> '; P=node; g '1'
+        PANE_STATE=other; CURSOR_LINE='➜ proj '; P=zsh; g 'ls'
+        PANE_STATE=pager; CURSOR_LINE=':'; P=less; g 'q'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen --shell\n\n--screen --shell\n--screen --shell\n--screen\n--screen --shell\n--screen' ]
 }
@@ -1474,7 +1476,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local stubs="source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; CONT_MARK='clux-ab12cd34> '
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='sh\$ '; PANE_STATE=shell_prompt; }; run_not_started() { :; }
-        pane_nested_shell() { return 1; }; tmux_state() { return 1; }
+        pane_nested_shell() { return 1; }; pane_shell_front() { return 1; }; tmux_state() { return 1; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }; wait_for_echo() { :; }
         send_key() { :; }; send_literal() { :; }"
     run bash -c "$stubs; send_command -- 'echo'; send_command -- ' a'"
@@ -1691,7 +1693,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local stubs="source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='➜ proj '; PANE_STATE=menu; }
-        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
+        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; pane_shell_front() { return 1; }; shell_line() { return 1; }
         send_gate() { echo \"gate \$1\" >> '$log'; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
         send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }
         tmux_state() { return 1; }"
@@ -1732,7 +1734,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local stubs="source '$TERMINAL'; D='$d'; PROMPT_MARK='clux-ab12cd34\$'
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='user@remote\$ '; PANE_STATE=shell_prompt; }
-        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
+        pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; pane_shell_front() { return 1; }; shell_line() { return 1; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
         send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
     for k in "--enter -- ls" "--key Enter" "--key C-m" "--key C-j" "--key C-x" "--key M-x" "--key F5" "--key Tab" "--key Up" "--key C-a" "--key C-w"; do
@@ -1921,6 +1923,31 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
     run bash -c "source '$d/rc.bash'; echo \"\$PROMPT_COMMAND\"; declare -f __clux_flush | grep -c 'dd bs='"
     [ "$output" = $'__clux_flush\n1' ]
+}
+
+@test "a verb reads the process tree of the pane one time for all front checks" {
+    local log="$BATS_TEST_TMPDIR/fk"
+    # Escape in a program that is not a shell: pane_nested_shell, then
+    # pane_shell_front of refuse_meta_front.
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'; PROMPT_MARK='clux-ab12cd34\$'; S_PANE=%1
+        ensure_open() { :; }; capture_cursor_line() { CURSOR_LINE='~ vim'; }; send_key() { echo \"sent \$1\"; }
+        tmux_state() { echo 100; }; front_kinds() { echo x >> '$log'; echo '0 1 0'; }
+        send_command --key Escape"
+    [ "$output" = 'sent Escape' ] || { echo "$output"; false; }
+    [ "$(wc -l < "$log" | tr -d ' ')" = 1 ]
+    # The three checks one after the other: one read.
+    rm -f "$log"
+    run bash -c "source '$TERMINAL'; S_PANE=%1
+        tmux_state() { echo 100; }; front_kinds() { echo x >> '$log'; echo '1 0 0'; }
+        pane_runs_program; pane_nested_shell && pane_shell_front; echo \"rc=\$?\""
+    [ "$output" = 'rc=1' ]
+    [ "$(wc -l < "$log" | tr -d ' ')" = 1 ]
+    # When tmux cannot give the pane pid, the read is still one, and it
+    # fails closed: nested and the shell in front.
+    run bash -c "source '$TERMINAL'; S_PANE=%1
+        tmux_state() { return 1; }
+        pane_nested_shell && pane_shell_front && echo closed"
+    [ "$output" = closed ]
 }
 
 @test "Escape and M- keys are refused whenever the clux shell is in front, also when no prompt shows" {
