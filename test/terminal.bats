@@ -859,6 +859,50 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [[ "$output" == *'TMOUT: readonly variable'* ]] && [[ "$output" != *changed* ]] || false
 }
 
+@test "wait --idle and wait --pattern see a question that another verb starts during the wait" {
+    local d="$BATS_TEST_TMPDIR/seqw"
+    mkdir -p "$d"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    printf '0\n' > "$d/5.rc"
+    local later="printf 'mode=split\\npane=%%1\\nsocket=\\nseq=6\\ntoken=ab12cd34\\n' > '$d/state'; : > '$d/6.confirm'"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }; sleep() { :; }; probe_pane() { return 0; }
+        capture_cursor_line() { $later; CURSOR_LINE=working; }
+        wait_command --idle --timeout 3"
+    [ "$status" -eq 3 ] || { echo "$output $stderr"; false; }
+    [ "$stderr" = 'laya confirmation in the companion pane: the user must answer it there' ]
+    rm -f "$d/6.confirm"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }; sleep() { :; }
+        probe_pane() { $later; return 0; }
+        tmux_state() { [ \"\$1\" != display-message ] || return 1; printf 'build\\n'; }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); GUARD_HELD=0; GUARD_LATE=0; }
+        wait_command --pattern DONE --timeout 3"
+    [ "$status" -eq 3 ] || { echo "$output $stderr"; false; }
+    [ "$stderr" = 'laya confirmation in the companion pane: the user must answer it there' ]
+}
+
+@test "wait --pattern stops when another verb starts a secret run during the wait" {
+    local d="$BATS_TEST_TMPDIR/seqs"
+    mkdir -p "$d"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    printf '0\n' > "$d/5.rc"
+    local later="printf 'mode=split\\npane=%%1\\nsocket=\\nseq=6\\ntoken=ab12cd34\\n' > '$d/state'; : > '$d/6.secret'"
+    run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }; sleep() { :; }
+        probe_pane() { $later; return 0; }
+        tmux_state() { [ \"\$1\" != display-message ] || return 1; printf 'build\\n'; }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); GUARD_HELD=0; GUARD_LATE=0; }
+        wait_command --pattern DONE --timeout 3"
+    [ "$status" -eq 3 ] || { echo "$output $stderr"; false; }
+    [ "$stderr" = 'the last run was secret: do a plain run first, it clears the screen' ]
+    # With no state file (a test or a closed companion), the checks use S_SEQ.
+    run bash -c "source '$TERMINAL'; D='$d/none'; mkdir -p \"\$D\"; S_SEQ=2; : > \"\$D/2.confirm\"
+        laya_confirm_pending && echo pending"
+    [ "$output" = pending ]
+}
+
 @test "send and run read the state again after the typing lock" {
     local d="$BATS_TEST_TMPDIR/seq"
     mkdir -p "$d"

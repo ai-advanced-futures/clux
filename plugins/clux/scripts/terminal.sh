@@ -19,6 +19,8 @@
 #      (state_load). Every tmux call needs mode and socket, so reading them per
 #      call cost a sed pipeline each time. state_load is the ONLY reader and
 #      write_state the ONLY writer, so the file format lives in two places.
+#      One exception: seq_now reads the seq again (through state_load), as
+#      another verb can start a run while a wait loop runs.
 #
 # Prefer parameter expansion over sed/cut/basename throughout — path.sh made the
 # same move for the same reason and documents it at length.
@@ -1941,10 +1943,21 @@ output_held() {
     [ "${S_SEQ:-0}" -gt 0 ] && [ -e "$D/$S_SEQ.held" ]
 }
 
+# seq_now — the seq in the state file now. Another verb can start a run
+# while this verb waits, so the checks below read it again on each call and
+# do not use the S_SEQ of the start of the verb. With no state file, S_SEQ.
+seq_now() {
+    local n
+    n=$(state_load && printf '%s' "$S_SEQ") && [ -n "$n" ] || n="${S_SEQ:-0}"
+    printf '%s' "$n"
+}
+
 # The last run was secret. Its text can still be on the screen, so read and
 # wait --pattern refuse until the next run clears the screen and the history.
 last_run_secret() {
-    [ "${S_SEQ:-0}" -gt 0 ] && [ -e "$D/$S_SEQ.secret" ]
+    local n
+    n=$(seq_now)
+    [ "${n:-0}" -gt 0 ] && [ -e "$D/$n.secret" ]
 }
 
 refuse_secret() {
@@ -1954,7 +1967,9 @@ refuse_secret() {
 
 # A dangerous run waits for the answer of the user in the pane.
 laya_confirm_pending() {
-    [ "${S_SEQ:-0}" -gt 0 ] && [ -e "$D/$S_SEQ.confirm" ]
+    local n
+    n=$(seq_now)
+    [ "${n:-0}" -gt 0 ] && [ -e "$D/$n.confirm" ]
 }
 
 refuse_confirm() {
@@ -2515,6 +2530,8 @@ wait_command() {
             deadline=$((SECONDS + timeout))
             while :; do
                 laya_confirm_pending && { refuse_confirm; return; }
+                # A secret run that another verb started during the wait.
+                last_run_secret && { refuse_secret; return; }
                 probe_pane
                 case $? in
                     3) refuse_credential; return ;;
