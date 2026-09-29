@@ -368,6 +368,8 @@ S_SEQ=
 S_LAYA_PID=
 S_LAYA_URL=
 S_LAYA_KEY=
+S_TOKEN=
+PROMPT_MARK='clux$'
 
 # The ONE state-file reader. $1 defaults to the current companion's directory;
 # reap_companions and list_command pass a foreign one. Fails when there is no
@@ -381,7 +383,7 @@ S_LAYA_KEY=
 state_load() {
     local dir="${1:-$D}" key value
     S_MODE=''; S_PANE=''; S_SOCKET=''; S_SEQ=''
-    S_LAYA_PID=''; S_LAYA_URL=''; S_LAYA_KEY=''
+    S_LAYA_PID=''; S_LAYA_URL=''; S_LAYA_KEY=''; S_TOKEN=''
     [ -f "$dir/state" ] || return 1
     while IFS='=' read -r key value || [ -n "$key" ]; do
         case "$key" in
@@ -392,8 +394,12 @@ state_load() {
             laya_pid) S_LAYA_PID="$value" ;;
             laya_url) S_LAYA_URL="$value" ;;
             laya_key) S_LAYA_KEY="$value" ;;
+            token) S_TOKEN="$value" ;;
         esac
     done < "$dir/state"
+    # A companion that an older clux opened has no token.
+    PROMPT_MARK='clux$'
+    [ -z "$S_TOKEN" ] || PROMPT_MARK="clux-$S_TOKEN\$"
     return 0
 }
 
@@ -488,11 +494,31 @@ list_command() {
     done
 }
 
+# command_sum TEXT — the first 32 hex characters of the SHA-256 of TEXT.
+# run puts it on the typed line, and the pane shell compares it with the
+# sum of <n>.cmd (spec section 7).
+command_sum() {
+    local out
+    if command -p -v shasum >/dev/null 2>&1; then
+        out=$(printf '%s' "$1" | command -p shasum -a 256)
+    else
+        out=$(printf '%s' "$1" | command -p sha256sum)
+    fi || return 1
+    out="${out%% *}"
+    [ "${#out}" -eq 64 ] || return 1
+    printf '%s' "${out:0:32}"
+}
+
+# The private directory and the prompt token go into rc.bash as read-only
+# values, not as exported variables: a program in the pane does not get
+# them in its environment, and a command cannot change them.
 write_rc_file() {
-    cat > "$D/rc.bash" <<'EOF'
+    {
+        printf 'readonly __clux_dir=%q\n' "$D"
+        printf "PS1='clux-%s\$ '\n" "$S_TOKEN"
+        cat <<'EOF'
 unset HISTFILE
 set +o history
-PS1='clux$ '
 PROMPT_COMMAND=
 # An alias could change what a safe-list word runs (spec section 7).
 shopt -u expand_aliases
@@ -501,31 +527,60 @@ exit() { __clux_refuse; }
 exec() { __clux_refuse; }
 logout() { __clux_refuse; }
 __clux_clear() { printf '\033[2J\033[H'; }
+__clux_sum() {
+  local __clux_o
+  if command -p -v shasum >/dev/null 2>&1; then
+    __clux_o=$(printf '%s' "$1" | command -p shasum -a 256)
+  else
+    __clux_o=$(printf '%s' "$1" | command -p sha256sum)
+  fi
+  __clux_o="${__clux_o%% *}"
+  printf '%s' "${__clux_o:0:32}"
+}
+# __clux_run N SUM MODE [KIND [PATH]] — run <n>.cmd. terminal.sh types this
+# line after the Laya gate. The line, not a file in the private directory,
+# tells what the gate decided: SUM is the sum of the command that Laya
+# examined, MODE is plain, confirm (dangerous: ask the user) or safe (the
+# safe list). For safe, KIND is builtin or file and PATH is the program that
+# terminal.sh found for the first word. A command that is not the same, or
+# a first word that is not the same program, is refused.
+#
 # A dangerous run asks the user first. Only "y" runs it. The INT trap keeps
 # Ctrl-C from ending the question: without it, Ctrl-C ends this function and
 # leaves <n>.confirm, and each verb refuses until close. Each <n>.cmd runs
 # one time: a run with no .cmd, or with an .rc, is refused, and .cmd is
 # deleted when it is read. Thus a declined run cannot run again.
 __clux_run() {
-  local __clux_n="$1" __clux_d="$CLUX_TERMINAL_D" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
-  if [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
+  local __clux_n="$1" __clux_s="${2:-}" __clux_m="${3:-}" __clux_k="${4:-}" __clux_p="${5:-}"
+  local __clux_d="$__clux_dir" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
+  if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
     printf '%s\n' 'refused: this run is not waiting to start'
     return 1
   fi
   __clux_cmd=$(<"$__clux_d/$__clux_n.cmd")
   command rm -f "$__clux_d/$__clux_n.cmd"
-  # A safe-list run skipped Laya because of its first word, so that word
-  # must be a program or a builtin, not an alias or a function.
-  if [ -e "$__clux_d/$__clux_n.safe" ]; then
-    __clux_i="${__clux_cmd#"${__clux_cmd%%[![:space:]]*}"}"
-    case "$(builtin type -t -- "${__clux_i%%[[:space:]]*}")" in
-      file|builtin) ;;
-      *) __clux_cmd='printf "%s\n" "refused: the first word is an alias or a function in the companion shell"; (builtin exit 126)' ;;
-    esac
+  if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
+    __clux_cmd='printf "%s\n" "refused: the command changed after Laya examined it"; (builtin exit 126)'
+    __clux_m=plain
   fi
-  if [ -e "$__clux_d/$__clux_n.confirm" ]; then
+  # A safe-list run skipped Laya because of its first word, so that word
+  # must be the program or the builtin that terminal.sh found, not an alias,
+  # a function or a different program on PATH.
+  if [ "$__clux_m" = safe ]; then
+    builtin hash -r
+    __clux_i="${__clux_cmd#"${__clux_cmd%%[![:space:]]*}"}"
+    __clux_i="${__clux_i%%[[:space:]]*}"
+    case "$__clux_k:$(builtin type -t -- "$__clux_i")" in
+      builtin:builtin) ;;
+      file:file) [ "$(builtin type -P -- "$__clux_i")" = "$__clux_p" ] || __clux_k= ;;
+      *) __clux_k= ;;
+    esac
+    [ -n "$__clux_k" ] || __clux_cmd='printf "%s\n" "refused: the first word is not the program that the safe list permits"; (builtin exit 126)'
+  fi
+  if [ "$__clux_m" = confirm ]; then
     __clux_reason=$(<"$__clux_d/$__clux_n.reason")
-    printf 'laya: dangerous (%s)\n$ %s\n' "$__clux_reason" "$__clux_cmd"
+    # Control characters show as ?, so the question shows the full command.
+    printf 'laya: dangerous (%s)\n$ %s\n' "${__clux_reason//[[:cntrl:]]/?}" "${__clux_cmd//[[:cntrl:]]/?}"
     # The read is in a subshell: bash goes on with a read after a trapped
     # C-c, but C-c ends the subshell, so C-c (and C-d) declines. The pane
     # shell ignores the C-c, and C-z cannot stop the question.
@@ -540,7 +595,7 @@ __clux_run() {
       return 126
     fi
   else
-    printf '$ %s\n' "$__clux_cmd"
+    printf '$ %s\n' "${__clux_cmd//[[:cntrl:]]/?}"
   fi
   { eval "$__clux_cmd"; } > >(umask 077; tee "$__clux_d/$__clux_n.out"; : > "$__clux_d/$__clux_n.done") 2>&1
   __clux_rc=$?
@@ -550,6 +605,7 @@ __clux_run() {
     && command mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
 }
 EOF
+    } > "$D/rc.bash"
 }
 
 # The ONE state-file writer. seq is the only field that changes after open.
@@ -568,6 +624,7 @@ write_state() {
     fi
     {
         printf 'mode=%s\npane=%s\nsocket=%s\nseq=%s\n' "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ"
+        [ -z "$S_TOKEN" ] || printf 'token=%s\n' "$S_TOKEN"
         [ -z "$S_LAYA_PID" ] || printf 'laya_pid=%s\n' "$S_LAYA_PID"
         [ -z "$S_LAYA_URL" ] || printf 'laya_url=%s\n' "$S_LAYA_URL"
         [ -z "$S_LAYA_KEY" ] || printf 'laya_key=%s\n' "$S_LAYA_KEY"
@@ -607,19 +664,19 @@ capture_to_cursor() {
 # step can ask both "at the prompt" and "credential prompt" for one capture.
 line_at_prompt() {
     rtrim "$CURSOR_LINE"
-    case "$RTRIM" in *'clux$') return 0 ;; esac
+    case "$RTRIM" in *"$PROMPT_MARK") return 0 ;; esac
     return 1
 }
 
-# prompt_input — the cursor line holds the clux$ prompt, also after output
-# with no last newline (fooclux$ ). Sets PROMPT_INPUT to the text after the
-# FIRST 'clux$ ': when the output before the prompt holds 'clux$ ' too, the
-# gate gets more text, not less.
+# prompt_input — the cursor line holds the clux-<token>$ prompt, also after
+# output with no last newline (fooclux-<token>$ ). Sets PROMPT_INPUT to the
+# text after the FIRST prompt mark: when the output before the prompt holds
+# the mark too, the gate gets more text, not less.
 PROMPT_INPUT=
 prompt_input() {
     case "$CURSOR_LINE" in
-        *'clux$ '*) PROMPT_INPUT="${CURSOR_LINE#*'clux$ '}" ;;
-        *'clux$') PROMPT_INPUT= ;;
+        *"$PROMPT_MARK "*) PROMPT_INPUT="${CURSOR_LINE#*"$PROMPT_MARK "}" ;;
+        *"$PROMPT_MARK") PROMPT_INPUT= ;;
         *) return 1 ;;
     esac
 }
@@ -681,13 +738,26 @@ probe_pane() {
 
 # check_pane — pane_state for a verb that must not act on a credential
 # prompt. Returns 3 (with the message) on a credential prompt, 6 (with the
-# message) when Laya fails, else 0. A failed capture is not a refusal, as in
-# 3.9.0.
+# message) when Laya fails, else 0. A failed capture gets one more try, then
+# it is a refusal: with no cursor line, the gate cannot examine the line
+# (exit 4 when the pane is gone, else exit 5).
 check_pane() {
+    local rc
     pane_state
-    case $? in
-        6) refuse_laya; return ;;
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+        sleep .2
+        pane_state
+        rc=$?
+    fi
+    case $rc in
         0) [ "$PANE_STATE" != credential ] || { refuse_credential; return; } ;;
+        1)
+            current_companion_alive || fail 'no companion is open for this owner' 4
+            printf '%s\n' 'cannot read the companion pane: try again' >&2
+            return 5
+            ;;
+        *) refuse_laya; return ;;
     esac
     return 0
 }
@@ -724,16 +794,19 @@ GUARD_CUT=0
 # removes blank lines at the end of the text. A cut can split a UTF-8
 # character; the client decodes with "replace", so that is not an error.
 laya_guard() {
-    local out data size tmp="$D/guard.tmp" LC_ALL=C
+    local out data size tmp
     # A file, because $1 can be a pipe and is read two times: the size, then
     # the text. Bash drops NUL bytes from a command substitution with a
-    # warning, so tr removes them first, and the size comes from wc.
-    tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" > "$tmp" || { rm -f "$tmp"; return 6; }
-    size=$(wc -c < "$tmp")
+    # warning, so tr removes them first, and the size comes from wc. LC_ALL=C
+    # on each command: tail and tr count bytes, not characters, and tr does
+    # not stop on bytes that are not UTF-8.
+    tmp=$(mktemp "$D/guard.XXXXXX") || return 6
+    LC_ALL=C tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" > "$tmp" || { rm -f "$tmp"; return 6; }
+    size=$(LC_ALL=C wc -c < "$tmp")
     GUARD_CUT=0
     [ "$((size + 0))" -le "$LAYA_GUARD_BYTES" ] || GUARD_CUT=1
     # The x keeps the newlines at the end.
-    data=$(tail -c "$LAYA_GUARD_BYTES" "$tmp" | tr -d '\000' && printf x)
+    data=$(LC_ALL=C tail -c "$LAYA_GUARD_BYTES" "$tmp" | LC_ALL=C tr -d '\000' && printf x)
     rm -f "$tmp"
     data="${data%x}"
     out=$(printf '%s' "$data" | laya_call output --render --limit "$LAYA_GUARD_LIMIT") || return 6
@@ -790,6 +863,21 @@ interrupt_key() {
     return 1
 }
 
+# nav_key KEY — a key that only moves in a pager or a menu: Up, Down, Left,
+# Right, Home, End and the page keys, with no modifier. In a pager or a menu
+# these keys go to the pane with no command request (spec section 7). Space
+# is not one: it selects in a menu.
+nav_key() {
+    local rc=1 nocase
+    nocase=$(shopt -p nocasematch)
+    shopt -s nocasematch
+    case "$1" in
+        Up|Down|Left|Right|Home|End|PageUp|PgUp|PageDown|PgDn|NPage|PPage) rc=0 ;;
+    esac
+    $nocase
+    return "$rc"
+}
+
 # send_gate TEXT — the command gate for a send that ends a line (spec
 # section 7). check_pane must run first: it sets CURSOR_LINE and
 # SCREEN_ABOVE. The line is the cursor line plus TEXT. At the clux$ prompt
@@ -818,9 +906,9 @@ send_gate() {
             case "$SCREEN_ABOVE" in *[![:space:]]*) ;; *) return 0 ;; esac
             ;;
     esac
-    # [inferred] No safe list for send: only run checks that the first word
-    # is a program or a builtin (the .safe marker), so on send a function of
-    # the same name would skip Laya.
+    # No safe list for send: only run checks that the first word is the
+    # program that terminal.sh found (the typed __clux_run line), so on send
+    # a function of the same name would skip Laya.
     laya_gate --screen --no-safe-list < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     case $? in
         0) ;;
@@ -871,7 +959,21 @@ cursor_mid_line() {
     x="${pos% *}"
     y="${pos#* }"
     row=$(tmux_state capture-pane -p -t "$S_PANE" -S "$y" -E "$y") || return 1
+    # A row of printable ASCII has one cell for each character: no client.
+    if row_is_ascii "$row"; then
+        rtrim "$row"
+        [ "${#RTRIM}" -gt "$x" ]
+        return
+    fi
     printf '%s\n' "$row" | "$LAYA_PY" "$LAYA_CLIENT" after-cursor "$x" >/dev/null 2>&1
+}
+
+# row_is_ascii ROW — each byte of ROW is printable ASCII. LC_ALL=C makes
+# [:print:] match bytes, not characters.
+row_is_ascii() {
+    local LC_ALL=C
+    case "$1" in *[![:print:]]*) return 1 ;; esac
+    return 0
 }
 
 hidden_text() { [ -e "$D/hidden" ]; }
@@ -912,7 +1014,7 @@ wait_for_clear() {
     while [ "$SECONDS" -lt "$deadline" ]; do
         if text=$(tmux_state capture-pane -p -t "$S_PANE"); then
             rtrim "$text"
-            [ "$RTRIM" = 'clux$' ] && return 0
+            [ "$RTRIM" = "$PROMPT_MARK" ] && return 0
         fi
         sleep .2
     done
@@ -964,7 +1066,13 @@ open_command() {
         remove_companion_dir "$D" 0
         stop_reaped_servers
     fi
-    umask 077; mkdir -p "$D"; write_rc_file
+    umask 077; mkdir -p "$D"
+    # The prompt has a random token, so output text that shows clux$ is not
+    # the prompt (spec section 9).
+    S_TOKEN=$(LC_ALL=C od -An -N4 -tx1 /dev/urandom | LC_ALL=C tr -d ' \n') || S_TOKEN=
+    [ "${#S_TOKEN}" -eq 8 ] || S_TOKEN=$(printf '%04x%04x' "$RANDOM" "$RANDOM")
+    PROMPT_MARK="clux-$S_TOKEN\$"
+    write_rc_file
     socket="$D/sock"
     if [ "$mode" = socket ] && [ "${#socket}" -gt 100 ]; then
         rm -rf "$D"
@@ -981,12 +1089,12 @@ open_command() {
     # [inferred] A pane or prompt failure keeps exit code 1, as in 3.9.0.
     if [ "$mode" = socket ]; then
         pane=$(tmux -S "$socket" -f /dev/null new-session -d -P -F '#{pane_id}' -s clux-terminal \
-            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) \
+            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
             || { laya_stop_server "$LAYA_PID"; rm -rf "$D"; fail 'cannot open private companion' 1; }
         write_state socket "$pane" "$socket" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
     else
         pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" -v -l "$size" \
-            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 -e "CLUX_TERMINAL_D=$D" "$shell" 3>&-) \
+            -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
             || { laya_stop_server "$LAYA_PID"; rm -rf "$D"; fail 'cannot open companion' 1; }
         write_state split "$pane" "" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
     fi
@@ -1154,7 +1262,7 @@ remove_stale_output() {
 }
 
 run_command() {
-    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command first n
+    local timeout=$RUN_TIMEOUT_DEFAULT secret=0 max=200 command first n sum mode word kind
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --timeout) [ "$#" -ge 2 ] || usage; timeout="$2"; shift 2 ;;
@@ -1166,6 +1274,11 @@ run_command() {
     done
     [ -n "${command:-}" ] || usage
     case "$command" in *[![:space:]]*) ;; *) fail 'run needs a command' 2 ;; esac
+    # A newline or another control character can hide a part of the command
+    # in the question of a dangerous run, and it can break the typed line.
+    case "$command" in
+        *[[:cntrl:]]*) fail 'run command must not contain a control character: give one line' 2 ;;
+    esac
     positive_integer "$timeout" || usage
     positive_integer "$max" || usage
     first="${command#"${command%%[![:space:]]*}"}"
@@ -1198,21 +1311,39 @@ run_command() {
         wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run: use wait --idle, then run again' 5; }
         tmux_state clear-history -t "$S_PANE"
     fi
+    # The typed line carries what the gate decided (spec section 7): the sum
+    # of the command, and the mode. The pane shell refuses a .cmd with a
+    # different sum, so a change of .cmd after the gate runs nothing.
+    sum=$(command_sum "$command") || { release_busy; fail 'cannot make the sum of the command' 1; }
+    mode=plain
+    [ "$GATE_LEVEL" != dangerous ] || mode=confirm
+    if [ "$GATE_SAFE_LIST" -eq 1 ]; then
+        # The program of the first word now. The pane shell compares it with
+        # its own, so a function, an alias or a different program on PATH
+        # does not run with no gate.
+        word="${first%%[[:space:]]*}"
+        kind=$(builtin type -t -- "$word") || kind=
+        case "$kind" in
+            builtin) mode="safe builtin" ;;
+            file) printf -v mode 'safe file %q' "$(builtin type -P -- "$word")" ;;
+            *) release_busy; fail "the first word is not a program: $word" 2 ;;
+        esac
+    fi
     n=$(( S_SEQ + 1 ))
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$n"
     printf '%s' "$command" > "$D/$n.cmd"
     [ "$secret" -eq 0 ] || : > "$D/$n.secret"
-    [ "$GATE_SAFE_LIST" -eq 0 ] || : > "$D/$n.safe"
     case "$GATE_LEVEL" in
         caution) printf '%s\n' "$GATE_REASON" > "$D/$n.caution" ;;
         dangerous)
-            # The reason first: the pane shell reads it when it finds .confirm.
+            # The pane shell shows the reason in the question. .confirm
+            # tells the verbs that the question is open.
             printf '%s\n' "$GATE_REASON" > "$D/$n.reason"
             : > "$D/$n.confirm"
             ;;
     esac
     printf 'run=%s\n' "$n"
-    send_literal "__clux_run $n"; send_key Enter
+    send_literal "__clux_run $n $sum $mode"; send_key Enter
     wait_for_run_files "$n" "$timeout" 1
     case $? in
         0) report_run "$n" "$max" ;;
@@ -1263,6 +1394,9 @@ send_command() {
     # the text, so text typed in pieces is examined as one line.
     if [ -n "$key" ]; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
+        case "$PANE_STATE" in
+            pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
+        esac
         send_gate "" || return
         send_key "$key"
         return

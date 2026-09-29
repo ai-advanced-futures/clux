@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 load test_helper
 
 TERMINAL="$SCRIPTS_DIR/terminal.sh"
@@ -442,6 +444,163 @@ STUB
     [[ "$output" != *'AKIA'* ]] || false
     [ -f "$venv/.clux-installed" ]
     [ -z "$(ls -A "$tmp")" ]
+}
+
+@test "run refuses a newline, a tab or another control character before it touches tmux" {
+    local log="$BATS_TEST_TMPDIR/stub.log" cmd
+    for cmd in $'ls\nrm -rf x' $'ls\trm' $'echo \x1b[2J'; do
+        run env STUB_LOG="$log" TMUX=fake TMUX_PANE=%0 "$TERMINAL" run -- "$cmd"
+        [ "$status" -eq 2 ]
+        [ "$output" = 'run command must not contain a control character: give one line' ]
+    done
+    [ ! -s "$log" ]
+}
+
+# rc_run ARGS... — make rc.bash in a test directory and call __clux_run in a
+# bash that sourced it. RC_CMD is the text of 1.cmd, RC_INPUT the answer.
+rc_run() {
+    local d="$BATS_TEST_TMPDIR/rc"
+    mkdir -p "$d"
+    rm -f "$d"/1.*
+    printf '%s' "$RC_CMD" > "$d/1.cmd"
+    printf '%s\n' "${RC_REASON:-destructive 0.95}" > "$d/1.reason"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    printf '%s\n' "${RC_INPUT:-}" | bash -c "source '$d/rc.bash'; ${RC_SETUP:-:}; __clux_run 1 $*; echo \"rc=\$(cat '$d/1.rc' 2>/dev/null)\""
+}
+
+rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
+
+@test "__clux_run refuses a command that is not the command that Laya examined" {
+    local mark="$BATS_TEST_TMPDIR/ran" sum
+    sum=$(rc_sum 'echo safe')
+    [ "${#sum}" -eq 32 ]
+    RC_CMD="touch '$mark'" run rc_run "$sum" plain
+    [[ "$output" == *'refused: the command changed after Laya examined it'* ]] || false
+    [[ "$output" == *'rc=126' ]] || false
+    [ ! -e "$mark" ]
+    RC_CMD="touch '$mark'" run rc_run
+    [[ "$output" == *'refused: this run is not waiting to start'* ]] || false
+    [ ! -e "$mark" ]
+    sum=$(rc_sum "touch '$mark'")
+    RC_CMD="touch '$mark'" run rc_run "$sum" plain
+    [[ "$output" == *'rc=0' ]] || false
+    [ -e "$mark" ]
+}
+
+@test "__clux_run asks the user when the typed line says confirm, with or without a .confirm file" {
+    local mark="$BATS_TEST_TMPDIR/ran" sum
+    sum=$(rc_sum "touch '$mark'")
+    RC_CMD="touch '$mark'" RC_INPUT=n run rc_run "$sum" confirm
+    [[ "$output" == *'laya: dangerous (destructive 0.95)'* ]] || false
+    [[ "$output" == *'rc=126' ]] || false
+    [ ! -e "$mark" ]
+    RC_CMD="touch '$mark'" RC_INPUT=y run rc_run "$sum" confirm
+    [[ "$output" == *'rc=0' ]] || false
+    [ -e "$mark" ]
+}
+
+@test "the question shows control characters of the reason and the command as ?" {
+    local sum
+    sum=$(rc_sum $'echo a\rb')
+    RC_CMD=$'echo a\rb' RC_REASON=$'x\x1b[2Jy' RC_INPUT=n run rc_run "$sum" confirm
+    [[ "$output" == *'laya: dangerous (x?[2Jy)'* ]] || false
+    [[ "$output" == *'$ echo a?b'* ]] || false
+}
+
+@test "a safe-list run refuses a first word that is not the program that terminal.sh found" {
+    local bin="$BATS_TEST_TMPDIR/bin" path sum
+    mkdir -p "$bin"
+    printf '#!/bin/sh\necho fake\n' > "$bin/ls"; chmod +x "$bin/ls"
+    path=$(bash -c 'type -P ls')
+    sum=$(rc_sum 'ls /')
+    RC_CMD='ls /' run rc_run "$sum" safe file "$path"
+    [[ "$output" == *'rc=0' ]] || false
+    RC_CMD='ls /' RC_SETUP="PATH='$bin':\$PATH" run rc_run "$sum" safe file "$path"
+    [[ "$output" == *'refused: the first word is not the program that the safe list permits'* ]] || false
+    [[ "$output" != *fake* ]] || false
+    RC_CMD='ls /' RC_SETUP="hash -p '$bin/ls' ls" run rc_run "$sum" safe file "$path"
+    [[ "$output" == *'rc=0' ]] || false
+    [[ "$output" != *fake* ]] || false
+    RC_CMD='ls /' RC_SETUP="ls() { echo fake; }" run rc_run "$sum" safe file "$path"
+    [[ "$output" == *'refused: the first word'* ]] || false
+    sum=$(rc_sum 'echo hi')
+    RC_CMD='echo hi' run rc_run "$sum" safe builtin
+    [[ "$output" == *$'hi\nrc=0' ]] || false
+    RC_CMD='echo hi' RC_SETUP="echo() { builtin echo fake; }" run rc_run "$sum" safe builtin
+    [[ "$output" == *'refused: the first word'* ]] || false
+}
+
+@test "rc.bash gets the directory and the prompt token as values, not from the environment" {
+    local d="$BATS_TEST_TMPDIR/rc"
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    run bash -c "source '$d/rc.bash'; echo \"\$PS1|\$__clux_dir\"; ( __clux_dir=/tmp ) 2>/dev/null || echo readonly"
+    [ "$output" = "clux-ab12cd34\$ |$d"$'\nreadonly' ]
+    ! grep -q 'CLUX_TERMINAL_D=' "$TERMINAL" || false
+}
+
+@test "the prompt needs the token of the companion" {
+    run bash -c "source '$TERMINAL'
+        D='$BATS_TEST_TMPDIR'; S_TOKEN=ab12cd34
+        write_state split %1 '' 1
+        state_load
+        for CURSOR_LINE in 'clux\$ ' 'clux\$' 'fooclux\$ ls'; do
+            prompt_input && echo \"wrong: \$CURSOR_LINE\"
+            line_at_prompt && echo \"wrong at: \$CURSOR_LINE\"
+        done
+        CURSOR_LINE='fooclux-ab12cd34\$ ls -l'; prompt_input && echo \"[\$PROMPT_INPUT]\"
+        CURSOR_LINE='clux-ab12cd34\$ '; line_at_prompt && echo at"
+    [ "$output" = $'[ls -l]\nat' ]
+}
+
+@test "check_pane refuses when the capture of the pane fails" {
+    run --separate-stderr bash -c "source '$TERMINAL'
+        pane_state() { return 1; }; current_companion_alive() { return 0; }
+        check_pane; echo \$?"
+    [ "$output" = 5 ]
+    [ "$stderr" = 'cannot read the companion pane: try again' ]
+    run --separate-stderr bash -c "source '$TERMINAL'
+        pane_state() { return 1; }; current_companion_alive() { return 1; }
+        check_pane; echo \$?"
+    [ "$status" -eq 4 ]
+}
+
+@test "the guard uses a new temporary file and the C locale for tail and tr" {
+    local d="$BATS_TEST_TMPDIR/g" victim="$BATS_TEST_TMPDIR/victim"
+    mkdir -p "$d"
+    printf 'keep\n' > "$victim"
+    ln -s "$victim" "$d/guard.tmp"
+    printf 'a\377b\000c\n' > "$BATS_TEST_TMPDIR/in"
+    run bash -c "export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+        source '$TERMINAL'; D='$d'
+        laya_call() { printf 'held=0\n'; cat; }
+        laya_guard '$BATS_TEST_TMPDIR/in'; echo \"rc=\$?\"
+        printf '%s' \"\$GUARD_TEXT\" | od -An -c | tr -s ' '"
+    [[ "$output" == 'rc=0'* ]] || false
+    [[ "$output" == *'a 377 b c'* ]] || false
+    [ "$(cat "$victim")" = keep ]
+    [ "$(find "$d" -name 'guard.*' ! -name guard.tmp | wc -l | tr -d ' ')" -eq 0 ]
+}
+
+@test "nav_key finds only the move keys of a pager or a menu" {
+    run bash -c "source '$TERMINAL'
+        for k in Up down Left Right Home End PageUp PgUp PageDown PgDn NPage PPage; do
+            nav_key \"\$k\" || echo \"missed \$k\"
+        done
+        for k in Space Enter q y C-Up M-Down Tab; do
+            ! nav_key \"\$k\" || echo \"wrong \$k\"
+        done"
+    [ -z "$output" ]
+}
+
+@test "cursor_mid_line reads an ASCII row with no client" {
+    run bash -c "source '$TERMINAL'
+        LAYA_PY=/nonexistent
+        tmux_state() { case \"\$*\" in *cursor_x*) echo \"\$CX 0\" ;; *) printf '%s\n' 'clux-ab12cd34\$ ls   ' ;; esac; }
+        CX=16; cursor_mid_line; echo \$?
+        CX=18; cursor_mid_line; echo \$?
+        CX=15; cursor_mid_line; echo \$?"
+    [ "$output" = $'0\n1\n0' ]
 }
 
 @test "the skill and the release notes have no author notes" {

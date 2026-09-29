@@ -10,7 +10,14 @@ All notable changes to clux are documented here.
 - **The default time limit of `run` is 64 seconds** (it was 100 seconds), so that the Laya checks (the command gate, the pane probe and a 15 s output guard) fit in the 120-second limit of the Bash tool
 - `wait --pattern` examines the screen each second, not each 0.2 s, and tests the pattern on the guarded text
 - `send --key` with `C-c`, `C-d`, `C-z`, `C-\` or `Escape` does not go through the Laya pane check, so Claude can stop a command when Laya is not available
-- The safe list stops at a long option (`git diff --output=<file>` goes to Laya), and at quotes, a backslash, braces, a glob or `~`. It applies to `run` only; each `send` goes to Laya. The pane shell does not expand aliases, and a safe-list run whose first word is a function is refused with exit 126
+- The safe list stops at a long option (`cat --output=<file>` goes to Laya), and at quotes, a backslash, braces, a glob or `~`. It applies to `run` only; each `send` goes to Laya. `git` is not on the list (a repository config can start a program). The pane shell does not expand aliases, and it refuses a safe-list run with exit 126 when the first word is not the program that terminal.sh found (a function, a different `PATH`, a `hash -p` entry)
+- The typed `__clux_run` line carries the sum of the command that Laya examined and the mode (`plain`, `confirm`, `safe`). The pane shell refuses a command file with a different sum, and it asks the question from the mode, not from a file. `rc.bash` gets the private directory as a read-only value, not from an exported variable
+- `run` refuses a command with a control character (exit code 2). The question shows control characters of the reason and the command as `?`
+- The prompt is `clux-<token>$ ` with a random token, so output that shows `clux$ ` is not the prompt
+- `send` refuses when the capture of the pane fails two times (exit code 5, or 4 when the pane is gone), because the gate cannot examine the line
+- In a pager or a menu, the move keys (`Up`, `Down`, `Left`, `Right`, `Home`, `End` and the page keys) go to the pane with no command request
+- The output guard uses a new temporary file for each check, and `LC_ALL=C` for `tail`, `wc` and `tr`
+- A line that `not-secret.txt` clears no longer stops the pair rule for the line after it
 - `send` refuses text with exit code 2 when the cursor is not at the end of a shell line (in screen cells, so wide characters count 2)
 - `send --key` takes only a tmux key name; other text gives exit code 2
 - When the output guard fails, the run keeps its lock until `wait --run <n>` gives the output, so a new run cannot delete it (exit code 5)
@@ -18,7 +25,7 @@ All notable changes to clux are documented here.
 - `open` makes sure that the process that listens on the Laya port is the server it started, and the reaper stops the servers of gone companions with one wait
 - `close --hook` stops the Laya server in a separate process, with `kill -9` after 3 s. `open` stops the server of a dead companion of the same owner
 - `wait --run <n> --discard` deletes output that Laya cannot examine and frees the companion
-- A blank line in a program (for example a `[Y/n]` question) goes to Laya with the screen above it. The `clux$` prompt is found also after output with no last newline
+- A blank line in a program (for example a `[Y/n]` question) goes to Laya with the screen above it. The prompt is found also after output with no last newline
 - Interrupt keys work while a Laya question is open; `C-c` declines the run
 - With `CLUX_LAYA_URL`, `open` checks that the client Python can import `laya`. `laya install` reports an installed venv also when no `python3` 3.10 is on `PATH`. Binary output with NUL bytes gives no bash warning
 - `close` removes the pane and the private directory first, then stops the Laya server; `close --hook` does not wait for the server to stop

