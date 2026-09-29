@@ -317,6 +317,24 @@ open(sys.argv[1], "w").write("%d\n" % s.getsockname()[1]); time.sleep(30)' "$por
     [ "$other" -ne 0 ]
 }
 
+@test "laya_owns_port reads /proc with no lsof and no ss, and with none of them it fails" {
+    local bin="$BATS_TEST_TMPDIR/bin" proc="$BATS_TEST_TMPDIR/proc" t
+    mkdir -p "$bin" "$proc/net" "$proc/4242/fd"
+    for t in awk readlink; do ln -s "$(command -v "$t")" "$bin/$t"; done
+    printf '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n' > "$proc/net/tcp"
+    printf '   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 12345 1\n' >> "$proc/net/tcp"
+    printf '   1: 0100007F:1F91 00000000:0000 01 00000000:00000000 00:00000000 00000000   501        0 999 1\n' >> "$proc/net/tcp"
+    ln -s 'socket:[12345]' "$proc/4242/fd/3"
+    ln -s 'socket:[999]' "$proc/4242/fd/4"
+    own() { bash -c "source '$TERMINAL'; PATH='$bin'; PROC_ROOT='$1'; laya_owns_port $2 $3"; }
+    own "$proc" 4242 8080
+    ! own "$proc" 4243 8080 || false
+    # A socket that does not listen on the port is not the server.
+    ! own "$proc" 4242 8081 || false
+    # With no lsof, no ss and no /proc it cannot check: the key does not go.
+    ! own "$BATS_TEST_TMPDIR/none" 4242 8080 || false
+}
+
 @test "laya_stop_server stops several servers that ignore TERM with one wait" {
     local bin="$BATS_TEST_TMPDIR/bin" a b start
     mkdir -p "$bin"
@@ -786,7 +804,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local log="$BATS_TEST_TMPDIR/flags"
     run bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=x
         laya_gate() { echo \"\$*\" >> '$log'; cat >/dev/null; GATE_LEVEL=safe; }
-        ps() { printf '100 1 Ss -bash\\n200 100 S+ bash\\n300 200 S+ %s\\n' \"\$P\"; }
+        ps() { printf '100 1 100 Ss -bash\\n200 100 200 S+ bash\\n300 200 200 S+ %s\\n' \"\$P\"; }
         tmux_state() { echo 100; }
         PANE_STATE=shell_prompt; CURSOR_LINE='>>> '
         P=python3.12; send_gate 'print(1)'
@@ -849,6 +867,32 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     run bash -c "source '$d/rc.bash'; __clux_line 0123456789abcdef0123456789abcdef"
     [ "$output" = 'refused: the line changed after Laya examined it' ]
     [ ! -e "$d/line.cmd" ]
+}
+
+@test "a line cannot call __clux_run or __clux_line, also with quotes in the name" {
+    local d="$BATS_TEST_TMPDIR/nocall" sum
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    sum=$(rc_sum 'echo PWNED')
+    # The line writes a command file and calls __clux_run with its sum, in
+    # plain mode: no question. The text check of send does not see the name.
+    printf '%s' "printf %s 'echo PWNED' > \"\$__clux_dir/9.cmd\"; \"__clux\"_run 9 $sum plain" > "$d/line.cmd"
+    run bash -c "source '$d/rc.bash'; __clux_line \$(__clux_sum \"\$(cat '$d/line.cmd')\")"
+    [[ "$output" == *'refused: only the companion types __clux_run at the prompt'* ]] || { echo "$output"; false; }
+    [[ "$output" != *$'\nPWNED'* ]] || { echo "$output"; false; }
+    [ ! -e "$d/9.rc" ]
+    # A function or a subshell cannot call them either.
+    printf '%s' 'echo PWNED' > "$d/9.cmd"
+    run bash -c "source '$d/rc.bash'; f() { __clux_run 9 $sum plain; }; f; ( __clux_line x )"
+    [ "$output" = $'refused: only the companion types __clux_run at the prompt\nrefused: only the companion types __clux_line at the prompt' ]
+    # The prompt still calls it.
+    run bash -c "source '$d/rc.bash'; __clux_run 9 $sum plain"
+    [ "$output" = $'$ echo PWNED\nPWNED' ]
+    # The text check of send and run reads the name with no quotes.
+    for t in '"__clux"_run 9' "'__cl'ux_line x" '__clu\x_run'; do
+        run --separate-stderr bash -c "source '$TERMINAL'; reserved_word \"\$1\"" _ "$t"
+        [ "$status" -eq 2 ] || { echo "$t: $status"; false; }
+    done
 }
 
 @test "the __clux functions of rc.bash are read-only, and POSIX mode does not stay" {
@@ -1166,7 +1210,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local stubs="source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; CONT_MARK='clux-ab12cd34> '
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='sh\$ '; PANE_STATE=shell_prompt; }; run_not_started() { :; }
-        pane_nested_shell() { return 1; }
+        pane_nested_shell() { return 1; }; tmux_state() { return 1; }
         send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }; wait_for_echo() { :; }
         send_key() { :; }; send_literal() { :; }"
     run bash -c "$stubs; send_command -- 'echo'; send_command -- ' a'"
@@ -1210,20 +1254,20 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     # A line of __clux_line runs in a subshell: tmux names that bash, and
     # python3 runs under it in the front group.
     run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
-        ps() { printf '100 1 Ss -bash\n200 100 S+ bash\n300 200 S+ /opt/homebrew/Frameworks/Python.app/Contents/MacOS/Python\n'; }
+        ps() { printf '100 1 100 Ss -bash\n200 100 200 S+ bash\n300 200 200 S+ /opt/homebrew/Frameworks/Python.app/Contents/MacOS/Python\n'; }
         pane_runs_program"
     [ "$status" -eq 0 ]
     # A program in the background is not the front program.
     run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
-        ps() { printf '100 1 Ss -bash\n300 100 S python3\n'; }
+        ps() { printf '100 1 100 Ss -bash\n300 100 300 S python3\n'; }
         pane_runs_program"
     [ "$status" -eq 1 ]
     run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
-        ps() { printf '100 1 Ss -bash\n200 100 S+ bash\n300 200 S+ python3\n400 300 Ss+ /bin/bash\n'; }
+        ps() { printf '100 1 100 Ss -bash\n200 100 200 S+ bash\n300 200 200 S+ python3\n400 300 400 Ss+ /bin/bash\n'; }
         pane_runs_program"
     [ "$status" -eq 1 ]
     run bash -c "source '$TERMINAL'; tmux_state() { echo 100; }
-        ps() { printf '100 1 Ss -bash\n300 100 S+ nvim\n400 300 Ss zsh\n'; }
+        ps() { printf '100 1 100 Ss -bash\n300 100 300 S+ nvim\n400 300 400 Ss zsh\n'; }
         pane_runs_program"
     [ "$status" -eq 1 ]
 }
@@ -1233,7 +1277,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     mkdir -p "$d"
     run bash -c "source '$TERMINAL'; D='$d'; SCREEN_ABOVE=top
         laya_gate() { cat > '$log'; GATE_LEVEL=safe; }
-        pane_runs_program() { return 0; }
+        pane_runs_program() { return 0; }; tmux_state() { return 1; }
         PANE_STATE=other; CURSOR_LINE='cmd> '
         typed_add 'cmd> ' 'rm -rf'; send_gate ' ~'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
@@ -1331,10 +1375,50 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "a key with no typed text makes the shell rule read all of the line (Up shows a line from the history)" {
     local d="$BATS_TEST_TMPDIR/up"
     mkdir -p "$d"
-    run bash -c "source '$TERMINAL'; D='$d'
+    run bash -c "source '$TERMINAL'; D='$d'; tmux_state() { return 1; }
         CURSOR_LINE='sh\$ '; typed_edit
         CURSOR_LINE='sh\$ source ~/.env'; typed_split ''; echo \"[\$LINE_HEAD|\$LINE_TYPED]\""
     [ "$output" = '[|sh$ source ~/.env]' ]
+}
+
+@test "the typed record goes when the user ended the line: the cursor is on a new line" {
+    local d="$BATS_TEST_TMPDIR/stale"
+    mkdir -p "$d"
+    # Y is the cursor row; a capture from the row of the record to the
+    # cursor row gives one line (the typed text wraps) or more (an Enter).
+    local stubs="source '$TERMINAL'; D='$d'; Y=10; WRAP=0
+        tmux_state() {
+            case \"\$1\" in
+                display-message) echo \"0 \$Y\" ;;
+                capture-pane) if [ \"\$WRAP\" = 1 ]; then printf 'one long line'; else printf 'a\nb\nc'; fi ;;
+            esac
+        }
+        show() { typed_split \"\$1\"; echo \"[\$LINE_HEAD|\$LINE_TYPED] \$([ -e '$d/typed' ] && echo kept || echo gone)\"; }"
+    # The same prompt after the Enter of the user.
+    rm -f "$d/typed"
+    run bash -c "$stubs; CURSOR_LINE='user@h\$ '; typed_add 'user@h\$ ' 'git status'
+        Y=12; show ls"
+    [ "$output" = '[user@h$ |ls] gone' ] || { echo "$output"; false; }
+    # A new prompt after a key that edits the line (Up): the prompt text does
+    # not go to the shell rule.
+    rm -f "$d/typed"
+    run bash -c "$stubs; CURSOR_LINE='sh\$ '; typed_edit
+        Y=13; CURSOR_LINE='~/source '; show x"
+    [ "$output" = '[~/source |x] gone' ] || { echo "$output"; false; }
+    # The line wraps to the next row: it is the same line.
+    rm -f "$d/typed"
+    run bash -c "$stubs; CURSOR_LINE='sh\$ '; typed_edit
+        Y=11; WRAP=1; CURSOR_LINE='sh\$ source ~/.env'; show ''"
+    [ "$output" = '[|sh$ source ~/.env] kept' ] || { echo "$output"; false; }
+    # The same row: the text that the pane did not show stays in the line.
+    rm -f "$d/typed"
+    run bash -c "$stubs; CURSOR_LINE='cmd> '; typed_add 'cmd> ' 'rm -rf'; show ' ~'"
+    [ "$output" = '[cmd> |rm -rf ~] kept' ] || { echo "$output"; false; }
+    # When tmux cannot tell, the record stays.
+    rm -f "$d/typed"
+    run bash -c "$stubs; CURSOR_LINE='sh\$ '; typed_edit
+        tmux_state() { return 1; }; CURSOR_LINE='sh\$ source ~/.env'; show ''"
+    [ "$output" = '[|sh$ source ~/.env] kept' ] || { echo "$output"; false; }
 }
 
 @test "at a shell in front, a pager or menu state from Laya does not skip the gate, and typed text is kept" {
@@ -1345,7 +1429,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         check_pane() { CURSOR_LINE='➜ proj '; PANE_STATE=menu; }
         pane_runs_program() { return 1; }; pane_nested_shell() { return 0; }; shell_line() { return 1; }
         send_gate() { echo \"gate \$1\" >> '$log'; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }
-        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }"
+        send_key() { echo \"key \$1\" >> '$log'; }; send_literal() { echo \"text \$1\" >> '$log'; }
+        tmux_state() { return 1; }"
     run bash -c "$stubs; send_command --key Up; send_command -- ev"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(tr '\n' '|' < "$log")" = 'gate |key Up|gate ev|text ev|' ]
@@ -1402,28 +1487,42 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(tr '\n' '|' < "$log")" = 'text print(1)|key Enter|' ]
 }
 
-@test "nested_shell finds a shell or a remote shell in front, not a fork of the pane shell, a script or a program" {
-    local rows expect
+@test "front_kinds finds a shell or a remote shell in front, not a fork of the pane shell, a script or a program" {
+    # Rows: pid, parent, group, state, arguments. A line of __clux_line runs
+    # in the subshell 200 (a fork of the pane shell 100), and its programs
+    # stay in the group 200.
     check() {
-        run bash -c "source '$TERMINAL'; ps() { printf '100 1 Ss bash --rcfile /d/rc.bash -i\n$1'; }; nested_shell 100"
-        [ "$status" -eq "$2" ] || { echo "$1 -> $status"; false; }
+        run bash -c "source '$TERMINAL'; ps() { printf '100 1 100 Ss bash --rcfile /d/rc.bash -i\n$1'; }; front_kinds 100"
+        [ "${output% *}" = "$2" ] || { echo "$1 -> $output"; false; }
     }
-    check '200 100 S+ bash --rcfile /d/rc.bash -i\n' 1
-    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ python3 -q\n' 1
-    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ /bin/bash ./install.sh\n' 1
-    check '300 100 S+ terraform apply\n' 1
-    check '300 100 S bash\n' 1
-    check '200 100 S+ bash --rcfile /d/rc.bash -i\n300 200 S+ bash\n' 0
-    check '300 100 S+ -zsh\n' 0
-    check '300 100 S+ bash -i --rcfile /tmp/x\n' 0
-    check '300 100 S+ ssh host\n' 0
-    check '300 100 S+ /usr/local/bin/docker exec -it c sh\n' 0
-    check '300 100 S+ python3\n400 300 Ss+ /bin/bash\n' 0
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n' 0
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ python3 -q\n' 0
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ /bin/bash ./install.sh\n' 0
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ terraform apply\n' 0
+    check '300 100 300 S bash\n' 0
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ bash\n' 1
+    check '300 100 300 S+ -zsh\n' 1
+    check '300 100 300 S+ bash -i --rcfile /tmp/x\n' 1
+    check '300 100 300 S+ ssh host\n' 1
+    check '300 100 300 S+ /usr/local/bin/docker exec -it c sh\n' 1
+    check '300 100 300 S+ python3\n400 300 400 Ss+ /bin/bash\n' 1
     # Under a nested shell: sleep does not read the keys, python3 does.
-    check '300 100 S bash\n400 300 S+ sleep 10\n' 0
-    check '300 100 S bash\n400 300 S+ python3\n' 1
-    run bash -c "source '$TERMINAL'; ps() { :; }; nested_shell 100"
-    [ "$status" -eq 0 ]
+    check '300 100 300 S bash\n400 300 400 S+ sleep 10\n' 1
+    check '300 100 300 S bash\n400 300 400 S+ python3\n' 0
+    # A shell with a name that is not in the list has job control: it leads
+    # its own group in front (a copy of bash, exec -a x bash, ksh93).
+    check '200 100 200 S bash --rcfile /d/rc.bash -i\n300 200 300 S+ /tmp/x\n' 1
+    check '200 100 200 S bash --rcfile /d/rc.bash -i\n300 200 300 S+ weird --norc\n' 1
+    check '300 100 300 S+ weird --norc\n' 1
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ rbash\n' 1
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ ksh93\n' 1
+    check '200 100 200 S+ bash --rcfile /d/rc.bash -i\n300 200 200 S+ ysh\n' 1
+    # A program that the user starts at the pane prompt leads its group:
+    # only the user answers it. A known program is still a program.
+    check '300 100 300 S+ terraform apply\n' 1
+    check '300 100 300 S+ python3\n' 0
+    run bash -c "source '$TERMINAL'; ps() { :; }; front_kinds 100"
+    [ "$output" = '1 0' ]
 }
 
 @test "the cursor line goes to its end: rows below the cursor row that the line wraps to are in it" {
@@ -1515,6 +1614,22 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(sort -n "$log" | tail -n 1)" -le 40 ]
 }
 
+@test "wait --pattern starts no guard of a piece after its time limit" {
+    local log="$BATS_TEST_TMPDIR/late"
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'; LAYA_GUARD_BYTES=20
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() {
+            [ \"\$1\" != display-message ] || return 1
+            printf 'line one 1\nline two 2\nline three\nline four\nline five\nline six\n'
+        }
+        # Each guard takes 20 s.
+        laya_guard() { echo x >> '$log'; SECONDS=\$((SECONDS + 20)); GUARD_TEXT=\$(cat \"\$1\"); }
+        wait_command --pattern NEVER --timeout 5"
+    [ "$status" -eq 1 ] || { echo "$status $output"; false; }
+    [ "$(wc -l < "$log" | tr -d ' ')" -eq 1 ]
+}
+
 @test "the laya-serve check of the pid runs one time in a verb, also for calls in a subshell" {
     local count="$BATS_TEST_TMPDIR/ps"
     run bash -c "source '$TERMINAL'; LAYA_PY=/bin/echo; LAYA_CLIENT=x; S_LAYA_PID=\$\$
@@ -1532,7 +1647,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
         check_pane() { CURSOR_LINE='>>> '; PANE_STATE=shell_prompt; SCREEN_ABOVE=; }
         tmux_state() { echo 100; }
-        ps() { echo x >> '$count'; printf '100 1 Ss bash -i\n200 100 S+ bash -i\n300 200 S+ python3\n'; }
+        ps() { echo x >> '$count'; printf '100 1 100 Ss bash -i\n200 100 200 S+ bash -i\n300 200 200 S+ python3\n'; }
         laya_gate() { echo \"gate \$*\"; GATE_LEVEL=safe; GATE_REASON=x; }
         line_unchanged() { :; }; cursor_mid_line() { return 1; }; shell_line() { return 1; }
         send_key() { :; }; send_literal() { :; }

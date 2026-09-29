@@ -353,13 +353,34 @@ laya_wait_health() {
 }
 
 # laya_owns_port PID PORT — PID listens on the loopback TCP PORT. It uses
-# lsof, else ss. [inferred] With neither tool it cannot check and returns 0.
+# lsof, else ss, else /proc. With none of them it cannot check, so it
+# returns 1: the key and the pane text do not go to a port that another
+# process can own.
 laya_owns_port() {
     if command -v lsof >/dev/null 2>&1; then
         lsof -nP -a -p "$1" -iTCP:"$2" -sTCP:LISTEN >/dev/null 2>&1
     elif command -v ss >/dev/null 2>&1; then
         ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1,"
+    elif [ -r "$PROC_ROOT/net/tcp" ]; then
+        laya_proc_owns_port "$1" "$2"
+    else
+        return 1
     fi
+}
+
+# laya_proc_owns_port PID PORT — the Linux /proc form of laya_owns_port: a
+# socket that listens (state 0A) on PORT is a file of PID.
+PROC_ROOT=/proc
+laya_proc_owns_port() {
+    local hex inode fd
+    hex=$(printf '%04X' "$2")
+    for inode in $(awk -v p=":$hex" 'FNR > 1 && $4 == "0A" && substr($2, length($2) - 4) == p { print $10 }' \
+        "$PROC_ROOT/net/tcp" "$PROC_ROOT/net/tcp6" 2>/dev/null); do
+        for fd in "$PROC_ROOT/$1/fd/"*; do
+            [ "$(readlink "$fd" 2>/dev/null)" != "socket:[$inode]" ] || return 0
+        done
+    done
+    return 1
 }
 
 # Spec section 6, step 7: health for at most 60 s, then a warm-up request,
@@ -733,6 +754,15 @@ __clux_sum() {
   __clux_o="${__clux_o%% *}"
   printf '%s' "${__clux_o:0:32}"
 }
+# __clux_at_prompt — the caller of the function that calls this was typed
+# at the prompt of the pane shell: it is not in a subshell and no other
+# function called it. A line from send or run runs in the subshell of
+# __clux_sub, so a line cannot call __clux_run or __clux_line, also when
+# quotes split the name ("__clux"_run) and the text check of terminal.sh
+# does not see it.
+__clux_at_prompt() {
+  [ "$BASH_SUBSHELL" -eq 0 ] && [ -z "${FUNCNAME[2]:-}" ]
+}
 # __clux_run N SUM MODE — run <n>.cmd. terminal.sh types this line after
 # the Laya gate. The line, not a file in the private directory, tells what
 # the gate decided: SUM is the sum of the command that Laya examined, MODE
@@ -747,6 +777,7 @@ __clux_sum() {
 __clux_run() {
   local __clux_n="$1" __clux_s="${2:-}" __clux_m="${3:-}"
   local __clux_d="$__clux_dir" __clux_cmd __clux_rc __clux_i __clux_reason __clux_answer
+  __clux_at_prompt || { printf '%s\n' 'refused: only the companion types __clux_run at the prompt'; return 1; }
   case "$__clux_n" in ''|*[!0-9]*) printf '%s\n' 'refused: this run is not waiting to start'; return 1 ;; esac
   if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/$__clux_n.cmd" ] || [ -e "$__clux_d/$__clux_n.rc" ]; then
     # A run that ended cannot ask a question: its .confirm goes.
@@ -805,6 +836,7 @@ __clux_run() {
 # when it is read.
 __clux_line() {
   local __clux_s="${1:-}" __clux_d="$__clux_dir" __clux_cmd __clux_rc
+  __clux_at_prompt || { printf '%s\n' 'refused: only the companion types __clux_line at the prompt'; return 1; }
   if [ -z "$__clux_s" ] || [ ! -f "$__clux_d/line.cmd" ]; then
     printf '%s\n' 'refused: no line is waiting'
     return 1
@@ -823,7 +855,7 @@ __clux_line() {
 }
 # A line cannot make a new __clux_run that skips the question. exit, exec
 # and logout stay plain functions: the subshell of a command unsets them.
-readonly -f __clux_flush __clux_refuse __clux_clear __clux_carry __clux_keep __clux_load __clux_sub __clux_sum __clux_run __clux_line
+readonly -f __clux_flush __clux_refuse __clux_clear __clux_carry __clux_keep __clux_load __clux_sub __clux_sum __clux_at_prompt __clux_run __clux_line
 EOF
     } > "$D/rc.bash"
 }
@@ -1094,8 +1126,12 @@ laya_guard() {
 
 # reserved_word TEXT — the functions of rc.bash start with __clux_. Only
 # run itself types them, so send and run refuse them with no Laya request.
+# Quotes and backslashes can split the name ("__clux"_run), so the test
+# reads the text with none. It is not complete (${a}ux_run): __clux_run and
+# __clux_line also refuse a call that the prompt did not type.
 reserved_word() {
-    case "$1" in
+    local t=${1//[\"\'\\]/}
+    case "$t" in
         *__clux_*) fail 'refused: __clux_ names are for the companion only' 2 ;;
     esac
 }
@@ -1200,10 +1236,13 @@ send_gate() {
 LINE_HEAD=
 LINE_TYPED=
 
-# $D/typed holds three lines: the cursor line before the last text that
+# $D/typed holds four lines: the cursor line before the last text that
 # send typed, 1 when send sent a key that can edit the line after it typed
-# (else 0), and the text that send typed in this line. send writes it; Enter
-# and C-c remove it.
+# (else 0), the text that send typed in this line, and the row of the
+# cursor (from the top of the history) when the record started. send
+# writes it; Enter and C-c from send remove it. When the user ends the line
+# (Enter in a nested shell), the cursor goes to a new line: the record is
+# old, and the next send removes it.
 #
 # typed_split TEXT — split the cursor line plus TEXT for the gate. LINE_TYPED
 # is the text that clux typed in this line plus TEXT; LINE_HEAD is the start
@@ -1213,17 +1252,20 @@ LINE_TYPED=
 # another way (a key, the user, or the end of the line), all of the line is
 # typed text: the rule then reads more, not less. No fork.
 typed_split() {
-    local before="" strict=0 t="" tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
-    [ ! -f "$D/typed" ] || { IFS= read -r before; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
+    local before="" strict=0 t="" row="" tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
     LINE_HEAD="$CURSOR_LINE"
     LINE_TYPED="$1"
-    if [ -z "$t" ]; then
-        [ "$strict" != 1 ] || { LINE_HEAD=; LINE_TYPED="$CURSOR_LINE$1"; }
-        return 0
-    fi
+    [ -f "$D/typed" ] || return 0
+    { IFS= read -r before; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
     tt="${t%"${t##*[![:space:]]}"}"
     if [ "$strict" != 1 ] && [ -n "$tt" ] && [[ "$line" == *"$tt" ]]; then
         LINE_HEAD="${line:0:$((${#line} - ${#tt}))}"
+    elif typed_new_line "$row"; then
+        rm -f "$D/typed"
+        return 0
+    elif [ -z "$t" ]; then
+        [ "$strict" != 1 ] || { LINE_HEAD=; LINE_TYPED="$CURSOR_LINE$1"; }
+        return 0
     elif [ "$CURSOR_LINE" = "$before" ]; then
         LINE_TYPED="$t$1"
         [ "$strict" != 1 ] || LINE_HEAD=
@@ -1235,18 +1277,60 @@ typed_split() {
 
 # typed_add BEFORE TEXT — send typed TEXT when the cursor line was BEFORE.
 typed_add() {
-    local b="" strict=0 t=""
-    [ ! -f "$D/typed" ] || { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
-    printf '%s\n%s\n%s\n' "$1" "${strict:-0}" "$t$2" > "$D/typed"
+    local b="" strict=0 t="" row
+    if [ -f "$D/typed" ]; then
+        { IFS= read -r b; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
+    else
+        typed_row; row="$TYPED_ROW"
+    fi
+    printf '%s\n%s\n%s\n%s\n' "$1" "${strict:-0}" "$t$2" "$row" > "$D/typed"
 }
 
 # typed_edit — send sent a key that can edit the line: the typed text can
 # be anywhere in the line now. With no typed text (Up at an empty prompt
 # shows a line from the history), all of the line is typed text.
 typed_edit() {
-    local b="" strict t=""
-    [ ! -f "$D/typed" ] || { IFS= read -r b; IFS= read -r strict; IFS= read -r t; } < "$D/typed"
-    printf '%s\n1\n%s\n' "$b" "$t" > "$D/typed"
+    local b="" strict t="" row
+    if [ -f "$D/typed" ]; then
+        { IFS= read -r b; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
+    else
+        typed_row; row="$TYPED_ROW"
+    fi
+    printf '%s\n1\n%s\n%s\n' "$b" "$t" "$row" > "$D/typed"
+}
+
+# typed_row — TYPED_ROW is the row of the cursor from the top of the
+# history, TYPED_HIST the history size and TYPED_Y the cursor row. All are
+# empty when tmux cannot tell.
+TYPED_ROW=
+TYPED_HIST=
+TYPED_Y=
+typed_row() {
+    local pos h y
+    TYPED_ROW=
+    pos=$(tmux_state display-message -p -t "$S_PANE" '#{history_size} #{cursor_y}' 2>/dev/null) || return 1
+    read -r h y <<< "$pos"
+    case "$h" in ''|*[!0-9]*) return 1 ;; esac
+    case "$y" in ''|*[!0-9]*) return 1 ;; esac
+    TYPED_HIST="$h"
+    TYPED_Y="$y"
+    TYPED_ROW=$((h + y))
+}
+
+# typed_new_line ROW — the cursor is not on the line of ROW now: a line
+# ended after send typed (the user pressed Enter), or the screen was
+# cleared. The rows from ROW to the cursor row are one line when the typed
+# text wraps; after an Enter they are two lines or more. Returns 1 when
+# tmux cannot tell: the record then stays, and the gate reads more.
+typed_new_line() {
+    local joined
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    typed_row || return 1
+    [ "$TYPED_ROW" -ne "$1" ] || return 1
+    [ "$TYPED_ROW" -gt "$1" ] || return 0
+    joined=$(tmux_state capture-pane -p -J -t "$S_PANE" -S "$(($1 - TYPED_HIST))" -E "$TYPED_Y") || return 1
+    case "$joined" in *$'\n'*) return 0 ;; esac
+    return 1
 }
 
 # key_is KEY PATTERN... — KEY matches one of the glob PATTERNs, with no case
@@ -1324,11 +1408,7 @@ pane_nested_shell() {
     [ "$PANE_NESTED" = 1 ]
 }
 
-# nested_shell PID and front_program PID — the two answers of front_kinds.
-nested_shell() { local out; out=$(front_kinds "$1"); [ "${out% *}" != 0 ]; }
-front_program() { local out; out=$(front_kinds "$1"); [ "${out#* }" = 1 ]; }
-
-# front_kinds PID — one ps (pid, parent, state, arguments) of the processes
+# front_kinds PID — one ps (pid, parent, group, state, arguments) of the processes
 # below PID (the pane shell) gives "NESTED PROGRAM". #{pane_current_command}
 # is not enough: a line of __clux_line runs in a subshell of the pane shell,
 # so tmux gives bash, not python3. The name is the first argument with no
@@ -1340,12 +1420,21 @@ front_program() { local out; out=$(front_kinds "$1"); [ "${out#* }" = 1 ]; }
 # has the same arguments) and runs no script file (bash ./x.sh), or a tool
 # that gives a shell (ssh, docker exec, kubectl exec, su, tmux). A shell on a
 # pty of its own (pty.spawn, :terminal) is in the front group of that pty.
+# A shell with a name that is not in the list (a copy of bash, exec -a x
+# bash, ksh93) has job control: it leads its own process group in front.
+# A program of a line of __clux_line stays in the group of the subshell.
+# So a front process that leads its group and is not a known program is a
+# nested shell too, when it is not the subshell (a fork of the pane shell,
+# with the same arguments). This includes a program that the user starts
+# at the pane prompt (it leads its group too): only the user answers it.
 # PROGRAM is 1 when a known program is in a front group, and no shell or ssh
 # runs under a process that is not a shell.
 front_kinds() {
-    ps -A -o pid= -o ppid= -o stat= -o args= 2>/dev/null | awk -v root="$1" '
+    ps -A -o pid= -o ppid= -o pgid= -o stat= -o args= 2>/dev/null | awk -v root="$1" '
         function base(w) { sub(/.*\//, "", w); sub(/^-/, "", w); return tolower(w) }
-        function shell(n) { return n ~ /^(bash|zsh|sh|dash|ksh|mksh|oksh|yash|fish|tcsh|csh|ash|busybox|nu|xonsh|elvish|pwsh)$/ }
+        function shell(n) {
+            return n ~ /^(r?bash|zsh|sh|dash|ksh.*|mksh|oksh|yash|fish|tcsh|csh|ash|busybox|nu|nushell|xonsh|elvish|pwsh|osh|ysh|oil|rc|es|ion|murex)$/
+        }
         function remote(n) {
             return n ~ /^(ssh|mosh.*|telnet|rsh|rlogin|docker|podman|nerdctl|kubectl|oc|lxc|incus|su|nsenter|chroot|script|screen|tmux|session-manager-plugin|vagrant|multipass|distrobox|toolbox|machinectl)$/
         }
@@ -1354,11 +1443,12 @@ front_kinds() {
         }
         function nest(p) {
             if (remote(name[p])) return 1
+            if (grp[p] == p && !program(name[p]) && (up[p] != root || args[p] != args[root])) return 1
             return shell(name[p]) && args[p] != args[root] && !(second[p] != "" && second[p] !~ /^-/)
         }
-        { a = $4; for (i = 5; i <= NF; i++) a = a " " $i
-          up[$1] = $2; args[$1] = a; front[$1] = ($3 ~ /\+/)
-          name[$1] = base($4); second[$1] = (NF >= 5 ? $5 : "") }
+        { a = $5; for (i = 6; i <= NF; i++) a = a " " $i
+          up[$1] = $2; grp[$1] = $3; args[$1] = a; front[$1] = ($4 ~ /\+/)
+          name[$1] = base($5); second[$1] = (NF >= 6 ? $6 : "") }
         END {
             if (!(root in up)) { print "1 0"; exit }
             nested = 0; found = 0; inner = 0
@@ -2163,7 +2253,8 @@ add_seen_lines() {
 # and held_lines cannot line it up. Adds the held lines to held and tests
 # the pattern (value) on the text that the pattern can see: both are locals
 # of wait_command. Sets FRESH_FOUND=1 on a match. Returns 6 when a guard
-# fails.
+# fails, and 1 at the DEADLINE: a guard can take 15 s, so none starts
+# after the time limit of the wait (spec section 11).
 FRESH_FOUND=0
 guard_fresh() {
     local rest chunk sep=$'\n\001\n'
@@ -2171,6 +2262,7 @@ guard_fresh() {
     rest=$(printf '%s\n' "$1" | LC_ALL=C awk -v lim="$LAYA_GUARD_BYTES" '
         { n = length($0) + 1; if (size && size + n > lim) { print "\001"; size = 0 } print; size += n }')
     while [ -n "$rest" ]; do
+        [ "$SECONDS" -lt "$2" ] || return 1
         chunk="${rest%%"$sep"*}"
         if [ "$chunk" = "$rest" ]; then rest=; else rest="${rest#*"$sep"}"; fi
         laya_guard <(printf '%s\n' "$chunk") 1 || return 6
@@ -2301,21 +2393,25 @@ wait_command() {
                         if [ -z "$fresh" ]; then
                             sum="$screen"
                             [ -z "$hist_now" ] || hist="$hist_now"
-                        elif [ "$SECONDS" -ge "$deadline" ]; then
-                            # A guard can take 15 s: none starts after the
-                            # time limit (spec section 11).
-                            return 1
-                        elif guard_fresh "$fresh"; then
-                            sum="$screen"
-                            [ -z "$hist_now" ] || hist="$hist_now"
-                            # Only the lines of the last guarded capture:
-                            # the set does not grow over a long wait.
-                            seen=$'\001clux-seen'$'\n'"$screen"
-                            guard_fails=0
-                            [ "$FRESH_FOUND" -eq 0 ] || return 0
                         else
-                            guard_fails=$((guard_fails + 1))
-                            [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
+                            guard_fresh "$fresh" "$deadline"
+                            case $? in
+                                0)
+                                    sum="$screen"
+                                    [ -z "$hist_now" ] || hist="$hist_now"
+                                    # Only the lines of the last guarded
+                                    # capture: the set does not grow over a
+                                    # long wait.
+                                    seen=$'\001clux-seen'$'\n'"$screen"
+                                    guard_fails=0
+                                    [ "$FRESH_FOUND" -eq 0 ] || return 0
+                                    ;;
+                                1) return 1 ;;
+                                *)
+                                    guard_fails=$((guard_fails + 1))
+                                    [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
+                                    ;;
+                            esac
                         fi
                     fi
                 fi

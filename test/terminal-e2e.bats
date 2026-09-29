@@ -1134,9 +1134,9 @@ pane_shows() {
     run "$TERMINAL" send --enter -- "eval 'ls() { echo HIJACKED; }'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     "$TERMINAL" wait --timeout 5 --idle
-    # A quote split gets past each word rule: the line still runs in a
+    # A split name gets past each word rule: the line still runs in a
     # subshell, and __clux_run is read-only.
-    run "$TERMINAL" send --enter -- 'e""val "__clu""x_run"$'"'"'\x28\x29 { true; }'"'"
+    run "$TERMINAL" send --enter -- 'a=__clu; e""val "${a}x_run"$'"'"'\x28\x29 { true; }'"'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     "$TERMINAL" wait --timeout 5 --idle
     run "$TERMINAL" send -- 'echo "open'
@@ -1299,6 +1299,39 @@ pane_shows() {
     "$TERMINAL" send --key C-d >/dev/null
     sleep .5
     [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+}
+
+@test "a bash with a name that is not a shell name is a nested shell too" {
+    ln -s "$(command -v bash)" "$BATS_TEST_TMPDIR/xq"
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "env PS1='odd\$ ' '$BATS_TEST_TMPDIR/xq' --norc --noprofile" >/dev/null
+    pane_shows 'odd$'
+    run --separate-stderr "$TERMINAL" send --enter -- "touch '$BATS_TEST_TMPDIR/ran'"
+    [ "$status" -eq 2 ] || { echo "$status $stderr"; false; }
+    [ "$stderr" = 'at a nested shell prompt, only the user ends a line: send the text with no --enter, then ask the user to press Enter in the pane' ]
+    "$TERMINAL" send --key C-d >/dev/null
+    sleep .5
+    [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+}
+
+@test "after the user ends a line in a nested shell, the next send does not read the old text or the prompt" {
+    "$TERMINAL" open >/dev/null
+    "$TERMINAL" send --enter -- "env PS1='source\$ ' bash --norc --noprofile" >/dev/null
+    pane_shows 'source$'
+    run "$TERMINAL" send -- 'echo one'
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # A key that edits the line: the shell rule then reads all of the line.
+    run "$TERMINAL" send --key End
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # The user presses Enter.
+    "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" Enter
+    pane_shows 'one'
+    sleep .3
+    # The prompt word source is not text that clux typed.
+    run --separate-stderr "$TERMINAL" send -- 'echo two'
+    [ "$status" -eq 0 ] || { echo "$status $stderr"; false; }
+    "$TERMINAL" send --key C-c >/dev/null
+    "$TERMINAL" send --key C-d >/dev/null
 }
 
 @test "a line that ends after Home on a wrapped line goes whole" {
