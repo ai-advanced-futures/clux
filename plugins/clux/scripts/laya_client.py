@@ -13,16 +13,19 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
                                   screen. Each command goes to Laya.
-                                  --shell: the line is at the prompt of a
-                                  nested shell; a line that can change that
-                                  shell is dangerous.
+                                  --shell (with --screen): the line is at the
+                                  prompt of a nested shell, and it comes as two
+                                  input lines: the start of the line (the
+                                  prompt), then the text that clux typed. Laya
+                                  gets them as one line. Typed text that can
+                                  change that shell is dangerous.
   output [--render] [--cut] [--limit S]
                                   {"text": "...", "held": [{"kind": "...", "lines": k}]}
                                   --render prints "held=<k>", then the text.
                                   --cut: the text can start inside a key.
   pane                            {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
 
-Helpers that do not ask Laya: checkpoint, port, version,
+Helpers that do not ask Laya: checkpoint, ready, port, version,
 pip-install SECONDS PACKAGE, scrub.
 
 Exit codes: 0 a decision; 1 Laya is not available or gave a bad answer;
@@ -156,9 +159,9 @@ class Remote:
             raise Fail(1)
         return min(REQUEST_LIMIT, left)
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, key=True):
         headers = {"Content-Type": "application/json"}
-        if self.key:
+        if key and self.key:
             headers["Authorization"] = "Bearer " + self.key
         data = None if body is None else json.dumps(body).encode("utf-8")
         request = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
@@ -179,7 +182,9 @@ class Remote:
             raise Fail(1)
 
     def health(self):
-        return self.call("GET", "/health")
+        # /health of laya-serve needs no key. Before open knows that its own
+        # process listens on the port, the key must not go to that port.
+        return self.call("GET", "/health", key=False)
 
     def predict(self, state, questions, model=None):
         body = {"state": state, "questions": questions}
@@ -267,16 +272,33 @@ def cmd_health(args):
 LEVELS = ("safe", "caution", "dangerous")
 
 
-def ask_whole_or_alone(runner, pol, whole, alone):
-    """Ask with the whole state. When Laya cuts it and there is a shorter
-    state with only the line (alone), ask again with that. A state that
+def ask_whole_or_alone(runner, pol, whole, *shorter):
+    """Ask with the whole state. When Laya cuts it, ask again with each
+    shorter state in turn (the line alone, then less of it). A state that
     Laya still cuts is refused (exit 3): Laya would examine only its start."""
     answer = ask(runner, pol, whole)
-    if alone is not None and is_cut(answer, pol):
-        answer = ask(runner, pol, alone)
+    for state in shorter:
+        if not is_cut(answer, pol):
+            break
+        answer = ask(runner, pol, state)
     if is_cut(answer, pol):
         raise Fail(3)
     return answer
+
+
+def split_screen(text, cursor_keep, above_keep, rows=1):
+    """Split the input of command --screen and pane. Only the last newline
+    goes: a blank last line stays a line. Returns the last ROWS lines, each
+    with only its last CURSOR_KEEP characters (all when None), and the
+    lines above them, each with only its last ABOVE_KEEP characters."""
+    text = text[:-1] if text.endswith("\n") else text
+    lines = text.split("\n")
+    if len(lines) < rows:
+        raise Fail(2)
+    last = lines[len(lines) - rows:]
+    if cursor_keep is not None:
+        last = [line[-cursor_keep:] for line in last]
+    return last, [line[-above_keep:] for line in lines[:len(lines) - rows]]
 
 
 def level_of(answer, pol):
@@ -302,33 +324,43 @@ def level_of(answer, pol):
 # later lines (spec section 7). The gate examines each line alone, so such
 # a line is dangerous. The rule reads the words anywhere in the line, also
 # inside quotes. It is not complete: quotes can split a word (e""val), and
-# only the Laya score stops that.
+# only the Laya score stops that. It reads only the text that clux typed,
+# not the prompt (a directory named source in the prompt is not a word).
 SHELL_WORDS = re.compile(
     r"\(\s*\)"
     r"|(^|[^A-Za-z0-9_.-])(eval|source|trap|bind|enable|alias|unalias|typeset|declare"
     r"|export|readonly|set|shopt|unset|function|builtin|command|hash|exec|read|mapfile"
-    r"|readarray|exit|logout)(?![A-Za-z0-9_-])"
+    r"|readarray|exit|logout|complete|compgen|bindkey|setopt|unsetopt|zle|autoload|zmodload)"
+    r"(?![A-Za-z0-9_-])"
     r"|(^|[^A-Za-z0-9_.-])printf\s+(-\S+\s+)*-v"
     r"|(^|[;&|(){}`])\s*\.\s"
     r"|[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?="
     # Each name that __clux_carry in terminal.sh does not carry back from
     # run, and PATH and the loader names (a test keeps the two lists equal).
-    r"|(^|[^A-Za-z0-9_])(PATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
+    r"|(^|[^A-Za-z0-9_])(PATH|FPATH|PROMPT_COMMAND|BASH[A-Z_]*|ENV|PS[0-4]|IFS|SHELLOPTS"
     r"|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD"
-    r"|OLDPWD|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    r"|OLDPWD|MAIL|MAILPATH|MAILCHECK|FUNCNEST|LD_[A-Z_]*|DYLD_[A-Z_]*)\+?="
+    # The zsh arrays that PATH, FPATH and CDPATH follow, as a word of their
+    # own (not --module-path=).
+    r"|(^|[\s;&|(){}`])(path|fpath|cdpath)\+?="
     r"|<<")
 
 
 def cmd_command(args):
     if any(arg not in ("--screen", "--shell") for arg in args):
         raise Fail(2)
+    shell = "--shell" in args
+    if shell and "--screen" not in args:
+        raise Fail(2)
     text = read_stdin()
+    typed = None
     if "--screen" in args:
-        # Only the last newline goes: a blank input line stays the line.
-        lines = (text[:-1] if text.endswith("\n") else text).split("\n")
-        command = lines[-1]
         # The screen is only context: each line keeps its end, as in pane.
-        screen = "\n".join(line[-PANE_ABOVE:] for line in lines[:-1])
+        last, above = split_screen(text, None, PANE_ABOVE, 2 if shell else 1)
+        if shell:
+            typed = last[1]
+        command = "".join(last)
+        screen = "\n".join(above)
         state = {"line": command, "screen": screen}
         # A blank line in a program can accept a default ([Y/n]), so it goes
         # to Laya with the screen above it.
@@ -343,13 +375,13 @@ def cmd_command(args):
     # long state and examines only its start, so a cut state is refused.
     # When Laya cuts the line and the screen, the line goes alone: a long
     # screen must not stop a short line. A blank line needs its screen.
-    alone = None
+    shorter = []
     if isinstance(state, dict) and state["screen"] and command.strip():
-        alone = {"line": command, "screen": ""}
+        shorter.append({"line": command, "screen": ""})
     pol = policy("command")
-    answer = ask_whole_or_alone(remote(GATE_LIMIT), pol, state, alone)
+    answer = ask_whole_or_alone(remote(GATE_LIMIT), pol, state, *shorter)
     level, reason = level_of(answer, pol)
-    if "--shell" in args and SHELL_WORDS.search(command):
+    if shell and SHELL_WORDS.search(typed):
         level, reason = "dangerous", "can change the shell for later commands"
     print(json.dumps({"level": level, "reason": reason}))
 
@@ -357,6 +389,7 @@ def cmd_command(args):
 PANE_STATES = ("credential", "yes_no", "menu", "pager", "shell_prompt", "other")
 PANE_CURSOR = 400          # the end of the cursor line that goes to Laya
 PANE_ABOVE = 200           # the end of each line above it
+PANE_SHORT = 100           # the end of the cursor line when Laya cuts PANE_CURSOR
 PAIR_ABOVE = 200           # the end of the line above in a pair of the line check
 
 
@@ -365,21 +398,21 @@ def cmd_pane(args):
     lines above it. [inferred] An empty screen is "other" with no request."""
     if args:
         raise Fail(2)
-    # Only the last newline goes: a blank cursor line stays the last line.
     text = read_stdin()
-    text = text[:-1] if text.endswith("\n") else text
     if not text.strip():
         print(json.dumps({"state": "other"}))
         return
     # Laya cuts a long state from the right, and the prompt is at the end of
     # the cursor line. Thus each line keeps only its end: PANE_CURSOR
     # characters of the cursor line and PANE_ABOVE of each line above it.
-    # When Laya still cuts the text, the cursor line goes alone.
-    lines = text.split("\n")
-    cursor = lines[-1][-PANE_CURSOR:]
-    above = [line[-PANE_ABOVE:] for line in lines[:-1]]
+    # When Laya still cuts the text, the cursor line goes alone, then only
+    # its last PANE_SHORT characters.
+    (cursor,), above = split_screen(text, PANE_CURSOR, PANE_ABOVE)
+    shorter = [cursor] if above else []
+    if len(cursor) > PANE_SHORT:
+        shorter.append(cursor[-PANE_SHORT:])
     answer = ask_whole_or_alone(remote(GATE_LIMIT), policy("pane"),
-                                "\n".join(above + [cursor]), cursor if above else None)
+                                "\n".join(above + [cursor]), *shorter)
     print(json.dumps({"state": answer.choice("state", PANE_STATES)}))
 
 
@@ -767,6 +800,18 @@ def cmd_checkpoint(args):
     print(path)
 
 
+def cmd_ready(args):
+    """Exit 0 when this Python can import laya and the English checkpoint is
+    in the Hugging Face cache: the install check of open in one process."""
+    if args:
+        raise Fail(2)
+    try:
+        import laya.structured  # noqa: F401
+    except ImportError:
+        raise Fail(1, message=False)
+    cmd_checkpoint([])
+
+
 def cmd_port(args):
     """A free TCP port on 127.0.0.1."""
     if args:
@@ -856,6 +901,7 @@ SUBCOMMANDS = {
     "pane": cmd_pane,
     "output": cmd_output,
     "checkpoint": cmd_checkpoint,
+    "ready": cmd_ready,
     "port": cmd_port,
     "check-url": cmd_check_url,
     "after-cursor": cmd_after_cursor,

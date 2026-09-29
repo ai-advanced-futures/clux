@@ -772,3 +772,69 @@ with open(sys.argv[1], encoding="utf-8") as log:
 PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
+
+@test "health sends no API key: the key goes only in a request to the server" {
+    start_fake_laya '{}'
+    run client health
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FAKE_LAYA_LOG.health")" = none ]
+    run client pane <<<'Enter token:'
+    [ "$status" -eq 0 ]
+}
+
+@test "command --shell: the rule reads only the typed text, and Laya gets the prompt and the typed text as one line" {
+    start_fake_laya '{}'
+    run --separate-stderr client command --screen --shell < <(printf 'user@host:~/source$ \nls\n')
+    [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ]
+    run python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["state"]["line"])' "$FAKE_LAYA_LOG"
+    [ "$output" = 'user@host:~/source$ ls' ]
+    # . at the start of the typed text, after a nested prompt.
+    run --separate-stderr client command --screen --shell < <(printf 'top\nsh-5.2$ \n. ./evil\n')
+    [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ]
+    # --shell needs --screen and two input lines.
+    run --separate-stderr client command --shell <<<'ls'
+    [ "$status" -eq 2 ]
+    run --separate-stderr client command --screen --shell <<<'ls'
+    [ "$status" -eq 2 ]
+}
+
+@test "command --shell: completion, zsh words, MAIL, FUNCNEST and the zsh path arrays are dangerous" {
+    start_fake_laya '{}'
+    local cmd
+    for cmd in 'complete -C "touch /tmp/x" ls' 'compgen -C x y' "bindkey -s '^M' x" 'setopt promptsubst' \
+        'unsetopt nomatch' 'zle -N x' 'autoload -U x' 'zmodload zsh/system' 'path+=(/tmp)' 'fpath=(/tmp $fpath)' \
+        'cdpath=(/tmp)' 'MAILPATH=/tmp/m' 'MAIL=/tmp/m' 'MAILCHECK=0' 'FUNCNEST=1' 'FPATH=/tmp'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "dangerous", "reason": "can change the shell for later commands"}' ] \
+            || { echo "$cmd: $output"; false; }
+    done
+    for cmd in 'java --module-path=/x -m y' 'EMAIL=a@b ./send' 'ls mypath=1'; do
+        run --separate-stderr client command --screen --shell < <(printf 'user@host$ \n%s\n' "$cmd")
+        [ "$output" = '{"level": "safe", "reason": "destructive 0.00"}' ] || { echo "$cmd: $output"; false; }
+    done
+}
+
+@test "pane: a cursor line that Laya cuts alone goes again with only its end" {
+    local line end
+    line="$(printf 'x%.0s' $(seq 1 450))Enter token:"
+    end="${line: -100}"
+    start_fake_laya "{\"rules\": [{\"min_length\": 101, \"input_tokens\": 512},
+        {\"equals\": \"$end\", \"answers\": {\"state\": \"credential\"}}]}"
+    run client pane <<<"$line"
+    [ "$status" -eq 0 ]
+    [ "$output" = '{"state": "credential"}' ]
+}
+
+@test "ready: one process checks the laya import and the checkpoint" {
+    run --separate-stderr env HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$CLUX_LAYA_PYTHON" "$LAYA_CLIENT" ready
+    [ "$status" -eq 1 ] && [ -z "$stderr" ]
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    run env HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$CLUX_LAYA_PYTHON" "$LAYA_CLIENT" ready
+    [ "$status" -eq 0 ]
+}
+
+@test "command and pane split their input with one function" {
+    local py="$BATS_TEST_DIRNAME/../plugins/clux/scripts/laya_client.py"
+    [ "$(grep -c 'split_screen(' "$py")" -eq 3 ]
+    [ "$(grep -c 'if text.endswith("\\n") else text' "$py")" -eq 1 ]
+}

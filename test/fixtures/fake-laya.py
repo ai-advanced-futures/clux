@@ -162,6 +162,12 @@ class Handler(BaseHTTPRequestHandler):
         # The real /health needs no key, so the fake needs none.
         if self.path != "/health":
             return self.reply(404, {"detail": "Not Found"})
+        path = os.environ.get("CLUX_FAKE_LAYA_LOG")
+        if path:
+            # A test reads which key a health request sent.
+            with LOCK:
+                with open(path + ".health", "a", encoding="utf-8") as handle:
+                    handle.write((self.headers.get("Authorization") or "none") + "\n")
         code = settings().get("health_status", 200)
         return self.reply(code, HEALTH if code == 200 else {"detail": "down"})
 
