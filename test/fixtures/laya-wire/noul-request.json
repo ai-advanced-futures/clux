@@ -1,0 +1,1 @@
+{"state": "rm -rf ~/dev", "model": "english", "questions": {"destructive": {"type": "noul", "instructions": "Would the command delete data, overwrite files, or change the system in a way that is hard to undo?"}}}

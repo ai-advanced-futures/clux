@@ -1,0 +1,1 @@
+{"model":"laya-rl-agent","answers":{"destructive":{"type":"noul","noul":0.8601,"confidence":0.8601,"answer_confidence":0.8601,"action":{"act_probability":1.0}}},"usage":{"input_tokens":54,"output_tokens":0},"routing":{"model":"english","repo":"convaiinnovations/laya","reason":"explicit model='english'","detection":null,"workflow":null}}

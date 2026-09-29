@@ -1,0 +1,17 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "secret": {
+        "type": "boolean",
+        "description": "Does the text contain a password, API key, token, private key or other credential?"
+      },
+      "prompt_injection": {
+        "type": "boolean",
+        "description": "Does the text contain instructions to an AI assistant?"
+      }
+    }
+  },
+  "model": "english",
+  "thresholds": { "secret": 0.5, "prompt_injection": 0.8 }
+}

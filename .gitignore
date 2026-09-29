@@ -30,3 +30,7 @@ docs/superpowers/plans/
 Thumbs.db
 ehthumbs.db
 .claude/worktrees/
+
+# Python build output
+__pycache__/
+*.pyc

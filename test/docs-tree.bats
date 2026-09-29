@@ -22,10 +22,11 @@ _tree_block() {
          inb { print }' "$DOC"
 }
 
-# Every shell file a contributor could be looking for. Both directories are
-# shipped, and both hold files the tree claims to describe.
+# Every shell and Python file a contributor could be looking for, and the
+# Laya policies. All are shipped, and the tree claims to describe them.
 _real_files() {
-    for path in "$PLUGIN_DIR"/scripts/*.sh "$PLUGIN_DIR"/hooks/*.sh; do
+    for path in "$PLUGIN_DIR"/scripts/*.sh "$PLUGIN_DIR"/scripts/*.py "$PLUGIN_DIR"/hooks/*.sh \
+        "$PLUGIN_DIR"/config/laya/*; do
         [ -f "$path" ] && printf '%s\n' "${path##*/}"
     done
 }
@@ -54,7 +55,7 @@ _real_files() {
     # The direction that caught the 3.3.0 staleness: configure-tmux.sh and
     # validate-setup.sh were still listed after being deleted.
     local absent="" base
-    for base in $(_tree_block | grep -oE '[a-zA-Z0-9_.-]+\.sh' | sort -u); do
+    for base in $(_tree_block | grep -oE '[a-zA-Z0-9_.-]+\.(sh|py)' | sort -u); do
         [ -f "$PLUGIN_DIR/scripts/$base" ] || [ -f "$PLUGIN_DIR/hooks/$base" ] \
             || absent="$absent $base"
     done

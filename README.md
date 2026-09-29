@@ -9,6 +9,7 @@ tmux status bar notifications for Claude Code — know when tasks finish or need
 - **jq** (recommended) — for JSON parsing; grep fallback available
 - **flock** (recommended) — for file locking; mkdir fallback available
 - **~/.config/tmux/** — writable directory for notification queue
+- **Python** ≥ 3.10 — only for the companion terminal (`clux:terminal`) and its Laya guard
 
 ## Install (Claude Code Plugin)
 
@@ -202,6 +203,30 @@ seconds:
 ```
 
 clux supplies this tool. Use it if you want it. `/clux:setup` does not change your `#()` jobs.
+
+## Companion terminal (clux:terminal)
+
+The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it, and the pane shell keeps its directory and its exported variables from one command to the next.
+
+From 4.0.0, the companion needs Laya, a local model. Laya examines each command before it runs, each line that Claude sends with Enter, the prompt in the pane, and all pane text that goes back to Claude:
+
+- A dangerous command runs only after you type `y` in the pane.
+- A line with a secret goes back to Claude as `[held by laya: secret]`. The raw text stays in the pane.
+- Text that Laya cannot examine in its time limit goes back as `[held by laya: not_examined, <k> lines]`. On a machine with no GPU (no MPS or CUDA), a large output takes more time, so more lines can be held this way.
+- When Laya does not answer, the companion stops with exit code 6 and sends no pane text to Claude.
+- Each command and each line that Claude ends at the companion prompt runs in a subshell. Only the directory and the exported variables persist. A command that Laya passed can still write any file of your user; Laya is the only check before it runs.
+- When the Laya server that the companion started stops, `open` again starts a new one.
+
+Install Laya one time. Claude asks you before it runs the install:
+
+```bash
+<plugin>/scripts/terminal.sh laya install
+<plugin>/scripts/terminal.sh laya status
+```
+
+The install makes a Python venv in `~/.local/share/clux/laya` with `laya` 0.3.21 and PyTorch, and downloads the English checkpoint to the Hugging Face cache. Each Claude session starts its own Laya server, which uses about 1–2 GB of memory. To use a server that you start, set `CLUX_LAYA_URL` (a loopback host only) and `CLUX_LAYA_KEY`.
+
+The policies are in `plugins/clux/config/laya/`. There is no user copy: a command in the companion can write the files of the user, so a user copy could turn off the checks.
 
 ## Troubleshooting
 

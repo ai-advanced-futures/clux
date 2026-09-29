@@ -1,0 +1,13 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "state": {
+        "enum": ["credential", "yes_no", "menu", "pager", "shell_prompt", "other"],
+        "description": "What does the last line of this terminal screen wait for? credential: a password, passphrase, code or token. yes_no: a yes or no answer. menu: a selection from a list. pager: a key to move through text. shell_prompt: a shell command. other: none of these."
+      }
+    }
+  },
+  "model": "english",
+  "thresholds": {}
+}

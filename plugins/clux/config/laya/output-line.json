@@ -1,0 +1,13 @@
+{
+  "schema": {
+    "type": "object",
+    "properties": {
+      "secret": {
+        "type": "boolean",
+        "description": "Does the text contain a password, API key, token, private key or other credential?"
+      }
+    }
+  },
+  "model": "english",
+  "thresholds": { "secret": 0.75 }
+}
