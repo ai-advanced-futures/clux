@@ -92,7 +92,7 @@ terminal.sh run -- 'git status --short'
 - For `run`, the output is not a TTY. For a command that needs a TTY (ssh, vim, a password prompt), use `send`.
 - For a command that starts a background process, use `send`. With `run`, you get the note `output may be incomplete`. The process keeps running, but it is a job of a subshell: `fg`, `bg` and `jobs` in a later line do not see it. Use `kill` with its process ID to stop it.
 - `exit` in a command ends only that command (for example `cd dir || exit 1`), not the companion.
-- The command must be one line. A newline, a tab or another control character gives exit code 2.
+- The command must be one line. A newline, a tab, another control character or a Unicode format character (for example a bidi control such as U+202E, or a zero width character such as U+200B or U+FEFF) gives exit code 2 and `run command must not contain a control character or a Unicode format character: give one line`. Such a character can hide or reorder a part of the command in the question to the user. An emoji that is joined from more than one emoji (with U+200D) is refused too: write the command without it.
 - Each command goes to Laya, also `ls` and `echo`.
 - Laya examines at most about 500 tokens. A longer command gives exit code 2 and `laya: the command is too long to examine: make it shorter`. Nothing runs. Make the command shorter, for example with a script file.
 
@@ -100,9 +100,9 @@ terminal.sh run -- 'git status --short'
 
 - When Laya finds a command dangerous, `run` does not start it. The pane shows `laya: dangerous (<reason>)`, the command, and the question `run? [y/N]`. Only the user answers it, in the pane.
 - `run` waits for the answer until its time limit ends. Then you get exit code 1. Tell the user to answer the question in the pane. Then use `terminal.sh wait --run <n>` with a long `--timeout`.
-- While the question is open, `send`, `read`, `wait --idle` and `wait --pattern` give exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. You cannot type the answer. Only the interrupt keys work: `send --key C-c` declines the run.
+- While the question is open, `send`, `read`, `wait --idle` and `wait --pattern` give exit code 3 and the message `laya confirmation in the companion pane: the user must answer it there`. A `wait --idle` or `wait --pattern` that runs when the question opens stops with the same exit code 3. You cannot type the answer. Only the interrupt keys work: `send --key C-c` declines the run.
 - When the user does not answer `y`, you get `laya: declined by the user` and `exit=126`. Do not try the same command in a different form. Ask the user what to do.
-- Use `run` for `cd`, `export` and `source`: the directory and the exported variables persist. When the output ends with `clux: the directory and the exported variables did not come back`, the command set its own EXIT trap and ended with `exit`: run `cd` and `export` again. Do not change `PATH` or another exported variable to change how a later command works: Laya examines each command alone and cannot see such a change.
+- Use `run` for `cd`, `export` and `source`: the directory and the exported variables persist. When the output ends with `clux: the directory and the exported variables did not come back`, the command set its own EXIT trap and ended with `exit`: run `cd` and `export` again. An EXIT trap that the command sets (for example `trap "rm -rf $tmp" EXIT`) runs one time when the command ends, as in a plain subshell. Do not change `PATH` or another exported variable to change how a later command works: Laya examines each command alone and cannot see such a change.
 - When you get `run <n> did not start: the typed line changed` and `exit=126`, text in the pane came before the typed line, and `send --key C-c` ended the run. Nothing ran. Use `read`, then run again.
 
 ## Held output
@@ -123,7 +123,7 @@ terminal.sh run -- 'git status --short'
 
 Laya examines each `send` before it goes to the pane: text with or without `--enter`, and each `--key` except `C-c`, `C-d`, `C-z`, `C-\` and `Escape`. In a pager or a menu, the keys `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp` and `PageDown` also go to the pane with no Laya check of the line. The line is the text on the cursor line and your text, so text that you send in pieces is examined as one line. This is also true in other programs in the pane, for example `ssh`, `python3` or `psql`.
 
-- The cursor must be at the end of the line, in the shell and in other programs. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. An emoji with a skin tone, a joined emoji or a zero-width character on the line can also cause this refusal by mistake: send `--key C-c`, then send the full line again. When the script cannot read the cursor, you get exit code 5 and `cannot read the cursor position: try again`.
+- The cursor must be at the end of the line, in the shell and in other programs. After `Home` or `Left`, text gives exit code 2 and `the cursor is not at the end of the line: send --key End or --key C-c first`. An emoji with a skin tone, or a joined emoji or a zero-width character that the user or a program put on the line, can also cause this refusal by mistake: send `--key C-c`, then send the full line again. When the script cannot read the cursor, you get exit code 5 and `cannot read the cursor position: try again`.
 - At the clux prompt, a line that `send` ends runs in a subshell, the same as `run`: the directory and the exported variables persist, and other changes do not. The pane shows `$ <line>` before the output.
 - At the clux prompt, only `Enter`, the edit keys and the interrupt keys except `Escape` work with `--key`. The edit keys are `Left`, `Right`, `Home`, `End`, `BSpace`, `DC`, `Delete`, `C-u` and `C-k`. Use `Home` to go to the start of the line and `End` to go to its end. `Tab`, `Up`, `Down`, `C-a`, `C-e`, `C-w`, `M-` keys and all other keys give exit code 2 and `at the clux prompt, only Enter and keys that edit the line work: <key>: use send --enter or run`.
 - When the clux shell is in front and the clux prompt is not on the screen (for example, a typed line that is longer than the pane pushed the prompt up), `send` gives exit code 5 and `the clux prompt is not on the screen: send --key C-c, then try again`. Only the interrupt keys work then. Send `--key C-c`. For a long line, use `run`.
@@ -132,7 +132,7 @@ Laya examines each `send` before it goes to the pane: text with or without `--en
 - When the pane shell waits for the rest of a command (its continuation prompt), `send` gives exit code 5 and `the pane shell waits for the rest of a command: send --key C-c, then send the full command on one line`.
 - At a shell prompt, text that you send with no `--enter` must show on the cursor line. When the pane does not show it and the line does not change (for example after `stty -echo`), you get exit code 3 and `text that the pane does not show is on the line: send --key C-c first`. Until you send `--key C-c`, each `send` and `run` gives the same exit code 3.
 
-- The text of `send` must not contain a control character, for example a newline, a carriage return or a tab (exit code 2). Send one line at a time with `--enter`, or send the key with `--key` (for example `--key Tab` in `python3`; the clux prompt and a nested shell refuse `Tab`).
+- The text of `send` must not contain a control character (for example a newline, a carriage return or a tab) or a Unicode format character (for example a bidi control such as U+202E, or a zero width character such as U+200B or U+FEFF). You get exit code 2 and `send text must not contain a control character or a Unicode format character: use --enter or --key`. A format character can make the line on the pane read differently from the line that runs. An emoji that is joined from more than one emoji (with U+200D) is refused too: send the text without it, or ask the user to type it. Send one line at a time with `--enter`, or send the key with `--key` (for example `--key Tab` in `python3`; the clux prompt and a nested shell refuse `Tab`).
 - When Laya finds a risk, `send` prints `laya: caution (<reason>)` and sends the line.
 - A line that is too long for Laya gives exit code 2 and `laya: the line is too long to examine: make it shorter`. Nothing goes to the pane.
 - A cursor line that is too long for the Laya pane check gives exit code 2 and `laya: the cursor line is too long to examine: send --key C-c`.
@@ -149,7 +149,7 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 - Laya and the patterns in `config/credential-patterns.txt` find credential prompts. Exit code 3 tells you that a credential prompt is in the pane. Tell the user to answer it in the pane. Then use `terminal.sh wait --run <n>` with a long `--timeout`.
 - After a credential prompt, the run is secret. `wait --run <n>` gives only `exit=<rc>`, and no output.
 - Use `run --secret` when the output can contain a secret, for example a token. You get only `exit=<rc>`.
-- After a secret run, `read` and `wait --pattern` give exit code 3. The next plain `run` clears the screen and the history. After that run, `read` operates again.
+- After a secret run, `read` and `wait --pattern` give exit code 3. A `wait --pattern` that runs also stops with exit code 3 when another call starts a secret run. The next plain `run` clears the screen and the history. After that run, `read` operates again.
 
 ## Exit codes
 
