@@ -1149,6 +1149,22 @@ pane_shows() {
     "$TERMINAL" send --key C-c >/dev/null
 }
 
+@test "text right of the cursor does not join the __clux_line that send types" {
+    "$TERMINAL" open >/dev/null
+    run "$TERMINAL" send -- "true; trap 'echo TRAPPED' DEBUG"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Home
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    run "$TERMINAL" send --key Enter
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    "$TERMINAL" wait --timeout 5 --idle
+    run "$TERMINAL" run -- 'echo after'
+    [[ "$output" == *$'\nafter\n'* ]] || { echo "$output"; false; }
+    [[ "$output" != *TRAPPED* ]] || { echo "$output"; false; }
+    run "$TERMINAL" read
+    [[ "$output" != *refused* ]] || { echo "$output"; false; }
+}
+
 @test "at the clux prompt send refuses Escape and keys that do not edit the line" {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" send --key Escape

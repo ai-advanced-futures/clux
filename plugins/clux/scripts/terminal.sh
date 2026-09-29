@@ -339,10 +339,13 @@ laya_wait_ready() {
 # laya_restart_if_down — open on a live companion: when the Laya server that
 # open started does not answer (it ended, or the user stopped it), start a
 # new one, so open again is enough after "close and open the companion". A
-# server that the user started (CLUX_LAYA_URL, no laya_pid) is not changed.
+# server that the user started (CLUX_LAYA_URL, no laya_pid) is not changed:
+# when it does not answer, open exits 6.
 laya_restart_if_down() {
-    [ -n "$S_LAYA_PID" ] || return 0
+    # A companion that clux 3.x opened has no Laya server and an old rc.bash.
+    [ -n "$S_LAYA_URL" ] || fail 'laya not available: this companion has no Laya server: use close, then open' 6
     laya_call health >/dev/null && return 0
+    [ -n "$S_LAYA_PID" ] || fail 'laya not available: the server at CLUX_LAYA_URL does not answer' 6
     laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
     laya_stop_server "$S_LAYA_PID"
     LAYA_PID=
@@ -550,11 +553,16 @@ PROMPT_COMMAND=
 # cannot change the functions, the aliases, the traps or the options of
 # this shell; only the directory and the exported variables come back.
 shopt -u expand_aliases
+# terminal.sh clears the line with C-e, then C-u, before it types a
+# __clux_ line. A vi mode or other keys from ~/.inputrc must not change that.
+bind 'set editing-mode emacs' 2>/dev/null
+bind '"\C-e": end-of-line' 2>/dev/null
+bind '"\C-u": unix-line-discard' 2>/dev/null
 # C-d at an empty prompt must not end the pane shell (spec section 7).
 set -o ignoreeof
 # Read-only: a line that sets IGNOREEOF=0 or TMOUT=1 would let C-d (an
 # interrupt key, with no gate) or the idle time end the pane shell. bash
-# still lets set +o ignoreeof remove it; send refuses the word set.
+# still lets set +o ignoreeof remove it; each line of Claude runs in a subshell.
 readonly IGNOREEOF=1000000 TMOUT=0
 __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
 exit() { __clux_refuse; }
@@ -566,7 +574,7 @@ __clux_clear() { printf '\033[2J\033[H'; }
 __clux_carry() {
   case "$1" in
     ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
-    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|_) return 1 ;;
+    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|LD_*|DYLD_*|_) return 1 ;;
   esac
   return 0
 }
@@ -970,9 +978,9 @@ reserved_word() {
 # types any other argument as text, with no echo check, so send refuses it
 # (exit 2). One character alone is text too: send it with send -- TEXT.
 key_name() {
-    local k="$1" mods=0 rc=1 nocase
+    local k="$1" mods=0 rc=1 was=0
     # tmux reads a key name with no case (enter is Enter).
-    nocase=$(shopt -p nocasematch)
+    ! shopt -q nocasematch || was=1
     shopt -s nocasematch
     while :; do
         case "$k" in
@@ -987,7 +995,7 @@ key_name() {
         '^'?) [ "$mods" -ne 0 ] || rc=0 ;;
         ?) [ "$mods" -ne 1 ] || rc=0 ;;
     esac
-    $nocase
+    [ "$was" -eq 1 ] || shopt -u nocasematch
     return "$rc"
 }
 
@@ -1003,16 +1011,7 @@ interrupt_key() {
 # Right, Home, End and the page keys, with no modifier. In a pager or a menu
 # these keys go to the pane with no command request (spec section 7). Space
 # is not one: it selects in a menu.
-nav_key() {
-    local rc=1 nocase
-    nocase=$(shopt -p nocasematch)
-    shopt -s nocasematch
-    case "$1" in
-        Up|Down|Left|Right|Home|End|PageUp|PgUp|PageDown|PgDn|NPage|PPage) rc=0 ;;
-    esac
-    $nocase
-    return "$rc"
-}
+nav_key() { key_is "$1" Up Down Left Right Home End PageUp PgUp PageDown PgDn NPage PPage; }
 
 # send_gate TEXT — the command gate for a send that ends a line (spec
 # section 7). check_pane must run first: it sets CURSOR_LINE and
@@ -1045,9 +1044,10 @@ send_gate() {
     # cannot change the pane shell. At a prompt that Laya calls
     # shell_prompt in another shell process (a nested bash) the line runs
     # in that shell: a line that can change it for later lines is
-    # dangerous. python3 or psql can also be shell_prompt, and the shell
-    # rules do not apply there.
-    if [ "$prompt" -eq 0 ] && [ "$PANE_STATE" = shell_prompt ] && pane_runs_shell; then
+    # dangerous. This is also true in ssh, docker or kubectl: the shell is
+    # on the other side. python3 or psql can also be shell_prompt, and the
+    # shell rules do not apply there.
+    if [ "$prompt" -eq 0 ] && [ "$PANE_STATE" = shell_prompt ] && ! pane_runs_program; then
         shell=1
     fi
     flags=--screen
@@ -1076,30 +1076,29 @@ send_gate() {
     return 0
 }
 
-# accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
-accept_key() {
-    local rc=1 nocase
-    nocase=$(shopt -p nocasematch)
+# key_is KEY PATTERN... — KEY matches one of the glob PATTERNs, with no case
+# (tmux reads a key name with no case: enter is Enter). No subshell.
+key_is() {
+    local k="$1" p rc=1 was=0
+    shift
+    ! shopt -q nocasematch || was=1
     shopt -s nocasematch
-    case "$1" in
-        Enter|KPEnter|C-m|C-j|'^m'|'^j') rc=0 ;;
-    esac
-    $nocase
+    for p in "$@"; do
+        # shellcheck disable=SC2254
+        case "$k" in $p) rc=0; break ;; esac
+    done
+    [ "$was" -eq 1 ] || shopt -u nocasematch
     return "$rc"
 }
+
+# accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
+accept_key() { key_is "$1" Enter C-m C-j '^m' '^j'; }
 
 # edit_key KEY — a key that only moves in the line or deletes text at the
 # clux prompt (the default readline keys; history is off).
 edit_key() {
-    local rc=1 nocase
-    nocase=$(shopt -p nocasematch)
-    shopt -s nocasematch
-    case "$1" in
-        Left|Right|Home|End|Up|Down|BSpace|DC|Delete|Tab|Space) rc=0 ;;
-        C-a|C-b|C-e|C-f|C-h|C-k|C-u|C-w|C-l|'^a'|'^b'|'^e'|'^f'|'^h'|'^k'|'^u'|'^w'|'^l') rc=0 ;;
-    esac
-    $nocase
-    return "$rc"
+    key_is "$1" Left Right Home End Up Down BSpace DC Delete Tab Space \
+        C-a C-b C-e C-f C-h C-k C-u C-w C-l '^a' '^b' '^e' '^f' '^h' '^k' '^u' '^w' '^l'
 }
 
 # send_line LINE — end a line at the clux prompt: LINE runs in a subshell
@@ -1113,17 +1112,20 @@ send_line() {
     esac
     sum=$(command_sum "$1") || fail 'cannot make the sum of the line' 1
     printf '%s' "$1" > "$D/line.cmd"
-    send_key C-u; send_literal "__clux_line $sum"; send_key Enter
+    clear_line; send_literal "__clux_line $sum"; send_key Enter
 }
 
-# pane_runs_shell — the process in the front of the pane is a shell. When
-# tmux cannot tell, the answer is yes: the shell rules only refuse more.
-pane_runs_shell() {
+# pane_runs_program — the process in the front of the pane is a known
+# program that is not a shell (python3, psql, node and others). Laya can
+# call its prompt shell_prompt, and the shell rules do not apply there. Any
+# other process (a shell, ssh, docker, kubectl, or a name that tmux cannot
+# give) gets the shell rules: they only refuse more.
+pane_runs_program() {
     local name
-    name=$(tmux_state display-message -p -t "$S_PANE" '#{pane_current_command}') || return 0
-    name="${name#-}"
+    name=$(tmux_state display-message -p -t "$S_PANE" '#{pane_current_command}') || return 1
     case "${name##*/}" in
-        bash|sh|zsh|dash|ksh|mksh|oksh|yash|ash|busybox|fish|csh|tcsh|'') return 0 ;;
+        python*|ipython*|bpython*|psql|mysql|mariadb|sqlite3|redis-cli|mongo|mongosh) return 0 ;;
+        node|deno|bun|irb|pry|ghci|lua*|R|julia|erl|iex|scala|sbcl|gdb|lldb|php) return 0 ;;
     esac
     return 1
 }
@@ -1337,10 +1339,25 @@ ensure_open() {
 
 send_literal() { tmux_state send-keys -t "$S_PANE" -l -- "$1"; }
 send_key() { tmux_state send-keys -t "$S_PANE" "$1"; }
+# clear_line — remove all text of the prompt line. C-u removes only the text
+# to the left of the cursor, so C-e goes to the end first: text to the right
+# (after Home) must not join the typed __clux_ line.
+clear_line() { send_key C-e; send_key C-u; }
 
 # The busy lock is a directory. busy/owner names the run that holds it, so a
 # reader of an older run cannot free the lock of a newer run.
-release_busy() { rm -f "$D/busy/owner"; rmdir "$D/busy" 2>/dev/null || true; }
+release_busy() { rm -f "$D/busy/owner" "$D/busy/pid"; rmdir "$D/busy" 2>/dev/null || true; }
+
+# busy_holder_dead — busy/pid names the run verb that holds the lock until it
+# typed __clux_run. When that verb is gone (the Bash tool killed it during
+# the gate), no run can start: the lock is free.
+busy_holder_dead() {
+    local pid=
+    [ -f "$D/busy/pid" ] || return 1
+    read -r pid < "$D/busy/pid" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    ! kill -0 "$pid" 2>/dev/null
+}
 
 # reader_live N — a wait --run or run of N is reporting its output now
 # (<n>.reading is a symbolic link to the pid of that verb).
@@ -1621,9 +1638,10 @@ run_command() {
     output_held && fail "the output of run $S_SEQ is held: use wait --run $S_SEQ, or wait --run $S_SEQ --discard" 5
     if ! mkdir "$D/busy" 2>/dev/null; then
         # The lock of a completed run that no reader takes now is free.
-        [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! reader_live "$S_SEQ" \
-            || fail 'the companion is busy' 5
+        { [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! reader_live "$S_SEQ"; } \
+            || busy_holder_dead || fail 'the companion is busy' 5
     fi
+    printf '%s\n' "$$" > "$D/busy/pid"
     printf 'pending\n' > "$D/busy/owner"
     # Two seconds, not one test: after a large output the pane shell draws its
     # prompt a moment after the last run reports.
@@ -1638,7 +1656,7 @@ run_command() {
     esac
     remove_stale_output
     if last_run_secret; then
-        send_key C-u; send_literal __clux_clear; send_key Enter
+        clear_line; send_literal __clux_clear; send_key Enter
         # Exit 5, not 1: no run started, so there is no <n> for wait --run.
         wait_for_clear 5 || { release_busy; fail 'cannot clear the screen after a secret run: use wait --idle, then run again' 5; }
         tmux_state clear-history -t "$S_PANE"
@@ -1671,7 +1689,8 @@ run_command() {
             ;;
     esac
     printf 'run=%s\n' "$n"
-    send_key C-u; send_literal "__clux_run $n $sum $mode"; send_key Enter
+    clear_line; send_literal "__clux_run $n $sum $mode"; send_key Enter
+    rm -f "$D/busy/pid"
     release_typing_lock
     wait_for_run_files "$n" "$timeout" 1
     case $? in
@@ -1829,6 +1848,32 @@ new_screen_lines() {
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
+# held_lines TEXT GUARDED — the lines of TEXT that the guard held: GUARDED
+# has each line of TEXT, or a marker line in place of 1 or <k> held lines.
+# When the two do not line up, each line that is left counts as held.
+held_lines() {
+    RE="$HELD_MARK_RE" awk 'NR == FNR { t[++n] = $0; next }
+        { g[++m] = $0 }
+        END {
+            i = 1
+            for (j = 1; j <= m && i <= n; j++) {
+                if (g[j] == t[i]) { i++; continue }
+                if (g[j] !~ ENVIRON["RE"]) break
+                k = 1
+                if (match(g[j], /, [0-9]+ lines\]$/)) k = substr(g[j], RSTART + 2) + 0
+                for (; k > 0 && i <= n; k--) print t[i++]
+            }
+            for (; i <= n; i++) print t[i]
+        }' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
+# visible_lines GUARDED HELD — the lines of GUARDED that the pattern can
+# see: no marker line, and no line that an earlier guard of the wait held.
+visible_lines() {
+    awk 'NR == FNR { h[$0]; next } !($0 in h)' <(printf '%s\n' "$2") <(printf '%s\n' "$1") \
+        | grep -vE "$HELD_MARK_RE"
+}
+
 # add_seen_lines SEEN SCREEN — SEEN with each line of SCREEN that it does
 # not have, so the set grows by the new lines only.
 add_seen_lines() {
@@ -1841,6 +1886,10 @@ wait_command() {
     # The lines that a guard examined. The first line is a mark that no
     # screen line is, so the set is never empty.
     local seen=$'\001clux-seen'
+    # The lines that a guard of this wait held. A line that the pair rule
+    # held (hunter2 under Password:) can pass in a later window with other
+    # context, so it stays held.
+    local held=$'\001clux-held'
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --discard) discard=1; shift ;;
@@ -1929,10 +1978,11 @@ wait_command() {
                         elif laya_guard <(printf '%s\n' "$fresh") 1; then
                             sum="$screen"
                             seen=$(add_seen_lines "$seen" "$screen")
+                            held=$(add_seen_lines "$held" "$(held_lines "$fresh" "$GUARD_TEXT")")
                             guard_fails=0
                             # The marker lines of held text are not pane
                             # text: the pattern does not see them.
-                            printf '%s\n' "$GUARD_TEXT" | grep -vE "$HELD_MARK_RE" \
+                            visible_lines "$GUARD_TEXT" "$held" \
                                 | grep -Eq -- "$value" && return 0
                         else
                             guard_fails=$((guard_fails + 1))

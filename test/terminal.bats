@@ -791,9 +791,12 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         tmux_state() { echo -bash; }; CURSOR_LINE='user@host\$ '; send_gate 'ls'
         tmux_state() { return 1; }; send_gate 'ls'
         PANE_STATE=other; tmux_state() { echo bash; }; CURSOR_LINE='Delete? [y/N] '; send_gate 'y'
-        PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'"
+        PANE_STATE=shell_prompt; CURSOR_LINE='clux-ab12cd34\$ '; send_gate 'ls'
+        CURSOR_LINE='user@remote\$ '; tmux_state() { echo ssh; }; send_gate 'ls'
+        tmux_state() { echo kubectl; }; send_gate 'ls'
+        CURSOR_LINE='> '; tmux_state() { echo node; }; send_gate '1'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
-    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen' ]
+    [ "$(cat "$log")" = $'--screen\n--screen --shell\n--screen --shell\n--screen\n--screen\n--screen --shell\n--screen --shell\n--screen' ]
 }
 
 @test "at the clux prompt a line that ends goes through __clux_line, and only edit keys go raw" {
@@ -818,9 +821,11 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ "$(cat "$d/line.cmd")" = 'echo hi' ]
     [ "$(sed -n 1p "$log")" = 'key C-a' ]
-    [ "$(sed -n 2p "$log")" = 'key C-u' ]
-    [[ "$(sed -n 3p "$log")" == 'text __clux_line '* ]] || false
-    [ "$(sed -n 4p "$log")" = 'key Enter' ]
+    # C-e first: C-u removes only the text to the left of the cursor.
+    [ "$(sed -n 2p "$log")" = 'key C-e' ]
+    [ "$(sed -n 3p "$log")" = 'key C-u' ]
+    [[ "$(sed -n 4p "$log")" == 'text __clux_line '* ]] || false
+    [ "$(sed -n 5p "$log")" = 'key Enter' ]
     rm -f "$log"
     run bash -c "$stubs; send_command --enter -- ' | wc -c'"
     [ "$(cat "$d/line.cmd")" = 'echo hi | wc -c' ]
@@ -847,14 +852,73 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     run --separate-stderr bash -c "source '$d/rc.bash'; __clux_run() { echo NEW; }; declare -f __clux_run | grep -c NEW"
     [ "$output" = 0 ]
     [ "$stderr" = 'bash: __clux_run: readonly function' ]
-    printf '/tmp\0POSIXLY_CORRECT=1\0=\0' > "$d/k"
-    run bash -c "source '$d/rc.bash'; set -o posix; __clux_load '$d/k'; echo \"\${POSIXLY_CORRECT-none}\"; shopt -qo posix && echo posix-on || echo posix-off"
+    printf '/tmp\0POSIXLY_CORRECT=1\0LD_PRELOAD=/tmp/x.so\0DYLD_INSERT_LIBRARIES=/tmp/y\0=\0' > "$d/k"
+    run bash -c "source '$d/rc.bash'; set -o posix; __clux_load '$d/k'; echo \"\${POSIXLY_CORRECT-none}\${LD_PRELOAD-}\${DYLD_INSERT_LIBRARIES-}\"; shopt -qo posix && echo posix-on || echo posix-off"
     [ "$output" = $'none\nposix-off' ]
 }
 
 @test "add_seen_lines adds only the lines that the set does not have" {
     run bash -c "source '$TERMINAL'; add_seen_lines \$'a\\nb' \$'b\\nc\\na\\nc'"
     [ "$output" = $'a\nb\nc' ]
+}
+
+@test "held_lines finds the lines that the guard held, and visible_lines hides them" {
+    run bash -c "source '$TERMINAL'; held_lines \$'Password:\\nhunter2\\na\\nb\\nc\\nd' \$'Password:\\n[held by laya: secret]\\n[held by laya: prompt_injection, 2 lines]\\nc\\nd'"
+    [ "$output" = $'hunter2\na\nb' ]
+    # When the two do not line up, the rest counts as held.
+    run bash -c "source '$TERMINAL'; held_lines \$'a\\nb\\nc' \$'a\\nX'"
+    [ "$output" = $'b\nc' ]
+    run bash -c "source '$TERMINAL'; visible_lines \$'hunter2\\n[held by laya: secret]\\nok' \$'hunter2'"
+    [ "$output" = ok ]
+}
+
+@test "wait --pattern keeps a line held that an earlier guard held by the pair rule" {
+    run bash -c "source '$TERMINAL'; D='$BATS_TEST_TMPDIR'
+        ensure_open() { :; }; last_run_secret() { return 1; }; laya_confirm_pending() { return 1; }
+        probe_pane() { return 0; }; sleep() { :; }
+        tmux_state() { echo x >> '$BATS_TEST_TMPDIR/n'; printf 'Password:\\nhunter2\\n'; [ \$(wc -l < '$BATS_TEST_TMPDIR/n') -lt 2 ] || echo next; }
+        laya_guard() { GUARD_TEXT=\$(awk '{ if (p == \"Password:\" && \$0 == \"hunter2\") print \"[held by laya: secret]\"; else print; p = \$0 }' \"\$1\"); }
+        wait_command --pattern hunter --timeout 2"
+    [ "$status" -eq 1 ] || { echo "$output"; false; }
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/n")" -ge 2 ]
+}
+
+@test "open on a live companion with no Laya server of its own, or a dead external server, exits 6" {
+    run --separate-stderr bash -c "source '$TERMINAL'; S_LAYA_URL=; S_LAYA_PID=; laya_call() { return 0; }; laya_restart_if_down; echo SUCCESS"
+    [ "$status" -eq 6 ]
+    [ "$stderr" = 'laya not available: this companion has no Laya server: use close, then open' ]
+    run --separate-stderr bash -c "source '$TERMINAL'; S_LAYA_URL=http://127.0.0.1:9; S_LAYA_PID=; laya_call() { return 1; }; laya_restart_if_down; echo SUCCESS"
+    [ "$status" -eq 6 ]
+    [ "$stderr" = 'laya not available: the server at CLUX_LAYA_URL does not answer' ]
+}
+
+@test "run takes the busy lock of a run verb that died before it typed" {
+    local d="$BATS_TEST_TMPDIR/bz" dead
+    mkdir -p "$d/busy"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=0\ntoken=ab12cd34\n' > "$d/state"
+    printf 'pending\n' > "$d/busy/owner"
+    bash -c 'exit 0' & dead=$!; wait "$dead" || true
+    printf '%s\n' "$dead" > "$d/busy/pid"
+    local stubs="source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }; lock_and_load() { state_load; }; hidden_text() { return 1; }
+        wait_for_prompt() { echo TAKEOVER; return 1; }"
+    run --separate-stderr bash -c "$stubs; run_command -- ls"
+    [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
+    sleep 30 3>&- & local live=$!
+    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s\n' "$live" > "$d/busy/pid"
+    run --separate-stderr bash -c "$stubs; run_command -- ls"
+    kill "$live"; wait "$live" 2>/dev/null || true
+    [ "$status" -eq 5 ]
+    [ "$stderr" = 'the companion is busy' ]
+}
+
+@test "one helper reads key names with no case, and it keeps nocasematch" {
+    [ "$(grep -c 'shopt -p nocasematch' "$TERMINAL")" -eq 0 ]
+    run bash -c "source '$TERMINAL'
+        accept_key enter && edit_key c-A && nav_key pgdn && ! accept_key KPEnter && ! edit_key C-x && echo keys
+        shopt -q nocasematch || echo off
+        shopt -s nocasematch; accept_key Enter; shopt -q nocasematch && echo on"
+    [ "$output" = $'keys\noff\non' ]
 }
 
 @test "wait --pattern starts no guard after its time limit" {

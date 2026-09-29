@@ -48,6 +48,12 @@ All notable changes to clux are documented here.
 - `open` on a live companion starts a new Laya server when the server that it started does not answer
 - The pieces of a long line share 100 characters, so a short token is whole in one piece
 - `wait --pattern` starts no guard after its time limit, and keeps each examined line one time
+- `send` and `run` clear the prompt line with `C-e`, then `C-u`, so text to the right of the cursor does not join the typed line. The pane shell uses the emacs keys, also when `~/.inputrc` sets vi mode
+- The shell rules of `send` also apply in `ssh`, `docker exec`, `kubectl exec` and other processes that are not a known program such as `python3` or `psql`
+- `run` and a `send` line do not give back `LD_*` and `DYLD_*` to the pane shell
+- `wait --pattern` keeps a line held that an earlier guard of the wait held
+- `open` on a live companion exits 6 when the companion has no Laya server (clux 3.x), or when the server at `CLUX_LAYA_URL` does not answer
+- `run` takes the busy lock of a `run` that stopped before it typed its line
 - A dangerous `send` outside the clux prompt says `ask the user to type this line in the pane`, not `use run`
 - Only one verb reads the output of a run at a time: a second reader exits 5 (`another verb reads the output of run <n> now: try again`)
 - `laya install` makes a venv again when its Python cannot import `laya`, and exits 2 when `CLUX_LAYA_PYTHON` names a Python with no `laya`
