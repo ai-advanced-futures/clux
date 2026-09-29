@@ -948,6 +948,7 @@ prompt_input() {
 
 PANE_STATE=
 PANE_TEXT=
+PANE_TEXT_STATE=
 PANE_LAST=
 SCREEN_ABOVE=
 PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
@@ -960,7 +961,9 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 # forks the client, so the poll loops call it only on each fifth step, and
 # it sends no request when the window that goes to Laya (the last 5 lines)
 # is the same as at the last answer: a program that changes only its top
-# rows (watch, top) sends no request on each probe.
+# rows (watch, top) sends no request on each probe. The cache keeps that
+# answer (PANE_TEXT_STATE): a probe that gave "other" for changed output
+# does not change it, so a window that comes back (A, B, A) gets its answer.
 pane_state() {
     local window out
     capture_to_cursor || return 1
@@ -972,17 +975,22 @@ pane_state() {
         i=$((i + 1))
     done
     window="${rest##*$'\n'}${CAPTURE:${#rest}}"
-    [ -z "$PANE_STATE" ] || [ "$window" != "$PANE_TEXT" ] || return 0
     case "$window" in
         *$'\n'*) SCREEN_ABOVE="${window%$'\n'*}" ;;
         *) SCREEN_ABOVE= ;;
     esac
+    if [ -n "$PANE_TEXT_STATE" ] && [ "$window" = "$PANE_TEXT" ]; then
+        PANE_STATE="$PANE_TEXT_STATE"
+        PANE_LAST="$window"
+        return 0
+    fi
     # At the clux prompt the state is known: it is not a credential prompt,
     # a pager or a menu. No request; the local patterns still apply.
     if prompt_input; then
         PANE_STATE=shell_prompt
         ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
         PANE_TEXT="$window"
+        PANE_TEXT_STATE="$PANE_STATE"
         return 0
     fi
     # A wait probe (PANE_SETTLE=1): output that changed since the probe before
@@ -1004,6 +1012,7 @@ pane_state() {
     PANE_STATE="${BASH_REMATCH[1]}"
     [ "$PANE_STATE" = credential ] || ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
     PANE_TEXT="$window"
+    PANE_TEXT_STATE="$PANE_STATE"
     return 0
 }
 
@@ -1081,20 +1090,35 @@ laya_gate() {
 }
 
 GUARD_HELD=0
+GUARD_LATE=0
 GUARD_TEXT=
 GUARD_CUT=0
 # A marker line that the guard puts in place of held text.
 HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 
-# laya_guard FILE [CUT] — the output guard (spec section 8). CUT=1: the text
-# can start inside a key (a screen, or the last lines of an output). Sets GUARD_TEXT (the
-# guarded text), GUARD_HELD (the count of held lines) and GUARD_CUT (1 when
+# laya_guard FILE [CUT] [PIECES] — the output guard (spec section 8). CUT=1:
+# the text can start inside a key (a screen, or the last lines of an
+# output). PIECES=1: no cut to LAYA_GUARD_BYTES; the client guards all of
+# the text in pieces of whole lines of at most LAYA_GUARD_BYTES, with one
+# time limit (wait --pattern). Sets GUARD_TEXT (the
+# guarded text), GUARD_HELD (the count of held lines), GUARD_LATE (the
+# count of held lines that the time limit left not examined: a later guard
+# can show them) and GUARD_CUT (1 when
 # only the last LAYA_GUARD_BYTES went to the guard). Returns 6 when the
 # client fails or its time limit ends. [inferred] The command substitution
 # removes blank lines at the end of the text. A cut can split a UTF-8
 # character; the client decodes with "replace", so that is not an error.
 laya_guard() {
     local out data size tmp cut="${2:-0}" args=(output --render)
+    if [ "${3:-0}" -eq 1 ]; then
+        GUARD_CUT=0
+        data=$(LC_ALL=C tr -d '\000' < "$1" && printf x) || return 6
+        data="${data%x}"
+        args+=(--pieces "$LAYA_GUARD_BYTES")
+        [ "$cut" -eq 0 ] || args+=(--cut)
+        laya_guard_call "$data" "${args[@]}"
+        return
+    fi
     # A file, because $1 can be a pipe and is read two times: the size, then
     # the text. Bash drops NUL bytes from a command substitution with a
     # warning, so tr removes them first, and the size comes from wc. LC_ALL=C
@@ -1111,12 +1135,25 @@ laya_guard() {
     data="${data%x}"
     [ "$GUARD_CUT" -eq 0 ] || cut=1
     [ "$cut" -eq 0 ] || args+=(--cut)
+    laya_guard_call "$data" "${args[@]}"
+}
+
+# laya_guard_call DATA ARGS... — send DATA to the client of laya_guard and
+# read its answer.
+laya_guard_call() {
+    local out data="$1"
+    shift
     laya_pid_check || return 6
-    out=$(printf '%s' "$data" | laya_call "${args[@]}" --limit "$LAYA_GUARD_LIMIT") || return 6
+    out=$(printf '%s' "$data" | laya_call "$@" --limit "$LAYA_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
+    GUARD_LATE=0
+    case "$GUARD_HELD" in
+        *' not_examined='*) GUARD_LATE="${GUARD_HELD##* not_examined=}"; GUARD_HELD="${GUARD_HELD%% *}" ;;
+    esac
     GUARD_HELD="${GUARD_HELD#held=}"
     case "$GUARD_HELD" in ''|*[!0-9]*) return 6 ;; esac
+    case "$GUARD_LATE" in ''|*[!0-9]*) return 6 ;; esac
     case "$out" in
         *$'\n'*) GUARD_TEXT="${out#*$'\n'}" ;;
         *) GUARD_TEXT= ;;
@@ -1167,8 +1204,9 @@ nav_key() { key_is "$1" Up Down Left Right Home End PageUp PgUp PageDown PgDn NP
 # send_gate TEXT — the command gate for a send that ends a line (spec
 # section 7). check_pane must run first: it sets CURSOR_LINE and
 # SCREEN_ABOVE. The line is the cursor line plus TEXT. At the clux prompt
-# the prompt goes off. In any other program (ssh, python3, psql) the full
-# cursor line goes, with the 4 lines above it as the screen. The cursor line is the
+# the prompt goes off, and the line goes alone, as run sends it. In any
+# other program (ssh, python3, psql) the full cursor line goes, with the 4
+# lines above it as the screen. The cursor line is the
 # text that tmux shows, so cells that readline erased show as spaces.
 send_gate() {
     local line prompt=0 shell=0 flags
@@ -1203,7 +1241,12 @@ send_gate() {
     if [ "$prompt" -eq 0 ] && ! pane_runs_program; then
         shell=1
     fi
-    if [ "$shell" -eq 1 ]; then
+    if [ "$prompt" -eq 1 ]; then
+        # At the clux prompt the line runs as run runs it (__clux_line), so
+        # Laya gets the line alone, as run gives it: output above the prompt
+        # (cat notes.txt) must not lower the score of the line.
+        laya_gate < <(printf '%s' "$line")
+    elif [ "$shell" -eq 1 ]; then
         # The shell rule reads only the text that clux typed in this line,
         # not the prompt: the client gets the start of the line and the
         # typed text as two lines, and Laya gets them as one line.
@@ -1244,6 +1287,16 @@ LINE_TYPED=
 # (Enter in a nested shell), the cursor goes to a new line: the record is
 # old, and the next send removes it.
 #
+# typed_load — read the four lines of $D/typed into TYPED_BEFORE,
+# TYPED_STRICT, TYPED_TEXT and TYPED_START. Returns 1 when there is no
+# record.
+typed_load() {
+    TYPED_BEFORE= TYPED_STRICT=0 TYPED_TEXT= TYPED_START=
+    [ -f "$D/typed" ] || return 1
+    { IFS= read -r TYPED_BEFORE; IFS= read -r TYPED_STRICT; IFS= read -r TYPED_TEXT; IFS= read -r TYPED_START; } < "$D/typed"
+    return 0
+}
+
 # typed_split TEXT — split the cursor line plus TEXT for the gate. LINE_TYPED
 # is the text that clux typed in this line plus TEXT; LINE_HEAD is the start
 # of the line before it (the prompt, and text that the user typed). When the
@@ -1252,11 +1305,11 @@ LINE_TYPED=
 # another way (a key, the user, or the end of the line), all of the line is
 # typed text: the rule then reads more, not less. No fork.
 typed_split() {
-    local before="" strict=0 t="" row="" tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
+    local before strict t row tt line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
     LINE_HEAD="$CURSOR_LINE"
     LINE_TYPED="$1"
-    [ -f "$D/typed" ] || return 0
-    { IFS= read -r before; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
+    typed_load || return 0
+    before="$TYPED_BEFORE" strict="$TYPED_STRICT" t="$TYPED_TEXT" row="$TYPED_START"
     tt="${t%"${t##*[![:space:]]}"}"
     if [ "$strict" != 1 ] && [ -n "$tt" ] && [[ "$line" == *"$tt" ]]; then
         LINE_HEAD="${line:0:$((${#line} - ${#tt}))}"
@@ -1277,26 +1330,16 @@ typed_split() {
 
 # typed_add BEFORE TEXT — send typed TEXT when the cursor line was BEFORE.
 typed_add() {
-    local b="" strict=0 t="" row
-    if [ -f "$D/typed" ]; then
-        { IFS= read -r b; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
-    else
-        typed_row; row="$TYPED_ROW"
-    fi
-    printf '%s\n%s\n%s\n%s\n' "$1" "${strict:-0}" "$t$2" "$row" > "$D/typed"
+    typed_load || { typed_row; TYPED_START="$TYPED_ROW"; }
+    printf '%s\n%s\n%s\n%s\n' "$1" "${TYPED_STRICT:-0}" "$TYPED_TEXT$2" "$TYPED_START" > "$D/typed"
 }
 
 # typed_edit — send sent a key that can edit the line: the typed text can
 # be anywhere in the line now. With no typed text (Up at an empty prompt
 # shows a line from the history), all of the line is typed text.
 typed_edit() {
-    local b="" strict t="" row
-    if [ -f "$D/typed" ]; then
-        { IFS= read -r b; IFS= read -r strict; IFS= read -r t; IFS= read -r row; } < "$D/typed"
-    else
-        typed_row; row="$TYPED_ROW"
-    fi
-    printf '%s\n1\n%s\n%s\n' "$b" "$t" "$row" > "$D/typed"
+    typed_load || { typed_row; TYPED_START="$TYPED_ROW"; }
+    printf '%s\n1\n%s\n%s\n' "$TYPED_BEFORE" "$TYPED_TEXT" "$TYPED_START" > "$D/typed"
 }
 
 # typed_row — TYPED_ROW is the row of the cursor from the top of the
@@ -1346,6 +1389,30 @@ key_is() {
     done
     [ "$was" -eq 1 ] || shopt -u nocasematch
     return "$rc"
+}
+
+# meta_key KEY — Escape (also C-[ and ^[), or a key with M-.
+meta_key() { key_is "$1" Escape 'C-\[' '^\[' '*M-*'; }
+
+# pane_shell_front — the pane shell (the clux shell) is in the front group
+# of the pane: no run and no program is in front. Also true when tmux or ps
+# cannot tell: the rule then only refuses more.
+pane_shell_front() {
+    local pid stat
+    pid=$(tmux_state display-message -p -t "$S_PANE" '#{pane_pid}') || return 0
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    stat=$(ps -o stat= -p "$pid" 2>/dev/null) || return 0
+    case "$stat" in *+*|'') return 0 ;; esac
+    return 1
+}
+
+# refuse_meta_front — Escape, or a key with M-, is a Meta prefix in
+# readline. When the clux shell is in front (at its prompt, or just before
+# the prompt comes back, when __clux_flush already ran), the key can stay
+# in readline, and the next C-e is then M-C-e (shell-expand-line). A run
+# or a program in front gets the key, so it goes.
+refuse_meta_front() {
+    ! pane_shell_front || fail 'the clux shell is in front: Escape and M- keys are not permitted: use send --key C-c' 2
 }
 
 # accept_key KEY — a key that ends the line in readline: Enter, C-m, C-j.
@@ -1880,6 +1947,7 @@ report_run() {
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
     read -r rc < "$D/$n.rc"
     GUARD_HELD=0
+    GUARD_LATE=0
     GUARD_TEXT=
     if [ ! -e "$D/$n.secret" ] && [ -s "$D/$n.out" ]; then
         last=$(tail -c 1 "$D/$n.out")
@@ -1905,6 +1973,8 @@ report_run() {
         [ "$GUARD_CUT" -eq 0 ] || printf 'output cut: the last %s bytes\n' "$LAYA_GUARD_BYTES"
         [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
         [ "$GUARD_HELD" -eq 0 ] || printf 'laya: held %s lines\n' "$GUARD_HELD"
+        [ "$GUARD_LATE" -eq 0 ] \
+            || printf 'laya: %s lines not examined in the time limit: use wait --run %s again\n' "$GUARD_LATE" "$n"
     fi
     [ -e "$D/$n.done" ] || printf '%s\n' 'output may be incomplete: a process still holds the output'
     if [ -s "$D/$n.caution" ]; then
@@ -1912,6 +1982,16 @@ report_run() {
         printf 'laya: caution (%s)\n' "$reason"
     fi
     printf 'exit=%s\n' "$rc"
+    if [ "$GUARD_LATE" -gt 0 ]; then
+        # The time limit left lines not examined (they can be the last
+        # error). .out stays and the run keeps the lock, as when Laya
+        # fails: wait --run gives them when Laya examines them.
+        : > "$D/$n.held"
+        printf 'laya did not examine all of the output in the time limit: it stays; use wait --run %s again, or wait --run %s --discard\n' "$n" "$n" >&2
+        rm -f "$D/$n.reading"
+        READING=
+        return 0
+    fi
     rm -f "$D/$n.out" "$D/$n.held" "$D/$n.reading"
     READING=
     release_run "$n"
@@ -2066,6 +2146,8 @@ send_command() {
     esac
     reserved_word "$text"
     [ -z "$key" ] || key_name "$key" || fail "not a key name: $key: send text with send -- TEXT" 2
+    # No text and no key is a usage error before any pane request.
+    [ -n "$text" ] || [ -n "$key" ] || usage
     ensure_open
     # An interrupt key cannot type a value, and it must work when Laya does
     # not: it skips the Laya pane check. It also works while a Laya question
@@ -2084,6 +2166,7 @@ send_command() {
                 fail 'at the clux prompt, Escape is not permitted: use send --key C-c' 2
             fi
             ! pane_nested_shell || fail 'in a nested shell, Escape is not permitted: use send --key C-c' 2
+            refuse_meta_front
         fi
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
@@ -2134,6 +2217,7 @@ send_command() {
         fi
         PANE_FRONT_SET=1
     fi
+    [ -z "$key" ] || ! meta_key "$key" || refuse_meta_front
     if [ -n "$key" ] && [ "$enter" -eq 0 ]; then
         case "$PANE_STATE" in
             pager|menu) nav_key "$key" && { send_key "$key"; return; } ;;
@@ -2215,11 +2299,14 @@ new_screen_lines() {
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
-# held_lines TEXT GUARDED — the lines of TEXT that the guard held: GUARDED
-# has each line of TEXT, or a marker line in place of 1 or <k> held lines.
-# When the two do not line up, each line that is left counts as held.
+# held_lines TEXT GUARDED [KIND] — the lines of TEXT that the guard held:
+# GUARDED has each line of TEXT, or a marker line in place of 1 or <k> held
+# lines. When the two do not line up, each line that is left counts as
+# held. With KIND, only the lines of the markers of that kind (and no
+# line that is left): not_examined gives the lines that a later guard can
+# show.
 held_lines() {
-    RE="$HELD_MARK_RE" awk 'NR == FNR { t[++n] = $0; next }
+    RE="$HELD_MARK_RE" KIND="${3:-}" awk 'NR == FNR { t[++n] = $0; next }
         { g[++m] = $0 }
         END {
             i = 1
@@ -2228,9 +2315,11 @@ held_lines() {
                 if (g[j] !~ ENVIRON["RE"]) break
                 k = 1
                 if (match(g[j], /, [0-9]+ lines\]$/)) k = substr(g[j], RSTART + 2) + 0
-                for (; k > 0 && i <= n; k--) print t[i++]
+                show = ENVIRON["KIND"] == "" || index(g[j], "[held by laya: " ENVIRON["KIND"] "]") == 1 \
+                    || index(g[j], "[held by laya: " ENVIRON["KIND"] ",") == 1
+                for (; k > 0 && i <= n; k--) { if (show) print t[i]; i++ }
             }
-            for (; i <= n; i++) print t[i]
+            if (ENVIRON["KIND"] == "") for (; i <= n; i++) print t[i]
         }' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
@@ -2248,32 +2337,34 @@ add_seen_lines() {
         <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
-# guard_fresh FRESH — the guard of wait --pattern, in pieces of whole lines
-# that fit in LAYA_GUARD_BYTES: a guard of a cut text starts inside a line,
-# and held_lines cannot line it up. Adds the held lines to held and tests
-# the pattern (value) on the text that the pattern can see: both are locals
-# of wait_command. Sets FRESH_FOUND=1 on a match. Returns 6 when a guard
-# fails, and 1 at the DEADLINE: a guard can take 15 s, so none starts
-# after the time limit of the wait (spec section 11).
+# guard_fresh FRESH DEADLINE — the guard of wait --pattern. One client
+# guards all of FRESH in pieces of whole lines that fit in
+# LAYA_GUARD_BYTES: a guard of a cut text starts inside a line, and
+# held_lines cannot line it up. Adds the held lines to held and tests the
+# pattern (value) on the text that the pattern can see: both are locals of
+# wait_command. Sets FRESH_FOUND=1 on a match, and FRESH_LATE to the lines
+# that the time limit left not examined: they are not held, and the next
+# tick sends them again. Returns 6 when the guard fails, and 1 at the
+# DEADLINE: a guard can take 15 s, so none starts after the time limit of
+# the wait (spec section 11).
 FRESH_FOUND=0
+FRESH_LATE=
 guard_fresh() {
-    local rest chunk sep=$'\n\001\n'
+    local lines
     FRESH_FOUND=0
-    rest=$(printf '%s\n' "$1" | LC_ALL=C awk -v lim="$LAYA_GUARD_BYTES" '
-        { n = length($0) + 1; if (size && size + n > lim) { print "\001"; size = 0 } print; size += n }')
-    while [ -n "$rest" ]; do
-        [ "$SECONDS" -lt "$2" ] || return 1
-        chunk="${rest%%"$sep"*}"
-        if [ "$chunk" = "$rest" ]; then rest=; else rest="${rest#*"$sep"}"; fi
-        laya_guard <(printf '%s\n' "$chunk") 1 || return 6
-        held=$(add_seen_lines "$held" "$(held_lines "$chunk" "$GUARD_TEXT")")
-        # The marker lines of held text are not pane text: the pattern does
-        # not see them.
-        if visible_lines "$GUARD_TEXT" "$held" | grep -Eq -- "$value"; then
-            FRESH_FOUND=1
-            return 0
-        fi
-    done
+    FRESH_LATE=
+    [ "$SECONDS" -lt "$2" ] || return 1
+    laya_guard <(printf '%s\n' "$1") 1 1 || return 6
+    lines=$(held_lines "$1" "$GUARD_TEXT")
+    if [ "$GUARD_LATE" -gt 0 ]; then
+        FRESH_LATE=$(held_lines "$1" "$GUARD_TEXT" not_examined)
+        lines=$(awk 'NR == FNR { late[$0]; next } !($0 in late)' \
+            <(printf '%s\n' "$FRESH_LATE") <(printf '%s\n' "$lines"))
+    fi
+    held=$(add_seen_lines "$held" "$lines")
+    # The marker lines of held text are not pane text: the pattern does
+    # not see them.
+    visible_lines "$GUARD_TEXT" "$held" | grep -Eq -- "$value" && FRESH_FOUND=1
     return 0
 }
 
@@ -2397,14 +2488,23 @@ wait_command() {
                             guard_fresh "$fresh" "$deadline"
                             case $? in
                                 0)
-                                    sum="$screen"
-                                    [ -z "$hist_now" ] || hist="$hist_now"
+                                    guard_fails=0
+                                    [ "$FRESH_FOUND" -eq 0 ] || return 0
                                     # Only the lines of the last guarded
                                     # capture: the set does not grow over a
                                     # long wait.
                                     seen=$'\001clux-seen'$'\n'"$screen"
-                                    guard_fails=0
-                                    [ "$FRESH_FOUND" -eq 0 ] || return 0
+                                    if [ -n "$FRESH_LATE" ]; then
+                                        # Lines that the time limit left not
+                                        # examined are not seen: the next
+                                        # tick sends them again, from the
+                                        # same capture start.
+                                        seen=$(awk 'NR == FNR { late[$0]; next } !($0 in late)' \
+                                            <(printf '%s\n' "$FRESH_LATE") <(printf '%s\n' "$seen"))
+                                    else
+                                        sum="$screen"
+                                        [ -z "$hist_now" ] || hist="$hist_now"
+                                    fi
                                     ;;
                                 1) return 1 ;;
                                 *)
