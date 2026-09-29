@@ -1130,3 +1130,72 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [[ "$section" == *"$t seconds"* ]] || false
     grep -q 'terminal.sh laya install' "$REPO_ROOT/README.md"
 }
+
+@test "MAIL, MAILPATH, MAILCHECK and FUNCNEST are unset and read-only in the pane shell, and run does not carry them" {
+    local d="$BATS_TEST_TMPDIR/mail" name
+    mkdir -p "$d"
+    bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; write_rc_file"
+    for name in MAIL MAILPATH MAILCHECK FUNCNEST; do
+        run env "$name=1" bash -c "source '$d/rc.bash'; [ -z \"\${$name+x}\" ] && echo unset; $name=2; echo changed"
+        [[ "$output" == unset*"$name: readonly variable"* ]] && [[ "$output" != *changed* ]] || { echo "$name: $output"; false; }
+        run bash -c "source '$d/rc.bash'; __clux_carry $name"
+        [ "$status" -eq 1 ]
+    done
+}
+
+@test "in a nested shell the gate gets the prompt and the typed text apart" {
+    local log="$BATS_TEST_TMPDIR/in" d="$BATS_TEST_TMPDIR/ty"
+    mkdir -p "$d"
+    run bash -c "source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; SCREEN_ABOVE=top
+        laya_gate() { printf '%s|' \"\$@\" >> '$log'; cat >> '$log'; echo = >> '$log'; GATE_LEVEL=safe; }
+        PANE_STATE=shell_prompt; tmux_state() { echo bash; }
+        CURSOR_LINE='user@host:~/source\$ '; send_gate 'ls'
+        printf '%s' 'echo a' > '$d/typed'; CURSOR_LINE='sh-5.2\$ echo a'; send_gate ' b'
+        printf '%s' 'zzz' > '$d/typed'; CURSOR_LINE='sh-5.2\$ ls'; send_gate ''"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$log")" = $'--screen|--shell|top\nuser@host:~/source$ \nls\n=\n--screen|--shell|top\nsh-5.2$ \necho a b\n=\n--screen|--shell|top\n\nsh-5.2$ ls\n=' ]
+}
+
+@test "send keeps the text that it typed in the line until Enter or C-c" {
+    local log="$BATS_TEST_TMPDIR/keys" d="$BATS_TEST_TMPDIR/tk"
+    mkdir -p "$d"
+    local stubs="source '$TERMINAL'; D='$d'; S_TOKEN=ab12cd34; PROMPT_MARK='clux-ab12cd34\$'; CONT_MARK='clux-ab12cd34> '
+        ensure_open() { :; }; lock_and_load() { :; }; laya_confirm_pending() { return 1; }; hidden_text() { return 1; }
+        check_pane() { CURSOR_LINE='sh\$ '; PANE_STATE=shell_prompt; }; run_not_started() { :; }
+        send_gate() { :; }; line_unchanged() { :; }; cursor_mid_line() { return 1; }; wait_for_echo() { :; }
+        send_key() { :; }; send_literal() { :; }"
+    run bash -c "$stubs; send_command -- 'echo'; send_command -- ' a'"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$(cat "$d/typed")" = 'echo a' ]
+    run bash -c "$stubs; send_command --enter -- ' b'"
+    [ ! -e "$d/typed" ]
+    printf x > "$d/typed"; run bash -c "$stubs; send_command --key Enter"; [ ! -e "$d/typed" ]
+    printf x > "$d/typed"; run bash -c "$stubs; send_command --key C-c"; [ ! -e "$d/typed" ]
+    printf x > "$d/typed"; run bash -c "$stubs; send_command --key Left"; [ -e "$d/typed" ]
+}
+
+@test "laya_wait_health uses laya_call with no key" {
+    local body
+    body=$(sed -n '/^laya_wait_health() {/,/^}/p' "$TERMINAL")
+    [[ "$body" == *'S_LAYA_KEY= laya_call health'* ]] || false
+    [[ "$body" != *LAYA_CLIENT* ]] && [[ "$body" != *'$LAYA_KEY'* ]] || false
+}
+
+@test "laya_installed starts one Python process for the venv" {
+    require_laya_python
+    local data="$BATS_TEST_TMPDIR/data" count="$BATS_TEST_TMPDIR/count"
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    printf '#!/usr/bin/env bash\necho x >> %q\nexec %q "$@"\n' "$count" "$CLUX_LAYA_PYTHON" > "$data/clux/laya/bin/python3"
+    run env -u CLUX_LAYA_PYTHON XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" bash -c "source '$TERMINAL'; laya_installed"
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ]
+}
+
+@test "a cursor line that Laya cannot examine gives its own message" {
+    run --separate-stderr bash -c "source '$TERMINAL'
+        capture_to_cursor() { CAPTURE='x'; }; laya_call() { cat >/dev/null; return 3; }
+        check_pane"
+    [ "$status" -eq 2 ]
+    [ "$stderr" = 'laya: the cursor line is too long to examine: send --key C-c' ]
+}

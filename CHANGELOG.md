@@ -15,6 +15,10 @@ All notable changes to clux are documented here.
 - Only one `send` or `run` types at a time (a lock with the pid of its holder; exit code 5 when another one types). `send` reads the cursor line again after the gate, and types nothing when it changed (exit code 5)
 - The output guard makes its blocks from the last line up, and sends no pair request for a line that is held already
 - `C-d` at the prompt does not end the pane shell (`ignoreeof`)
+- In the pane shell `MAIL`, `MAILPATH`, `MAILCHECK` and `FUNCNEST` are unset and read-only, and `run` does not carry them back: bash expands `MAILPATH` before each prompt with no gate
+- In a nested shell, the shell rule of `send` reads only the text that clux typed in the line, not the prompt, so a prompt such as `~/source$` does not refuse `ls`, and `.` after a prompt is found. It also refuses `complete`, `compgen`, `bindkey`, `setopt`, `unsetopt`, `zle`, `autoload`, `zmodload` and assignments to `path`, `fpath`, `cdpath`, `FPATH`, `MAIL*` and `FUNCNEST`
+- `health` sends no API key. The pane check tries the last 100 characters of a long cursor line, and a cursor line that Laya still cuts gives exit code 2 and `laya: the cursor line is too long to examine: send --key C-c`
+- `open` checks the install (the laya import and the checkpoint) with one Python process
 - The typed `__clux_run` line carries the sum of the command that Laya examined and the mode (`plain` or `confirm`; other modes are refused). The pane shell refuses a command file with a different sum, and it asks the question from the mode, not from a file. `rc.bash` gets the private directory as a read-only value, not from an exported variable
 - `run` refuses a command with a control character (exit code 2). The question shows control characters of the reason and the command as `?`
 - The prompt is `clux-<token>$ ` with a random token, so output that shows `clux$ ` is not the prompt

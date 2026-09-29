@@ -206,8 +206,12 @@ laya_checkpoint_present() {
     "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" checkpoint >/dev/null 2>&1
 }
 
+# One client process checks the checkpoint and the laya import of the venv.
+# A CLUX_LAYA_PYTHON that is not the venv python needs its own import check.
 laya_installed() {
-    [ -f "$LAYA_MARKER" ] && laya_checkpoint_present && laya_python_ready "$LAYA_PY"
+    [ -f "$LAYA_MARKER" ] && [ -x "$LAYA_VENV/bin/python3" ] || return 1
+    "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" ready >/dev/null 2>&1 || return 1
+    [ "$LAYA_PY" = "$LAYA_VENV/bin/python3" ] || laya_python_ready "$LAYA_PY"
 }
 
 # laya_python_ready PY — PY runs and can import the laya package that the
@@ -309,10 +313,11 @@ laya_start_server() {
 }
 
 # laya_wait_health DEADLINE — health each 0.5 s until SECONDS reaches
-# DEADLINE, for the server of LAYA_PID, LAYA_URL and LAYA_KEY. Returns 2
-# when the server process ends, 1 when the time ends.
+# DEADLINE, for the server of LAYA_PID and LAYA_URL. Returns 2 when the
+# server process ends, 1 when the time ends. health sends no key: the key
+# goes only to a server that laya_owns_port found.
 laya_wait_health() {
-    until CLUX_LAYA_URL="$LAYA_URL" CLUX_LAYA_KEY="$LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" health >/dev/null 2>&1; do
+    until S_LAYA_URL="$LAYA_URL" S_LAYA_KEY= laya_call health >/dev/null; do
         kill -0 "$LAYA_PID" 2>/dev/null || return 2
         [ "$SECONDS" -lt "$1" ] || return 1
         sleep .5
@@ -588,6 +593,11 @@ set -o ignoreeof
 # interrupt key, with no gate) or the idle time end the pane shell. bash
 # still lets set +o ignoreeof remove it; each line of Claude runs in a subshell.
 readonly IGNOREEOF=1000000 TMOUT=0
+# MAILPATH holds a message that the shell expands ($(...) too) before a
+# prompt, with no gate, and FUNCNEST=1 would stop __clux_line. The four
+# names stay unset and read-only.
+unset MAIL MAILPATH MAILCHECK FUNCNEST
+readonly MAIL MAILPATH MAILCHECK FUNCNEST
 __clux_refuse() { printf '%s\n' 'refused: this word closes the companion'; return 1; }
 exit() { __clux_refuse; }
 exec() { __clux_refuse; }
@@ -598,7 +608,7 @@ __clux_clear() { printf '\033[2J\033[H'; }
 __clux_carry() {
   case "$1" in
     ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
-    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|SHLVL|PWD|OLDPWD|LD_*|DYLD_*|_) return 1 ;;
+    __clux*|BASH*|ENV|PROMPT_COMMAND|PS[0-4]|IFS|SHELLOPTS|POSIXLY_CORRECT|CDPATH|GLOBIGNORE|HISTFILE|HISTCMD|TMOUT|IGNOREEOF|MAIL|MAILPATH|MAILCHECK|FUNCNEST|SHLVL|PWD|OLDPWD|LD_*|DYLD_*|_) return 1 ;;
   esac
   return 0
 }
@@ -857,7 +867,8 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 
 # pane_state — the prompt type on the cursor line (spec section 9). Sets
 # CURSOR_LINE, SCREEN_ABOVE (the 4 lines above it) and PANE_STATE. Returns 1
-# when the capture fails and 6 when the client fails. The 3.9.0 regular
+# when the capture fails, 7 when the cursor line is too long for Laya
+# (client exit 3) and 6 when the client fails. The 3.9.0 regular
 # expressions (line_is_credential) can only add "credential". This call
 # forks the client, so the poll loops call it only on each fifth step, and
 # it sends no request when the window that goes to Laya (the last 5 lines)
@@ -880,7 +891,8 @@ pane_state() {
         *) SCREEN_ABOVE= ;;
     esac
     PANE_STATE=
-    out=$(printf '%s\n' "$window" | laya_call pane) || return 6
+    out=$(printf '%s\n' "$window" | laya_call pane)
+    case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
     [[ "$out" =~ $PANE_RE ]] || return 6
     PANE_STATE="${BASH_REMATCH[1]}"
     [ "$PANE_STATE" = credential ] || ! line_is_credential "$CURSOR_LINE" || PANE_STATE=credential
@@ -901,7 +913,7 @@ probe_pane() {
             PROBE_FAILS=0
             [ "$PANE_STATE" != credential ] || return 3
             ;;
-        6)
+        6|7)
             PROBE_FAILS=$((PROBE_FAILS + 1))
             ! line_is_credential "$CURSOR_LINE" || return 3
             [ "$PROBE_FAILS" -lt 3 ] || return 6
@@ -930,6 +942,10 @@ check_pane() {
             current_companion_alive || fail 'no companion is open for this owner' 4
             printf '%s\n' 'cannot read the companion pane: try again' >&2
             return 5
+            ;;
+        7)
+            printf '%s\n' 'laya: the cursor line is too long to examine: send --key C-c' >&2
+            return 2
             ;;
         *) refuse_laya; return ;;
     esac
@@ -1072,10 +1088,15 @@ send_gate() {
     if [ "$prompt" -eq 0 ] && ! pane_runs_program; then
         shell=1
     fi
-    flags=--screen
-    [ "$shell" -eq 0 ] || flags="$flags --shell"
-    # shellcheck disable=SC2086
-    laya_gate $flags < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    if [ "$shell" -eq 1 ]; then
+        # The shell rule reads only the text that clux typed in this line,
+        # not the prompt: the client gets the start of the line and the
+        # typed text as two lines, and Laya gets them as one line.
+        typed_split "$1"
+        laya_gate --screen --shell < <(printf '%s\n%s\n%s\n' "$SCREEN_ABOVE" "$LINE_HEAD" "$LINE_TYPED")
+    else
+        laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+    fi
     case $? in
         0) ;;
         2) fail 'laya: bad input' 2 ;;
@@ -1096,6 +1117,29 @@ send_gate() {
             ;;
     esac
     return 0
+}
+
+LINE_HEAD=
+LINE_TYPED=
+
+# typed_split TEXT — split the cursor line plus TEXT for the shell rule.
+# LINE_TYPED is the text that clux typed in this line ($D/typed, which send
+# keeps) plus TEXT. LINE_HEAD is the start of the line before it: the
+# prompt, and text that the user typed. When the line does not end with the
+# typed text (the user or a key changed the line, or the line ended), all
+# of the line is typed text, so the rule reads more, not less. No fork.
+typed_split() {
+    local t="" line="${CURSOR_LINE%"${CURSOR_LINE##*[![:space:]]}"}"
+    [ ! -f "$D/typed" ] || IFS= read -r -d '' t < "$D/typed" || true
+    t="${t%"${t##*[![:space:]]}"}"
+    if [ -z "$t" ]; then
+        LINE_HEAD="$CURSOR_LINE"
+    elif [[ "$line" == *"$t" ]]; then
+        LINE_HEAD="${line:0:$((${#line} - ${#t}))}"
+    else
+        LINE_HEAD=
+    fi
+    LINE_TYPED="${CURSOR_LINE:${#LINE_HEAD}}$1"
 }
 
 # key_is KEY PATTERN... — KEY matches one of the glob PATTERNs, with no case
@@ -1765,7 +1809,7 @@ send_command() {
         esac
         send_key "$key"
         # C-c discards the line, so the text that the pane did not show goes too.
-        case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden"; run_not_started ;; esac
+        case "$key" in [Cc]-[Cc]|'^'[Cc]) rm -f "$D/hidden" "$D/typed"; run_not_started ;; esac
         return
     fi
     lock_and_load || return
@@ -1806,6 +1850,7 @@ send_command() {
         send_gate "" || return
         line_unchanged || return
         send_key "$key"
+        ! accept_key "$key" || rm -f "$D/typed"
         return
     fi
     [ -n "$text" ] || [ -n "$key" ] || usage
@@ -1826,14 +1871,18 @@ send_command() {
     send_gate "$text" || return
     line_unchanged || return
     if [ "$enter" -eq 1 ] && prompt_input; then
+        rm -f "$D/typed"
         send_line "$PROMPT_INPUT$text"
         return
     fi
     send_literal "$text"
     if [ "$enter" -eq 1 ]; then
         send_key Enter
+        rm -f "$D/typed"
         return
     fi
+    # The text that clux typed in this line, for the shell rule (typed_split).
+    printf '%s' "$text" >> "$D/typed"
     # Text that the pane does not show (after stty -echo) cannot be examined
     # by the next gate, so each later send and run refuses until C-c. Only a
     # shell line must show the text: a pager or a menu takes a key and can
