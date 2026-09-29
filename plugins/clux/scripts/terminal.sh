@@ -1992,9 +1992,10 @@ seq_now() {
 
 # The last run was secret. Its text can still be on the screen, so read and
 # wait --pattern refuse until the next run clears the screen and the history.
+# SEQ (from seq_now) lets a loop read the seq one time for two checks.
 last_run_secret() {
-    local n
-    n=$(seq_now)
+    local n="${1:-}"
+    [ -n "$n" ] || n=$(seq_now)
     [ "${n:-0}" -gt 0 ] && [ -e "$D/$n.secret" ]
 }
 
@@ -2005,8 +2006,8 @@ refuse_secret() {
 
 # A dangerous run waits for the answer of the user in the pane.
 laya_confirm_pending() {
-    local n
-    n=$(seq_now)
+    local n="${1:-}"
+    [ -n "$n" ] || n=$(seq_now)
     [ "${n:-0}" -gt 0 ] && [ -e "$D/$n.confirm" ]
 }
 
@@ -2498,7 +2499,7 @@ guard_fresh() {
 }
 
 wait_command() {
-    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh runs
+    local timeout=60 max=200 mode="" value="" probe deadline screen sum="" discard=0 rc guard_fails=0 fresh runs seq
     local hist="" hist_now hist_limit back
     # The lines of the last capture that a guard examined. The first line is
     # a mark that no screen line is, so the set is never empty.
@@ -2569,9 +2570,11 @@ wait_command() {
             # held secret. The guard runs again only when the screen changes.
             deadline=$((SECONDS + timeout))
             while :; do
-                laya_confirm_pending && { refuse_confirm; return; }
+                # One read of the seq for the two checks of this tick.
+                seq=$(seq_now)
+                laya_confirm_pending "$seq" && { refuse_confirm; return; }
                 # A secret run that another verb started during the wait.
-                last_run_secret && { refuse_secret; return; }
+                last_run_secret "$seq" && { refuse_secret; return; }
                 probe_pane
                 case $? in
                     3) refuse_credential; return ;;

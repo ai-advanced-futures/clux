@@ -920,6 +920,25 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$output" = pending ]
 }
 
+@test "wait --pattern reads the seq one time for each tick" {
+    local d="$BATS_TEST_TMPDIR/seq1" log="$BATS_TEST_TMPDIR/seqn"
+    mkdir -p "$d"
+    printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
+    run bash -c "source '$TERMINAL'; D='$d'
+        ensure_open() { state_load; }; sleep() { :; }; probe_pane() { return 0; }
+        seq_now() { echo x >> '$log'; printf 5; }
+        tmux_state() { [ \"\$1\" != display-message ] || return 1; printf 'build\\nDONE\\n'; }
+        laya_guard() { GUARD_TEXT=\$(cat \"\$1\"); GUARD_HELD=0; GUARD_LATE=0; }
+        wait_command --pattern DONE --timeout 3"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    # The secret check before the loop, then one read for the first tick.
+    [ "$(wc -l < "$log" | tr -d ' ')" = 2 ]
+    # With a seq, the checks read no state.
+    run bash -c "source '$TERMINAL'; D='$d'; seq_now() { echo CALLED; }
+        : > '$d/7.confirm'; laya_confirm_pending 7 && echo pending; last_run_secret 7 || echo plain"
+    [ "$output" = $'pending\nplain' ]
+}
+
 @test "send and run read the state again after the typing lock" {
     local d="$BATS_TEST_TMPDIR/seq"
     mkdir -p "$d"
