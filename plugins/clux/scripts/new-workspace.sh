@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Builds the clux workspace: window "---" at index 0 running the editor,
-# window "claude" at index 1 running the agents dashboard, both names pinned
+# window named like the session at index 1 running the agents dashboard, both names pinned
 # with automatic-rename off. That layout is the one default shape and does
 # not change (see docs/superpowers/specs/2026-08-16-clux-session-surface-design.md).
 #
@@ -206,8 +206,8 @@ if [ "$BASE_INDEX" -gt 0 ] 2>/dev/null; then
     _tmux move-window -s "$WIN_ID_EDITOR" -t "${SESSION_NAME}:0"
 fi
 
-# Create "claude" window (next available index after the editor window).
-WIN_ID_CLAUDE=$(_tmux new-window -t "$SESSION_NAME" -n "claude" -c "$PROJECT_DIR" \
+# Create the agents window, named like the session (next available index after the editor window).
+WIN_ID_CLAUDE=$(_tmux new-window -t "$SESSION_NAME" -n "$SESSION_NAME" -c "$PROJECT_DIR" \
     -P -F '#{window_id}')
 # Same empty-target trap as above, and this one is reachable even on a session
 # tmux DID create: a name holding a ":" makes "-t <name>" parse as

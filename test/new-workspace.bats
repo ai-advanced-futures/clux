@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # new-workspace.bats — new-workspace.sh: builds the clux workspace ("---" at
-# index 0 running the editor, "claude" at index 1 running the agents
+# index 0 running the editor, the session name at index 1 running the agents
 # dashboard). Run with TMUX unset so the script uses the plain "tmux" socket
 # and prints the session name to stdout instead of switching a client — the
 # documented detached-run path this script exists to support (also how bats
@@ -52,7 +52,7 @@ STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
 }
 
-@test "new-workspace: creates '---' at index 0 and 'claude' at index 1, addressed by window id, with base-index move-window" {
+@test "new-workspace: creates '---' at index 0 and the session name at index 1, addressed by window id, with base-index move-window" {
     local log="$BATS_TEST_TMPDIR/stub.log"
     local project_dir="$BATS_TEST_TMPDIR/project"
     mkdir -p "$project_dir"
@@ -70,7 +70,7 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ "$output" = "work1" ]
     grep -qF -- "-n --- " "$log" || grep -qF -- "-n ---" "$log" || false
-    grep -qF -- "-n claude" "$log" || false
+    grep -qF -- "-n work1 " "$log" || false
     grep -qF 'set-option -w -t @10 automatic-rename off' "$log" || false
     grep -qF 'set-option -w -t @11 automatic-rename off' "$log" || false
     # base-index > 0 -> the editor window is moved to index 0.
