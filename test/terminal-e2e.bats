@@ -1554,16 +1554,28 @@ stop_holders() {
 # Background 2
 @test "a background session with no dashboard opens a private server and prints both attach lines" {
     bg_setup
-    local sock
-    run "$TERMINAL" open
-    [ "$status" -eq 0 ] || { echo "$output"; false; }
-    sock="$(bg_dir)/sock"
-    [[ "$output" == *$'\nmode=socket\nattach=tmux -S '"$sock"$' attach\nattach_in_tmux=TMUX= tmux -S '"$sock"' attach' ]] || false
-    run "$TERMINAL" run -- 'echo sock-ok'
-    [[ "$output" == *$'sock-ok\nexit=0' ]] || false
-    [ "$(bg_window_count)" = 1 ]
-    "$TERMINAL" close
-    ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
+    local sock agents="$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents" decoy
+    mkdir -p "$agents" "$CLUX_AGENT_STATE_DIR/1-1/agents"
+    # Each decoy names a pane that is not the dashboard of this session, so
+    # open must refuse it: the file of another session, a pane that is gone,
+    # and the file of this session under another tmux server.
+    for decoy in \
+        "$agents/$BG_DASH_PANE~fedcba98-4567-4890-abcd-ef0123456789" \
+        "$agents/%99~$CLAUDE_CODE_SESSION_ID" \
+        "$CLUX_AGENT_STATE_DIR/1-1/agents/$BG_DASH_PANE~$CLAUDE_CODE_SESSION_ID"; do
+        : > "$decoy"
+        run "$TERMINAL" open
+        [ "$status" -eq 0 ] || { echo "$decoy: $output"; false; }
+        sock="$(bg_dir)/sock"
+        [[ "$output" == *$'\nmode=socket\nattach=tmux -S '"$sock"$' attach\nattach_in_tmux=TMUX= tmux -S '"$sock"' attach' ]] \
+            || { echo "$decoy: $output"; false; }
+        run "$TERMINAL" run -- 'echo sock-ok'
+        [[ "$output" == *$'sock-ok\nexit=0' ]] || false
+        [ "$(bg_window_count)" = 1 ] || { echo "$decoy: a window in the dashboard"; false; }
+        "$TERMINAL" close
+        ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
+        rm -f "$decoy"
+    done
 }
 
 # Background 4
