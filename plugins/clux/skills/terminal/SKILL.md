@@ -70,6 +70,7 @@ When `laya install` gives exit code 2 and `CLUX_LAYA_PYTHON cannot import laya`,
 - `terminal.sh open` opens a split pane below Claude. Use this mode by default.
 - `terminal.sh open --socket` opens the companion on a private tmux server. Use it only when the user asks for it. Give the user the `attach=` line from the output. When the user is in tmux, give the `attach_in_tmux=` line: tmux refuses an attach from inside tmux when `TMUX` is set.
 - `open` re-uses the companion when it is open. It is safe to call `open` again.
+- Only one `open` or `close` of a companion works at a time. A second one waits for the first. When it waits more than 75 seconds, you get exit code 5 and `another open or close of this companion is at work: try again`. Try again.
 - In a Claude Code session with no tmux pane (for example a background session that `claude --bg` or a `claude agents` dashboard starts), `open` opens the companion as a new window, `clux-terminal <id>`, in the tmux session of the dashboard. Give the user the `window=` line from the output. When there is no dashboard, `open` opens the companion on a private tmux server: give the user the `attach=` line and the `attach_in_tmux=` line.
 - When the session restarts (for example `claude stop`, then `claude attach`), the companion closes, and a verb gives exit code 4. Use `open` again.
 - Outside tmux and outside a Claude Code session, the script does not operate (exit code 2). Tell the user to start Claude Code in tmux.

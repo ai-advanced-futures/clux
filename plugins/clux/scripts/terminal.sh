@@ -64,6 +64,13 @@ LAYA_INSTALL_BUDGET=540
 OPEN_BUDGET_DEFAULT=120
 # The pause of the watchdog of a session owner (spec 2026-09-30, section 9).
 WATCH_INTERVAL=10
+# The directory lock (dir_lock). open and close wait at most DIR_LOCK_WAIT
+# seconds for a live holder: more than one open (laya_wait_ready 60 s and
+# wait_for_prompt 5 s). The SessionEnd hook has 5 s, so it waits
+# DIR_LOCK_HOOK_WAIT. CLUX_TERMINAL_LOCK_WAIT changes DIR_LOCK_WAIT (tests).
+DIR_LOCK_WAIT=75
+case "${CLUX_TERMINAL_LOCK_WAIT:-}" in ''|*[!0-9]*) ;; *) DIR_LOCK_WAIT="$CLUX_TERMINAL_LOCK_WAIT" ;; esac
+DIR_LOCK_HOOK_WAIT=2
 
 usage() {
     printf '%s\n' 'usage: terminal.sh open|run|send|read|wait|close|list|check-line|laya install|laya status' >&2
@@ -513,6 +520,7 @@ laya_restart_if_down() {
 
 # open_abort PANE_MADE MESSAGE [CODE] — undo a failed open and exit CODE
 # (default 6, spec section 6, step 8). PANE_MADE is 1 when the pane exists.
+# open holds the lock of $D (dir_lock), so $D is only what this open made.
 open_abort() {
     laya_stop_server "$LAYA_PID"
     [ "$1" -eq 0 ] || kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
@@ -660,7 +668,22 @@ reap_companions() {
         [ -z "$listing" ] || reap_pane_dirs "$listing"
     fi
     reap_session_dirs
+    reap_stale_locks
     stop_reaped_servers
+}
+
+# locked DIR COMMAND... — the reaper: run COMMAND under the lock of DIR, and
+# try the lock one time. A DIR whose lock another live verb holds stays:
+# that verb opens or closes it now. A lock that this process held before
+# stays held.
+locked() {
+    local dir="$1" held=0 rc=0
+    shift
+    ! dir_held "$dir" || held=1
+    dir_lock "$dir" 0 || return 0
+    "$@" || rc=$?
+    [ "$held" -eq 1 ] || dir_unlock "$dir"
+    return "$rc"
 }
 
 # reap_pane_dirs LISTING — the 4.0.0 loop over $ROOT/<server-key>-<pane>.
@@ -676,12 +699,12 @@ reap_pane_dirs() {
         _clux_valid_server_key "$server" || continue
         case "$owner" in ''|*[!0-9]*) continue ;; esac
         if [ "$server" = "$SERVER_KEY" ]; then
-            listing_has_pane "$listing" "%$owner" || remove_companion_dir "$dir" 1
+            listing_has_pane "$listing" "%$owner" || locked "$dir" remove_companion_dir "$dir" 1
         else
             # kill -0 is the whole liveness test for a foreign server: had the
             # kernel reused that pid, the start time in the key could not match.
             pid="${server%%-*}"
-            kill -0 "$pid" 2>/dev/null || remove_companion_dir "$dir" 0
+            kill -0 "$pid" 2>/dev/null || locked "$dir" remove_companion_dir "$dir" 0
         fi
     done
 }
@@ -697,27 +720,35 @@ reap_pane_dirs() {
 #   - its pane does not hold the mark (section 8).
 # A directory with no state, or with no mark on its pane, stays while it is
 # younger than OPEN_BUDGET_DEFAULT. The Laya pid goes to REAP_PIDS, as in
-# reap_pane_dirs.
+# reap_pane_dirs. The state is read and the decision made under the lock of
+# DIR (locked), so the state of an open or close at work does not count.
 reap_session_dirs() {
-    local dir now age
+    local dir now
     [ -d "$ROOT/sessions" ] || return 0
     now=$(date +%s)
     for dir in "$ROOT"/sessions/*; do
         [ -d "$dir" ] || continue
         valid_short_id "${dir##*/}" || continue
-        age=$((now - $(dir_mtime "$dir")))
-        if ! state_load "$dir"; then
-            [ "$age" -lt "$OPEN_BUDGET_DEFAULT" ] || rm -rf "$dir"
-            continue
-        fi
-        if ! owner_alive "$S_OWNER_PID" "$S_OWNER_START" \
-            || { [ "$OWNER_KIND" = session ] && [ "$S_OWNER_PID" = "$OWNER_PID" ] \
-                && [ "$S_OWNER_START" = "$OWNER_START" ] && [ "$S_SESSION" != "$SESSION_ID" ]; } \
-            || { [ "$age" -ge "$OPEN_BUDGET_DEFAULT" ] && ! companion_pane_is_ours "$S_SOCKET" "$S_PANE"; }; then
-            remove_companion_dir "$dir" 0
-            watch_stop "$S_WATCH_PID" "${dir##*/}"
-        fi
+        locked "$dir" reap_session_dir "$dir" "$now"
     done
+}
+
+# reap_session_dir DIR NOW — one directory of reap_session_dirs.
+reap_session_dir() {
+    local dir="$1" age
+    [ -d "$dir" ] || return 0
+    age=$(($2 - $(dir_mtime "$dir")))
+    if ! state_load "$dir"; then
+        [ "$age" -lt "$OPEN_BUDGET_DEFAULT" ] || rm -rf "$dir"
+        return 0
+    fi
+    if ! owner_alive "$S_OWNER_PID" "$S_OWNER_START" \
+        || { [ "$OWNER_KIND" = session ] && [ "$S_OWNER_PID" = "$OWNER_PID" ] \
+            && [ "$S_OWNER_START" = "$OWNER_START" ] && [ "$S_SESSION" != "$SESSION_ID" ]; } \
+        || { [ "$age" -ge "$OPEN_BUDGET_DEFAULT" ] && ! companion_pane_is_ours "$S_SOCKET" "$S_PANE"; }; then
+        remove_companion_dir "$dir" 0
+        watch_stop "$S_WATCH_PID" "${dir##*/}"
+    fi
 }
 
 # dir_mtime DIR — the last change of DIR in seconds since the epoch: GNU
@@ -2062,6 +2093,9 @@ open_command() {
     if [ "$OWNER_KIND" = session ]; then
         mkdir -p "$ROOT/sessions"; chmod 700 "$ROOT/sessions"
     fi
+    # The lock of $D until open exits (dir_lock). A second open of this owner
+    # waits here, then finds the companion of the first and uses it.
+    dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
     reap_companions
     if current_companion_alive; then
         laya_restart_if_down || return
@@ -2235,6 +2269,7 @@ READING=
 # marker that this verb holds.
 verb_exit() {
     release_typing_lock
+    release_dir_locks
     [ -z "$READING" ] || rm -f "$D/$READING.reading"
 }
 
@@ -2306,6 +2341,63 @@ release_typing_lock() {
     [ "$TYPING_LOCK" -eq 1 ] || return 0
     rm -f "$D/typing"
     TYPING_LOCK=0
+}
+
+# The directory lock: the ONE rule for the verbs that make or remove a
+# companion directory (open, close, the watchdog and the reaper). Each one
+# makes or removes DIR only while it holds DIR.lock. Without it, two opens
+# of one owner (two parallel Bash calls, or a session and its subagent) both
+# make DIR, and the one that fails removes the state of the other. The lock
+# is beside DIR, not in it, because open and close remove DIR. It is a
+# pid_link, so a holder that was killed does not keep it.
+#
+# dir_lock DIR SECONDS — take the lock of DIR. Wait at most SECONDS while a
+# live verb holds it (0: try one time). Returns 1 when it is not free. The
+# EXIT trap frees it.
+dir_lock() {
+    local deadline=$((SECONDS + $2))
+    [ -d "${1%/*}" ] || return 1
+    until pid_link "$1.lock"; do
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep .2
+    done
+    trap verb_exit EXIT
+}
+
+# dir_held DIR — this process holds the lock of DIR.
+dir_held() { [ "$(readlink "$1.lock" 2>/dev/null)" = "$$" ]; }
+
+# dir_unlock DIR — free the lock of DIR when this process holds it.
+dir_unlock() {
+    ! dir_held "$1" || rm -f "$1.lock"
+}
+
+# release_dir_locks — free each directory lock that this process holds. The
+# links are the record, so no list can forget one.
+release_dir_locks() {
+    local link
+    [ -n "${ROOT:-}" ] || return 0
+    for link in "$ROOT"/*.lock "$ROOT"/sessions/*.lock; do
+        [ "$(readlink "$link" 2>/dev/null)" != "$$" ] || rm -f "$link"
+    done
+}
+
+# refuse_dir_lock — the message when another verb holds the lock too long.
+refuse_dir_lock() {
+    fail 'another open or close of this companion is at work: try again' 5
+}
+
+# reap_stale_locks — remove the lock of a directory that is gone when its
+# holder is dead. pid_link takes it first, so a live verb that took it in
+# the meantime keeps it. The locks of this process stay: open holds the lock
+# of its own directory before it makes the directory.
+reap_stale_locks() {
+    local link
+    for link in "$ROOT"/*.lock "$ROOT"/sessions/*.lock; do
+        [ -L "$link" ] && [ ! -e "${link%.lock}" ] || continue
+        ! dir_held "${link%.lock}" || continue
+        ! pid_link "$link" || rm -f "$link"
+    done
 }
 
 # line_unchanged — the cursor line is still the line that the gate
@@ -3126,6 +3218,11 @@ watch_command() {
         state_load "$dir" || exit 0
         [ "$S_WATCH_PID" = "$$" ] || exit 0
         owner_alive "$S_OWNER_PID" "$S_OWNER_START" && continue
+        # An open or a close at work holds the lock: try again after the
+        # next pause. Under the lock, read the state again.
+        dir_lock "$dir" 0 || continue
+        state_load "$dir" || exit 0
+        [ "$S_WATCH_PID" = "$$" ] || exit 0
         close_session_dir "$dir" watchdog
         exit 0
     done
@@ -3150,10 +3247,16 @@ session_env_command() {
 
 # close_session ID [WHO] — close the companion of the session ID: for the
 # hook and for close --session. The state must name the same full id: two
-# sessions can have the same first 8 characters.
+# sessions can have the same first 8 characters. The hook has 5 s, so it
+# waits DIR_LOCK_HOOK_WAIT for the lock; when the lock stays busy, the
+# watchdog or the reaper closes the companion later.
 close_session() {
+    local wait="$DIR_LOCK_WAIT"
+    [ "${2:-}" != hook ] || wait="$DIR_LOCK_HOOK_WAIT"
     resolve_root
     D="$ROOT/sessions/${1:0:8}"
+    [ -d "$ROOT/sessions" ] || return 0
+    dir_lock "$D" "$wait" || refuse_dir_lock
     state_load || return 0
     [ "$S_SESSION" = "$1" ] || return 0
     close_session_dir "$D" "${2:-}"
@@ -3199,6 +3302,15 @@ close_command() {
         OWNER_KIND=pane
     fi
     terminal_init
+    # The lock of $D (dir_lock), then the state under it. The SessionEnd
+    # hook has 5 s, so it waits less. With no parent directory there is no
+    # companion, and no lock can be made.
+    [ -d "${D%/*}" ] || return 0
+    if [ "$hook" -eq 1 ]; then
+        dir_lock "$D" "$DIR_LOCK_HOOK_WAIT" || refuse_dir_lock
+    else
+        dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
+    fi
     state_load || return 0
     if [ "$OWNER_KIND" = session ]; then
         # [inferred] The state of another session: exit 4, touch nothing.

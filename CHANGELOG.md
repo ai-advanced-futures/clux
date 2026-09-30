@@ -16,6 +16,7 @@ All notable changes to clux are documented here.
 - Outside tmux and outside a Claude Code session, the verbs give exit code 2 and `clux terminal must run inside tmux or in a Claude Code session` (it was `clux terminal must run inside tmux`)
 - `open` in socket mode also prints `attach_in_tmux=TMUX= tmux -S <sock> attach`, because tmux refuses an attach from inside tmux when `TMUX` is set
 - `state` is written to a temporary file and then renamed, so a reader never sees a half-written file
+- `open`, `close`, the watchdog and the reaper make or remove a companion directory only while they hold its lock (`<dir>.lock`, with the pid of its holder). Two parallel `open` calls of one session make one companion: the second waits and re-uses it. Before, the call that failed removed the directory of the call that worked. A second `open` or `close` waits at most 75 seconds, then gives exit code 5 and `another open or close of this companion is at work: try again`. The `SessionEnd` hook waits at most 2 seconds and then leaves the companion to the watchdog or the reaper. The watchdog and the reaper skip a companion that another verb holds
 
 ## [4.0.0]
 

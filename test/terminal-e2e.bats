@@ -35,6 +35,7 @@ setup() {
 teardown() {
     local sock
     stop_fake_laya
+    stop_holders
     for sock in "$CLUX_TERMINAL_DIR"/*/sock "$CLUX_TERMINAL_DIR"/sessions/*/sock; do
         [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1 || true
     done
@@ -131,6 +132,24 @@ bg_dir() {
 # bg_window_count — the number of windows in the dashboard session.
 bg_window_count() {
     "$REAL_TMUX" list-windows -t dash | wc -l | tr -d ' '
+}
+
+# lock_holder DIR — a live process that holds the lock of DIR, as a second
+# verb does. stop_holders stops all of them (teardown does it too).
+lock_holder() {
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    ln -s "$!" "$1.lock"
+    printf '%s\n' "$!" >> "$BATS_TEST_TMPDIR/holders"
+}
+
+stop_holders() {
+    local pid
+    [ -f "$BATS_TEST_TMPDIR/holders" ] || return 0
+    while read -r pid; do
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done < "$BATS_TEST_TMPDIR/holders"
+    rm -f "$BATS_TEST_TMPDIR/holders"
 }
 
 # 1
@@ -1664,4 +1683,102 @@ bg_window_count() {
     i=0
     while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
     ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; echo 'the laya server stayed'; false; }
+}
+
+# The directory lock: open, close, the watchdog and the reaper make or remove
+# a companion directory only while they hold DIR.lock.
+@test "two parallel opens of one background session make one companion, and close removes it" {
+    bg_setup
+    local d p1 p2
+    "$TERMINAL" open > "$BATS_TEST_TMPDIR/o1" 2>&1 &
+    p1=$!
+    "$TERMINAL" open > "$BATS_TEST_TMPDIR/o2" 2>&1 &
+    p2=$!
+    wait "$p1" || { cat "$BATS_TEST_TMPDIR/o1"; false; }
+    wait "$p2" || { cat "$BATS_TEST_TMPDIR/o2"; false; }
+    d=$(bg_dir)
+    [ -f "$d/state" ]
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o1"
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o2"
+    [ "$("$REAL_TMUX" -S "$d/sock" list-panes -a | wc -l | tr -d ' ')" = 1 ]
+    run "$TERMINAL" run -- 'echo race-ok'
+    [[ "$output" == *$'race-ok\nexit=0' ]] || false
+    [ ! -e "$d.lock" ]
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+    [ ! -e "$d.lock" ]
+}
+
+@test "while another verb holds the lock, open and close refuse with exit 5 and change nothing" {
+    bg_setup
+    local d
+    d=$(bg_dir)
+    mkdir -p "${d%/*}"
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" open
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [[ "$output" == *'another open or close of this companion is at work'* ]] || false
+    [ ! -e "$d" ]
+    [ "$(bg_window_count)" = 1 ]
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$d.lock" ]
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" close
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [ -f "$d/state" ]
+    # The SessionEnd hook waits at most 2 s, says nothing, and leaves the
+    # companion to the watchdog or the reaper.
+    run "$TERMINAL" close --hook <<< '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+    [ "$status" -eq 0 ]
+    [ -f "$d/state" ]
+    stop_holders
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+}
+
+@test "in split mode, open refuses with exit 5 while another verb holds the lock" {
+    local d
+    "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    "$TERMINAL" close
+    [ ! -e "$d" ]
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" open
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [ ! -e "$d" ]
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -f "$d/state" ]
+    "$TERMINAL" close
+}
+
+@test "the reaper keeps a dead companion while a live verb holds its lock, and removes it after" {
+    bg_setup
+    local old watch
+    "$TERMINAL" open >/dev/null
+    old=$(bg_dir)
+    watch=$(sed -n 's/^watch_pid=//p' "$old/state")
+    [ -z "$watch" ] || kill "$watch"
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    lock_holder "$old"
+    # A second session: its open runs the reaper over the dead companion.
+    export CLUX_SESSION_ID=fedcba98-4567-4890-abcd-ef0123456789
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -f "$old/state" ] || { echo 'the reaper removed a locked companion'; false; }
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$old" ]
+    [ ! -e "$old.lock" ]
+    "$TERMINAL" close
 }
