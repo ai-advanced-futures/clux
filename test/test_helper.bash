@@ -130,6 +130,10 @@ stop_live_laya() {
 
 setup() {
     install_stubs
+    # A run from a Claude Code Bash call gets the session of that call. Each
+    # test selects its owner: a pane (TMUX and TMUX_PANE) or a session that
+    # the test sets.
+    unset CLAUDE_CODE_SESSION_ID CLUX_SESSION_ID CLAUDE_PID
     export QUEUE_FILE="$BATS_TEST_TMPDIR/queue"
     export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME"
     export CLUX_NOTIFY_FILE="$QUEUE_FILE"   # agent path resolves via resolve_notify_file() -> CLUX_NOTIFY_FILE (tier 1)

@@ -237,3 +237,14 @@ The install makes a Python venv in `~/.local/share/clux/laya` with `laya` 0.3.21
 
 The policies are in `plugins/clux/config/laya/`. There is no user copy: a command in the companion can write the files of the user, so a user copy could turn off the checks.
 
+### Background sessions
+
+From 4.1.0, the companion also operates in a Claude Code session with no tmux pane, for example a `claude --bg` session or a session that a `claude agents` dashboard starts:
+
+- `open` opens a new window, `clux-terminal <id>`, in the tmux session of the dashboard, on your default tmux server. `<id>` is the first 8 characters of the session ID. The output has a `window=<session>:<index>` line.
+- With no dashboard, or with `--socket`, `open` opens the companion on a private tmux server. The output has an `attach=` line, and an `attach_in_tmux=` line to use inside tmux.
+- The `SessionStart` hook writes `CLUX_SESSION_ID` to the environment of the session. The companion uses it, else `CLAUDE_CODE_SESSION_ID`, and the session process `CLAUDE_PID`.
+- A watchdog process closes the companion and stops its Laya server when the session process ends, also after a crash. The `SessionEnd` hook closes it at the end of the session and at `/clear`.
+- The companion pane holds a mark. After a restart of the tmux server, a verb that does not find the mark gives exit code 4 and types nothing.
+- clux finds only a dashboard on the default tmux server. A dashboard on another server (`tmux -L name`) gives a private server.
+

@@ -31,6 +31,8 @@ The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude ru
 <plugin>/scripts/terminal.sh laya install
 ```
 
+**Background sessions.** A Claude Code session with no tmux pane (`claude --bg`, or a session that a `claude agents` dashboard starts) also gets a companion. It opens as a new window, `clux-terminal <id>`, in the tmux session of the dashboard. With no dashboard, it opens on a private tmux server, and Claude gives you the line to attach to it. The companion closes when the session ends, also after a crash.
+
 For more detail, read the [reference](docs/reference.md).
 
 ## More

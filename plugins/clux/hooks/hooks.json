@@ -20,7 +20,8 @@
       { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 }
     ] }],
     "SessionStart": [{ "matcher": "startup|resume|clear", "hooks": [
-      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/agent-state.sh remove", "timeout": 5 }
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/agent-state.sh remove", "timeout": 5 },
+      { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/terminal.sh session-env --hook", "timeout": 5 }
     ] }],
     "SessionEnd": [{ "matcher": "", "hooks": [
       { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh", "timeout": 5 },

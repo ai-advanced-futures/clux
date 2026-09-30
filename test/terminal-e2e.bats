@@ -12,6 +12,7 @@ TERMINAL="$SCRIPTS_DIR/terminal.sh"
 # these end-to-end tests exist to drive. Everything else it does is repeated
 # below, including its teardown cleanup.
 setup() {
+    unset CLAUDE_CODE_SESSION_ID CLUX_SESSION_ID CLAUDE_PID
     export HOME="$BATS_TEST_TMPDIR/home"
     # A short root, not BATS_TEST_TMPDIR: `open --socket` puts its socket
     # inside this directory and tmux caps that path at ~100 bytes.
@@ -34,9 +35,16 @@ setup() {
 teardown() {
     local sock
     stop_fake_laya
-    for sock in "$CLUX_TERMINAL_DIR"/*/sock; do
-        [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1
+    for sock in "$CLUX_TERMINAL_DIR"/*/sock "$CLUX_TERMINAL_DIR"/sessions/*/sock; do
+        [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1 || true
     done
+    # bg_setup: the default server of the test and the owner process.
+    # An empty bg-tmpdir would name the default server of the user: skip it.
+    if [ -s "$BATS_TEST_TMPDIR/bg-tmpdir" ] && [ -n "$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")" ]; then
+        env -u TMUX TMUX_TMPDIR="$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")" "$REAL_TMUX" kill-server >/dev/null 2>&1 || true
+        rm -rf "$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")"
+    fi
+    [ ! -f "$BATS_TEST_TMPDIR/bg-owner" ] || kill "$(cat "$BATS_TEST_TMPDIR/bg-owner")" 2>/dev/null || true
     "$REAL_TMUX" -S "$TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
     rm -rf "$CLUX_TERMINAL_DIR" "$BATS_TEST_TMPDIR"
 }
@@ -71,6 +79,58 @@ pane_shows() {
         i=$((i + 1))
     done
     return 1
+}
+
+# bg_setup — a background Claude session: no TMUX and no TMUX_PANE, a
+# session id, and an owner process (a sleep of the test). TMUX_TMPDIR makes
+# the default tmux server a test server, with the dashboard session "dash".
+bg_setup() {
+    local raw
+    unset TMUX TMUX_PANE CLUX_SESSION_ID
+    export TMUX_TMPDIR
+    raw=$(mktemp -d /tmp/ctt.XXXX)
+    [ -n "$raw" ] && [ -d "$raw" ] || { echo 'bg_setup: no test tmux directory'; return 1; }
+    # tmux resolves TMUX_TMPDIR with realpath. On macOS /tmp is a link to
+    # /private/tmp, so the guard below needs the resolved path, as the
+    # prototype does (test.sh, pwd -P). [inferred] The cd is a separate step:
+    # with an empty mktemp result, cd would stay in the current directory.
+    TMUX_TMPDIR=$(cd "$raw" && pwd -P) && [ -n "$TMUX_TMPDIR" ] && [ -d "$TMUX_TMPDIR" ] \
+        || { echo 'bg_setup: no test tmux directory'; return 1; }
+    printf '%s\n' "$TMUX_TMPDIR" > "$BATS_TEST_TMPDIR/bg-tmpdir"
+    export CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents"
+    export CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    "$REAL_TMUX" -f /dev/null new-session -d -s dash -x 120 -y 40 3>&-
+    # The isolation guard of the prototype: the default server must be the
+    # test server. Test 4 stops the default server; it must never be the
+    # server of the user.
+    case "$("$REAL_TMUX" display-message -p '#{socket_path}')" in
+        "$TMUX_TMPDIR"/*) ;;
+        *) echo 'bg_setup: the default tmux server is not the test server'; return 1 ;;
+    esac
+    BG_DASH_PANE=$("$REAL_TMUX" list-panes -t dash -F '#{pane_id}')
+    BG_DASH_KEY=$("$REAL_TMUX" display-message -p '#{pid}-#{start_time}')
+}
+
+# bg_add_cache — the agent-state file that maps the session to the
+# dashboard pane, as hooks/agent-state.sh writes it at the first prompt.
+bg_add_cache() {
+    local sid="${CLUX_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}"
+    mkdir -p "$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents"
+    : > "$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents/$BG_DASH_PANE~$sid"
+}
+
+# bg_dir — the private directory of the session owner of the test.
+bg_dir() {
+    local sid="${CLUX_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}"
+    printf '%s' "$CLUX_TERMINAL_DIR/sessions/${sid:0:8}"
+}
+
+# bg_window_count — the number of windows in the dashboard session.
+bg_window_count() {
+    "$REAL_TMUX" list-windows -t dash | wc -l | tr -d ' '
 }
 
 # 1
@@ -1448,4 +1508,160 @@ pane_shows() {
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     "$TERMINAL" wait --timeout 5 --idle >/dev/null
     [ "$(cat "$BATS_TEST_TMPDIR/v.txt")" = hello ]
+}
+
+# Background 1
+@test "a background session opens a window in the dashboard session and closes it" {
+    bg_setup
+    bg_add_cache
+    local want
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" == *$'\nmode=window\nwindow=dash:1' ]] || false
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | tail -1)" = 'clux-terminal 0123abcd' ]
+    run "$TERMINAL" run -- 'echo hi'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'hi\nexit=0' ]] || false
+    want=$(pwd -P)
+    run "$TERMINAL" run -- 'pwd -P'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$want"$'\nexit=0' ]] || false
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$(bg_dir)" ]
+    [ "$(bg_window_count)" = 1 ]
+}
+
+# Background 2
+@test "a background session with no dashboard opens a private server and prints both attach lines" {
+    bg_setup
+    local sock
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    sock="$(bg_dir)/sock"
+    [[ "$output" == *$'\nmode=socket\nattach=tmux -S '"$sock"$' attach\nattach_in_tmux=TMUX= tmux -S '"$sock"' attach' ]] || false
+    run "$TERMINAL" run -- 'echo sock-ok'
+    [[ "$output" == *$'sock-ok\nexit=0' ]] || false
+    [ "$(bg_window_count)" = 1 ]
+    "$TERMINAL" close
+    ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
+}
+
+# Background 4
+@test "after a restart of the tmux server, a stale pane id reaches no pane of the user" {
+    bg_setup
+    bg_add_cache
+    local d stale i=0
+    "$TERMINAL" open >/dev/null
+    d=$(bg_dir)
+    stale=$(sed -n 's/^pane=//p' "$d/state")
+    # Stop the watchdog, so that only the verbs of the test act on $d.
+    # [inferred] This matters only from Task 7, which starts the watchdog.
+    [ -z "$(sed -n 's/^watch_pid=//p' "$d/state")" ] || kill "$(sed -n 's/^watch_pid=//p' "$d/state")"
+    "$REAL_TMUX" kill-server
+    sleep .5
+    "$REAL_TMUX" -f /dev/null new-session -d -s user -x 120 -y 40 'bash --noprofile --norc -i' 3>&-
+    while ! "$REAL_TMUX" list-panes -t "$stale" >/dev/null 2>&1 && [ "$i" -lt 8 ]; do
+        "$REAL_TMUX" split-window -d -t user 'bash --noprofile --norc -i' 3>&- 2>/dev/null \
+            || "$REAL_TMUX" new-window -d -t user 'bash --noprofile --norc -i' 3>&-
+        i=$((i + 1))
+    done
+    "$REAL_TMUX" list-panes -t "$stale" >/dev/null
+    # History in the pane of the user, so that a clear-history would show.
+    "$REAL_TMUX" send-keys -t "$stale" 'seq 1 100' Enter
+    i=0
+    while [ "$("$REAL_TMUX" display-message -p -t "$stale" '#{history_size}')" -eq 0 ] && [ "$i" -lt 25 ]; do
+        sleep .2
+        i=$((i + 1))
+    done
+    run "$TERMINAL" run -- 'echo SHOULD-NOT-TYPE'
+    [ "$status" -eq 4 ]
+    ! "$REAL_TMUX" capture-pane -p -t "$stale" | grep -q SHOULD-NOT-TYPE || false
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+    "$REAL_TMUX" list-panes -t "$stale" >/dev/null
+    [ "$("$REAL_TMUX" display-message -p -t "$stale" '#{history_size}')" -gt 0 ]
+}
+
+# Background 5
+@test "after a clear with no hook, open under the new session id closes the old companion" {
+    bg_setup
+    bg_add_cache
+    local old
+    "$TERMINAL" open >/dev/null
+    old=$(bg_dir)
+    export CLUX_SESSION_ID=fedcba98-4567-4890-abcd-ef0123456789
+    run "$TERMINAL" run -- 'echo x'
+    [ "$status" -eq 4 ]
+    [ -d "$old" ]
+    bg_add_cache
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$old" ]
+    [ -d "$(bg_dir)" ]
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | grep -c '^clux-terminal 0123abcd$')" = 0 ]
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | grep -c '^clux-terminal fedcba98$')" = 1 ]
+    "$TERMINAL" close
+}
+
+# Background 6
+@test "the directory and the exported variables stay between runs in window mode" {
+    bg_setup
+    bg_add_cache
+    run "$TERMINAL" open
+    [[ "$output" == *'mode=window'* ]] || false
+    "$TERMINAL" run -- 'cd /tmp' >/dev/null
+    "$TERMINAL" run -- 'export X=1' >/dev/null
+    run "$TERMINAL" run -- 'pwd; echo $X'
+    [[ "$output" == *$'/tmp\n1\nexit=0' ]] || false
+    "$TERMINAL" close
+}
+
+@test "open starts a watchdog for a background companion, open starts it again when it is gone, and close stops it" {
+    bg_setup
+    bg_add_cache
+    local d watch new i=0
+    "$TERMINAL" open >/dev/null
+    d=$(bg_dir)
+    watch=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$watch" ]
+    ps -ww -o command= -p "$watch" | grep -q 'terminal.sh watch --session 0123abcd'
+    "$TERMINAL" open >/dev/null
+    [ "$(sed -n 's/^watch_pid=//p' "$d/state")" = "$watch" ]
+    kill "$watch"
+    while kill -0 "$watch" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    "$TERMINAL" open >/dev/null
+    new=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$new" ]
+    [ "$new" != "$watch" ]
+    kill -0 "$new"
+    "$TERMINAL" close
+    i=0
+    while kill -0 "$new" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    ! kill -0 "$new" 2>/dev/null || false
+}
+
+# Background 3
+@test "the watchdog closes a background companion and stops its laya server when the owner process ends" {
+    bg_setup
+    bg_add_cache
+    local data="$BATS_TEST_TMPDIR/data" d pid i=0
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    run env CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    d=$(bg_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    [ -n "$pid" ]
+    kill -0 "$pid"
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    while [ -e "$d" ] && [ "$i" -lt 75 ]; do sleep .2; i=$((i + 1)); done
+    [ ! -e "$d" ] || { echo 'the directory stayed'; false; }
+    [ "$(bg_window_count)" = 1 ] || { echo 'the window stayed'; false; }
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; echo 'the laya server stayed'; false; }
 }

@@ -2,6 +2,21 @@
 
 All notable changes to clux are documented here.
 
+## [4.1.0]
+
+### Added
+
+- **The companion operates in background sessions.** In a Claude Code session with no tmux pane (`claude --bg`, or a session that a `claude agents` dashboard starts), `terminal.sh open` opens the companion as a new window, `clux-terminal <id>`, in the tmux session of the dashboard (`mode=window`, `window=<session>:<index>`). With no dashboard, or with `--socket`, it opens on a private tmux server. The owner is the Claude session: `CLUX_SESSION_ID`, which the `SessionStart` hook now writes to `CLAUDE_ENV_FILE`, else `CLAUDE_CODE_SESSION_ID`, and the process `CLAUDE_PID`. Its private directory is `sessions/<first 8 characters of the session id>`
+- A watchdog process closes a background companion and stops its Laya server when the session process ends, also after a crash with no `SessionEnd`. `close --hook` with no `TMUX` closes the companion of the `session_id` in the hook payload
+- A background companion pane holds a mark (`@clux-companion`). A verb that does not find the mark gives exit code 4, so a stale pane ID after a restart of the tmux server never names a pane of the user
+- The reaper also removes the directory of a session whose process ended, and a companion left from a `/clear` whose `SessionEnd` hook did not run
+
+### Changed
+
+- Outside tmux and outside a Claude Code session, the verbs give exit code 2 and `clux terminal must run inside tmux or in a Claude Code session` (it was `clux terminal must run inside tmux`)
+- `open` in socket mode also prints `attach_in_tmux=TMUX= tmux -S <sock> attach`, because tmux refuses an attach from inside tmux when `TMUX` is set
+- `state` is written to a temporary file and then renamed, so a reader never sees a half-written file
+
 ## [4.0.0]
 
 ### Changed
