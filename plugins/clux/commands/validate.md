@@ -284,11 +284,17 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
                echo "FAIL hook: $EVENT not wired to agent-state.sh $ARG in hooks.json"
            fi
        done
-       if grep -qF 'terminal.sh close --hook' "$HOOKS_FILE"; then
-           echo "OK  hook: SessionEnd → terminal.sh close --hook"
-       else
-           echo "FAIL hook: SessionEnd not wired to terminal.sh close --hook"
-       fi
+       # The companion terminal (4.0.0 close, 4.1.0 session-env). Each hook
+       # command in hooks.json has a check here (test/validate-hooks.bats).
+       for PAIR in "SessionStart:session-env --hook" "SessionEnd:close --hook"; do
+           EVENT="${PAIR%%:*}"
+           ARG="${PAIR#*:}"
+           if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -qF "terminal.sh $ARG" "$HOOKS_FILE"; then
+               echo "OK  hook: $EVENT → terminal.sh $ARG"
+           else
+               echo "FAIL hook: $EVENT not wired to terminal.sh $ARG in hooks.json"
+           fi
+       done
    fi
    ```
 2. **Hook scripts executable**:
