@@ -100,9 +100,10 @@ require_owner() {
         OWNER_KIND=pane
         return 0
     fi
-    SESSION_ID="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-    [ -n "$SESSION_ID" ] || fail 'clux terminal must run inside tmux or in a Claude Code session' 2
-    valid_session_id "$SESSION_ID" || fail 'invalid Claude session id' 2
+    caller_session_id
+    [ -n "$CALLER_SESSION_RAW" ] || fail 'clux terminal must run inside tmux or in a Claude Code session' 2
+    [ -n "$CALLER_SESSION" ] || fail 'invalid Claude session id' 2
+    SESSION_ID="$CALLER_SESSION"
     OWNER_PID="${CLAUDE_PID:-}"
     need_perl
     positive_integer "$OWNER_PID" && process_start "$OWNER_PID" \
@@ -119,13 +120,17 @@ valid_session_id() {
     [[ $1 =~ $SESSION_ID_RE ]]
 }
 
-# caller_session_id — the Claude session id of the caller in
-# CALLER_SESSION, as require_owner reads it; empty when there is none or it
-# is not valid. A pane owner records it (open, owner_ensure), so the
-# SessionEnd hook closes only a companion of its own session.
+# caller_session_id — the one read of the Claude session id of the caller:
+# CLUX_SESSION_ID first, then CLAUDE_CODE_SESSION_ID. CALLER_SESSION_RAW
+# is the value as it is; CALLER_SESSION is the same value, or empty when
+# it is not valid. require_owner refuses a value that is not valid. A pane
+# owner records CALLER_SESSION (open, owner_ensure), so the SessionEnd hook
+# closes only a companion of its own session.
 CALLER_SESSION=
+CALLER_SESSION_RAW=
 caller_session_id() {
-    CALLER_SESSION="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+    CALLER_SESSION_RAW="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+    CALLER_SESSION="$CALLER_SESSION_RAW"
     valid_session_id "$CALLER_SESSION" || CALLER_SESSION=
 }
 
