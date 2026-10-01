@@ -217,6 +217,8 @@ clux uses tmux's `automatic-rename` with `#{pane_title}` — Claude Code sets th
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it, and the pane shell keeps its directory and its exported variables from one command to the next.
 
+The companion needs `perl` for its locks and for the start time of a process (macOS and most Linux systems have it). Without perl, `terminal.sh` gives exit code 2 and `clux terminal needs perl`. `/clux:validate` gives a `WARN` when perl is missing.
+
 From 4.0.0, the companion needs Laya, a local model. Laya examines each command before it runs, each line that Claude sends with Enter, the prompt in the pane, and all pane text that goes back to Claude:
 
 - A dangerous command runs only after you type `y` in the pane.

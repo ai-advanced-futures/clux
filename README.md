@@ -21,7 +21,7 @@ Restart Claude Code. Run:
 
 ## Requirements
 
-tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 is only for the companion terminal.
+tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 and perl are only for the companion terminal (macOS and most Linux systems have perl). Without perl, `terminal.sh` gives exit code 2 and `clux terminal needs perl`.
 
 ## Companion terminal
 
