@@ -170,6 +170,37 @@ teardown() {
     [ "$(_sessions)" = "a b" ] || { echo "after off: $(_sessions)"; false; }
 }
 
+# A session name is not a safe tmux target. Each name below made the follow
+# step fail with no message while the status said "follow: on".
+_follows_to_name() {
+    _t new-session -d -s "$1" -x 80 -y 24
+    local id
+    # tmux before 3.6 changes `.` and `:` in a name to `_`; the test then runs
+    # with the name that tmux kept.
+    id=$(_t list-sessions -F '#{session_id}' | sort -t'$' -k2 -n | tail -1)
+    _attach 1 a; _attach 2 a
+    _follow on >/dev/null
+    _t switch-client -c "$(_client 1)" -t "$id"
+    _wait_for '[ "$(_t list-clients -F "#{session_id}" | sort -u | tr -d "\n")" = "$id" ]' \
+        || { echo "session [$1]: clients on $(_sessions)"; false; }
+}
+
+@test "session-follow: a session name with a dot is followed" {
+    _follows_to_name 'a.c'
+}
+
+@test "session-follow: a session name with a colon is followed" {
+    _follows_to_name 'a:c'
+}
+
+@test "session-follow: a session name that looks like a session id is followed" {
+    _follows_to_name '$9'
+}
+
+@test "session-follow: a session name that looks like a pane id is followed" {
+    _follows_to_name '%2'
+}
+
 @test "session-follow: sync for a client that is gone does nothing and gives exit code 0" {
     _attach 1 a
     run _follow sync 'no-such-client'

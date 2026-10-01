@@ -28,15 +28,19 @@ is_on() {
 
 # sync <client> — move each client on a different session to the session of
 # <client>.
+#
+# The session is read, compared and targeted by its id ($3), never by its
+# name. A name is not a safe target: tmux reads `a.c` as window a pane c, `a:c`
+# as session a window c, and `%2` and `$9` as a pane id and a session id.
 sync() {
     local leader="$1" target name session
     [[ -n "$leader" ]] || return 0
-    target=$(tmux display-message -p -c "$leader" '#{client_session}' 2>/dev/null)
-    [[ -n "$target" ]] || return 0
+    target=$(tmux display-message -p -c "$leader" '#{session_id}' 2>/dev/null)
+    [[ "$target" == \$* ]] || return 0
     while IFS="$TAB" read -r name session; do
         [[ -n "$name" && "$session" != "$target" ]] || continue
-        tmux switch-client -c "$name" -t "=$target" 2>/dev/null
-    done < <(tmux list-clients -F "#{client_name}${TAB}#{client_session}" 2>/dev/null)
+        tmux switch-client -c "$name" -t "$target" 2>/dev/null
+    done < <(tmux list-clients -F "#{client_name}${TAB}#{session_id}" 2>/dev/null)
     return 0
 }
 
