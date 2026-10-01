@@ -1844,6 +1844,34 @@ wait_gone() {
     "$TERMINAL" close
 }
 
+@test "after claude --resume, open re-uses the companion with the new owner, and the old watchdog keeps it" {
+    bg_setup
+    local d pane watch first second
+    # Stdout only: the dashboard search of path.sh can write to stderr.
+    first=$("$TERMINAL" open 2> "$BATS_TEST_TMPDIR/err1") || { cat "$BATS_TEST_TMPDIR/err1"; false; }
+    d=$(bg_dir)
+    pane=$(sed -n 's/^pane=//p' "$d/state")
+    watch=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$watch" ] && kill -0 "$watch" || { echo 'no watchdog'; false; }
+    # The Claude process ends; `claude --resume` starts a new process with
+    # the same session id, within the pause of the watchdog.
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    second=$("$TERMINAL" open 2> "$BATS_TEST_TMPDIR/err2") || { echo "second open failed"; cat "$BATS_TEST_TMPDIR/err2"; false; }
+    [ "$second" = "$first" ] || { echo "a new companion: $second (was: $first)"; false; }
+    grep -qx "owner_pid=$CLAUDE_PID" "$d/state" || { echo 'the owner is not the new process'; cat "$d/state"; false; }
+    # The old watchdog reads the state at its next pause (10 s).
+    sleep 12
+    [ -f "$d/state" ] || { echo 'the watchdog closed the companion of a live owner'; false; }
+    "$REAL_TMUX" -S "$d/sock" list-panes -t "$pane" >/dev/null 2>&1 || { echo 'the companion pane is gone'; false; }
+    run "$TERMINAL" run -- 'echo resumed'
+    [[ "$output" == *$'resumed\nexit=0' ]] || { echo "run: $output"; false; }
+    "$TERMINAL" close
+}
+
 # open_parallel N — start N opens at the same time; each writes its output
 # to $BATS_TEST_TMPDIR/o<n>. OPEN_FAILS names each open that did not exit 0.
 open_parallel() {

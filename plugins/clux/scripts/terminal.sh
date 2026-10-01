@@ -693,15 +693,20 @@ reap_companions() {
 
 # locked DIR COMMAND... — the reaper: run COMMAND under the lock of DIR, and
 # try the lock one time. A DIR whose lock another live verb holds stays:
-# that verb opens or closes it now. A lock that this process held before
-# stays held.
+# that verb opens or closes it now. When this process holds the lock of DIR
+# already (open holds the lock of its own $D while it reaps), COMMAND runs
+# under that lock, and the lock stays held: a flock cannot be taken two
+# times by one process, so a second lock_take would fail.
 locked() {
-    local dir="$1" held=0 rc=0
+    local dir="$1" rc=0
     shift
-    ! dir_held "$dir" || held=1
+    if dir_held "$dir"; then
+        "$@"
+        return
+    fi
     dir_lock "$dir" 0 || return 0
     "$@" || rc=$?
-    [ "$held" -eq 1 ] || dir_unlock "$dir"
+    dir_unlock "$dir"
     return "$rc"
 }
 
@@ -771,6 +776,13 @@ reap_session_dir() {
     age=$(($2 - $(dir_mtime "$dir")))
     if ! state_load "$dir"; then
         [ "$age" -lt "$OPEN_BUDGET_DEFAULT" ] || rm -rf "$dir"
+        return 0
+    fi
+    # The companion of this session, in the directory that open holds: open
+    # decides about it (open_command). After `claude --resume` the old
+    # owner process is gone, and open re-uses the companion with the new
+    # owner (owner_ensure).
+    if [ "$dir" = "$D" ] && [ "$OWNER_KIND" = session ] && state_is_ours; then
         return 0
     fi
     if ! owner_alive "$S_OWNER_PID" "$S_OWNER_START" \
@@ -2130,6 +2142,7 @@ open_command() {
     reap_companions
     if current_companion_alive; then
         laya_restart_if_down || return
+        owner_ensure || return 5
         # [inferred] The companion is alive and stays. With no watchdog, open
         # says so and exits 1; the next open tries again. [inferred]
         watch_ensure || { [ "$?" -eq 5 ] && return 5; fail 'cannot start the companion watchdog' 1; }
@@ -3269,6 +3282,22 @@ watch_start() {
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ"
 }
 
+# owner_ensure — open re-uses the companion of this session: the owner in
+# state becomes the process of the caller. After `claude --resume` the
+# session id is the same and the process is new; with the old owner in
+# state, the watchdog would close the companion of a live session. The
+# typing lock, then the state again, as in watch_ensure. The status is 5
+# when the lock is not free.
+owner_ensure() {
+    [ "$OWNER_KIND" = session ] || return 0
+    [ "$S_OWNER_PID" != "$OWNER_PID" ] || [ "$S_OWNER_START" != "$OWNER_START" ] || return 0
+    lock_and_load || return 5
+    S_OWNER_PID="$OWNER_PID"
+    S_OWNER_START="$OWNER_START"
+    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ"
+    release_typing_lock
+}
+
 # watch_ensure — for a session owner, start the watchdog when the one in
 # state is not alive (spec 2026-09-30, section 9). [inferred] The typing
 # lock, then the state again: no run writes its seq at the same time.
@@ -3305,10 +3334,15 @@ watch_command() {
         [ "$S_WATCH_PID" = "$$" ] || exit 0
         owner_alive "$S_OWNER_PID" "$S_OWNER_START" && continue
         # An open or a close at work holds the lock: try again after the
-        # next pause. Under the lock, read the state again.
+        # next pause. Under the lock, read the state again and test the
+        # owner again: an open (owner_ensure) can have written a new owner.
         dir_lock "$dir" 0 || continue
         state_load "$dir" || exit 0
         [ "$S_WATCH_PID" = "$$" ] || exit 0
+        if owner_alive "$S_OWNER_PID" "$S_OWNER_START"; then
+            dir_unlock "$dir"
+            continue
+        fi
         close_session_dir "$dir" watchdog
         exit 0
     done
