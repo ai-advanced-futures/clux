@@ -1704,20 +1704,22 @@ lock_holder() {
     p1=$!
     "$TERMINAL" open > "$BATS_TEST_TMPDIR/o2" 2>&1 &
     p2=$!
-    wait "$p1" || { cat "$BATS_TEST_TMPDIR/o1"; false; }
-    wait "$p2" || { cat "$BATS_TEST_TMPDIR/o2"; false; }
+    wait "$p1" || { echo 'open 1 failed:'; cat "$BATS_TEST_TMPDIR/o1"; false; }
+    wait "$p2" || { echo 'open 2 failed:'; cat "$BATS_TEST_TMPDIR/o2"; false; }
     d=$(bg_dir)
-    [ -f "$d/state" ]
-    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o1"
-    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o2"
-    [ "$("$REAL_TMUX" -S "$d/sock" list-panes -a | wc -l | tr -d ' ')" = 1 ]
+    [ -f "$d/state" ] || { echo 'no state after the opens'; false; }
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o1" || { echo 'open 1:'; cat "$BATS_TEST_TMPDIR/o1"; false; }
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o2" || { echo 'open 2:'; cat "$BATS_TEST_TMPDIR/o2"; false; }
+    local panes
+    panes=$("$REAL_TMUX" -S "$d/sock" list-panes -a | wc -l | tr -d ' ')
+    [ "$panes" = 1 ] || { echo "panes on the private server: $panes"; false; }
     run "$TERMINAL" run -- 'echo race-ok'
-    [[ "$output" == *$'race-ok\nexit=0' ]] || false
-    [ ! -e "$d.lock" ]
+    [[ "$output" == *$'race-ok\nexit=0' ]] || { echo "run: status $status: $output"; false; }
+    [ ! -e "$d.lock" ] || { echo 'the lock file stays after the opens'; ls -la "${d%/*}"; false; }
     run "$TERMINAL" close
-    [ "$status" -eq 0 ]
-    [ ! -e "$d" ]
-    [ ! -e "$d.lock" ]
+    [ "$status" -eq 0 ] || { echo "close: status $status: $output"; false; }
+    [ ! -e "$d" ] || { echo 'the directory stays after close'; ls -la "$d"; false; }
+    [ ! -e "$d.lock" ] || { echo 'the lock file stays after close'; false; }
 }
 
 @test "while another verb holds the lock, open and close refuse with exit 5 and change nothing" {
