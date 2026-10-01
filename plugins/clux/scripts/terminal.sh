@@ -2167,6 +2167,11 @@ open_command() {
     # The fields of a session owner (spec 2026-09-30, section 6). The old
     # state can have set them, so each one gets its value here.
     S_SESSION=; S_OWNER_PID=; S_OWNER_START=; S_SERVER=; S_WATCH_PID=
+    # A pane owner records its session id too, when Claude Code gives one:
+    # the later close of the SessionEnd hook (close_later) then closes only
+    # a companion of the session that ended.
+    S_SESSION="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+    valid_session_id "$S_SESSION" || S_SESSION=
     if [ "$OWNER_KIND" = session ]; then
         S_SESSION="$SESSION_ID"
         S_OWNER_PID="$OWNER_PID"
@@ -3417,13 +3422,19 @@ close_pane_locked() {
 # while this process waits; this process then does not close it. When the
 # hook saw no state (an open was at work and had not written it), the
 # process closes the companion that it finds.
+#
+# The session id of the hook payload (HOOK_SESSION_ID) is a second check:
+# a state that names another session stays, also when the hook saw no
+# state. A pane owner that Claude Code gave no session id has no session in
+# state; then only the token check applies.
 close_later() {
-    local token=
+    local token= session="${HOOK_SESSION_ID:-}"
     ! state_load || token="$S_TOKEN"
     ( trap '' HUP INT TERM
       dir_lock "$D" "$DIR_LOCK_WAIT" || exit 0
       state_load || exit 0
       [ -z "$token" ] || [ "$S_TOKEN" = "$token" ] || exit 0
+      [ -z "$session" ] || [ -z "$S_SESSION" ] || [ "$S_SESSION" = "$session" ] || exit 0
       "$@"
     ) < /dev/null > /dev/null 2>&1 3>&- &
 }
@@ -3443,9 +3454,10 @@ close_command() {
     # 2026-09-30, section 9). A bad session_id is nothing to do.
     if [ "$hook" -eq 1 ]; then
         input=$(cat)
+        hook_session_id "$input"
+        valid_session_id "$HOOK_SESSION_ID" || HOOK_SESSION_ID=
         if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
-            hook_session_id "$input"
-            valid_session_id "$HOOK_SESSION_ID" || return 0
+            [ -n "$HOOK_SESSION_ID" ] || return 0
             close_session "$HOOK_SESSION_ID" hook
             return 0
         fi

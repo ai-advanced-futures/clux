@@ -1844,6 +1844,27 @@ wait_gone() {
     "$TERMINAL" close
 }
 
+@test "in split mode, the later close of a hook that saw no state keeps a companion of another session" {
+    local d
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    grep -qx 'session=aaaaaaaa-4567-4890-abcd-ef0123456789' "$d/state" \
+        || { echo 'a pane owner does not record its session'; cat "$d/state"; false; }
+    lock_holder "$d"
+    # The hook of session aaaaaaaa runs while an open is at work and has no
+    # state yet.
+    mv "$d/state" "$d/state.hidden"
+    run "$TERMINAL" close --hook <<< '{"session_id":"aaaaaaaa-4567-4890-abcd-ef0123456789"}'
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "hook: $status $output"; false; }
+    # The open that holds the lock is of a new session in the same pane.
+    sed 's/^session=.*/session=bbbbbbbb-4567-4890-abcd-ef0123456789/' "$d/state.hidden" > "$d/state"
+    rm -f "$d/state.hidden"
+    stop_holders
+    wait_gone "$d.lock" 10
+    sleep 1
+    [ -f "$d/state" ] || { echo 'the later close closed the companion of another session'; false; }
+}
+
 @test "after claude --resume, open re-uses the companion with the new owner, and the old watchdog keeps it" {
     bg_setup
     local d pane watch first second
