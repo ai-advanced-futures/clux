@@ -44,6 +44,24 @@ sync() {
     return 0
 }
 
+# hook_command <script path> — the tmux command that the hook runs.
+#
+# The path goes through three readers, and each one needs its own quoting:
+#   1. sh       — single quotes, so a space, `$` or `"` in the path is text
+#   2. run-shell — it expands formats, so `#` becomes `##`
+#   3. tmux     — the command is in double quotes, so `\`, `"` and `$` get a `\`
+# set-hook takes the command as one string, so layer 3 cannot be left out.
+hook_command() {
+    local sq="'" esc="'\\''" path sh
+    path=${1//$sq/$esc}
+    path=${path//#/##}
+    sh="'$path' sync '#{hook_client}'"
+    sh=${sh//\\/\\\\}
+    sh=${sh//\"/\\\"}
+    sh=${sh//\$/\\\$}
+    printf 'run-shell "%s"' "$sh"
+}
+
 status() {
     if is_on; then echo "follow: on"; else echo "follow: off"; fi
     echo "sessions:"
@@ -54,7 +72,7 @@ status() {
 
 case "${1:-status}" in
     on)
-        tmux set-hook -g "$HOOK" "run-shell \"$CURRENT_DIR/session-follow.sh sync '#{hook_client}'\"" || exit 1
+        tmux set-hook -g "$HOOK" "$(hook_command "$CURRENT_DIR/session-follow.sh")" || exit 1
         # The clients can be on different sessions now. The client that was
         # used last is the one the user looks at, so the others go to it.
         latest=$(tmux list-clients -F "#{client_activity}${TAB}#{client_name}" 2>/dev/null \

@@ -105,7 +105,7 @@ teardown() {
     local n
     n=$(_t show-hooks -g | grep -cF 'client-session-changed[92]')
     [ "$n" -eq 1 ] || { echo "[92] lines: $n"; false; }
-    _t show-hooks -g | grep -F 'client-session-changed[92]' | grep -qF "$FOLLOW sync"
+    _t show-hooks -g | grep -F 'client-session-changed[92]' | grep -qF "'$FOLLOW' sync"
 }
 
 @test "session-follow: off removes the [92] hook and keeps the other hooks" {
@@ -199,6 +199,43 @@ _follows_to_name() {
 
 @test "session-follow: a session name that looks like a pane id is followed" {
     _follows_to_name '%2'
+}
+
+# The hook holds the path of the script. The path goes through sh, run-shell
+# and the tmux parser, so each character that one of them reads must be quoted.
+_follows_from_dir() {
+    local dir="$BATS_TEST_TMPDIR/$1"
+    mkdir -p "$dir"
+    cp "$FOLLOW" "$dir/session-follow.sh"
+    _attach 1 a; _attach 2 a
+    env PATH="$BATS_TEST_TMPDIR/bin:$PATH" "$dir/session-follow.sh" on >/dev/null
+    _t switch-client -c "$(_client 1)" -t b
+    _wait_for '[ "$(_sessions)" = "b b" ]' || { echo "script in [$1]: clients on $(_sessions)"; false; }
+}
+
+@test "session-follow: the hook works when the script path has a space" {
+    _follows_from_dir 'my dir'
+}
+
+@test "session-follow: the hook works when the script path has quote characters" {
+    _follows_from_dir "it's \"q\""
+}
+
+@test "session-follow: the hook works when the script path has #, \$, % and a backslash" {
+    _follows_from_dir '#{x} #1 $HOME 50% b\n'
+}
+
+@test "session-follow: the hook works with bash 3.2 quoting rules" {
+    # macOS ships bash 3.2 as /bin/bash. Its pattern replacement differs from
+    # bash 5 for quote characters, and hook_command depends on it.
+    [ -x /bin/bash ] || skip "no /bin/bash"
+    local dir="$BATS_TEST_TMPDIR/it's \"q\" #1 \$x"
+    mkdir -p "$dir"
+    cp "$FOLLOW" "$dir/session-follow.sh"
+    _attach 1 a; _attach 2 a
+    env PATH="$BATS_TEST_TMPDIR/bin:$PATH" /bin/bash "$dir/session-follow.sh" on >/dev/null
+    _t switch-client -c "$(_client 1)" -t b
+    _wait_for '[ "$(_sessions)" = "b b" ]' || { echo "clients on $(_sessions)"; false; }
 }
 
 @test "session-follow: sync for a client that is gone does nothing and gives exit code 0" {
