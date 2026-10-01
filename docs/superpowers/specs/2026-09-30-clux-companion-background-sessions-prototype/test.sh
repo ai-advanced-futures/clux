@@ -3,7 +3,7 @@
 # touches the user's tmux: TMUX_TMPDIR points at a private folder, and TMUX
 # and TMUX_PANE are unset, as in a background Claude session.
 set -u
-P="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+P="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BGC="$P/bgc.sh"
 W=$(cd "$(mktemp -d /tmp/bgct.XXXX)" && pwd -P)
 export TMUX_TMPDIR="$W/tt" CLUX_TERMINAL_DIR="$W/r" CLUX_AGENT_STATE_DIR="$W/st" BGC_WATCH_EVERY=1
