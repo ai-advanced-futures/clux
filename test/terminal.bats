@@ -1495,8 +1495,6 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "the 4.0.0 release names Laya and the run time limit" {
     local t section
     t=$(bash -c "source '$TERMINAL'; echo \"\$RUN_TIMEOUT_DEFAULT\"")
-    grep -q '"version": "4.0.0"' "$REPO_ROOT/plugins/clux/.claude-plugin/plugin.json"
-    [ "$(grep -m1 '^## \[' "$REPO_ROOT/CHANGELOG.md")" = '## [4.0.0]' ]
     section=$(awk '/^## \[4\.0\.0\]/ { on = 1; next } /^## \[/ { on = 0 } on' "$REPO_ROOT/CHANGELOG.md")
     [[ "$section" == *'needs Laya'* ]] || false
     [[ "$section" == *"$t seconds"* ]] || false

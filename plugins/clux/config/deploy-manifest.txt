@@ -41,6 +41,7 @@ session-bar-refresh.sh
 session-reorder.sh
 switch-session.sh
 session-picker.sh
+session-follow.sh
 new-workspace.sh
 new-workspace-prompt.sh
 

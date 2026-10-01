@@ -23,6 +23,10 @@ Restart Claude Code. Run:
 
 tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 is only for the companion terminal.
 
+## Mirror mode
+
+`/clux:follow on` makes all terminals that are attached to tmux show the same session. When you change session in one terminal, the others go with it. `/clux:follow off` stops it.
+
 ## Companion terminal
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A local model, Laya, examines each command before it runs. A dangerous command waits for your `y`. Install Laya one time. Claude asks you before it runs the install:

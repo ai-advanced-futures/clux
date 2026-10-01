@@ -332,7 +332,13 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    done
    # An unindexed user hook writes index 0, so the two sides cannot drop each
    # other. Report anything else already sitting in clux's band.
-   printf '%s' "$HOOKS_OUT" | grep -E "\[9[2-9]\]" && echo "WARN something occupies clux's reserved 92-99 band"
+   # [92] is mirror mode. /clux:follow sets and removes it; setup never does.
+   if printf '%s' "$HOOKS_OUT" | grep -F 'client-session-changed[92]' | grep -qF 'session-follow.sh'; then
+       echo "OK  client-session-changed[92] → session-follow.sh (mirror mode is on)"
+   else
+       echo "OK  mirror mode is off (/clux:follow on starts it)"
+   fi
+   printf '%s' "$HOOKS_OUT" | grep -E "\[9[2-9]\]" | grep -vF 'session-follow.sh' && echo "WARN something occupies clux's reserved 92-99 band"
    ```
 4. **No conflicting system hooks** — check `~/.claude/settings.json`:
    ```bash
@@ -655,7 +661,7 @@ clux validate — health check results
     ✓ notify-sound.sh         ✓ new-workspace.sh
     ✓ truncate-title.sh       ✓ new-workspace-prompt.sh
     ✓ agent-query.sh          ✓ agent-bar.sh
-    ✓ agent-clear.sh
+    ✓ agent-clear.sh          ✓ session-follow.sh
     ✓ all scripts in sync with plugin source
     ✓ render-clux-conf.sh, verify-tmux-conf.sh (plugin source, never deployed)
 
@@ -736,7 +742,8 @@ clux validate — health check results
     ✓ notify-sound.sh executable
     ✓ after-select-window[90] / client-session-changed[90] → agent-clear.sh
     ✓ six [91] hooks → session-bar-refresh.sh
-    ✓ 92-99 band free
+    ✓ mirror mode is off ([92] not set)
+    ✓ 93-99 band free
     ✓ no conflicting system hooks
 
   ──────────────────────────────

@@ -2,6 +2,15 @@
 
 All notable changes to clux are documented here.
 
+## [4.1.0]
+
+### Added
+
+- **Mirror mode: `/clux:follow`.** With mirror mode on, all clients of the tmux server show the same session. When one client changes session, the others go with it. This is for two or more terminals that are attached to one tmux server, for example two computers that connect to one remote machine. `/clux:follow` shows the state, the sessions and the clients and asks; `/clux:follow on`, `off` and `status` do not ask
+- `scripts/session-follow.sh` (`status`, `on`, `off`, `sync <client>`), in the deploy manifest. `on` sets the hook `client-session-changed[92]` and `off` removes it, so the hook is the state: there is no option, the rendered `clux.tmux.conf` does not change, and a new tmux server starts with mirror mode off
+- `sync` moves only the clients that are on a different session, and reads the session of the client when it runs. tmux 3.5a also fires `client-session-changed` for a switch to the same session, and gives the old session in a hook format for a client that the hook moved; each one made an endless loop in a first version
+- `/clux:validate` reports mirror mode, and does not warn about index `[92]` when `session-follow.sh` holds it. The free band is now 93–99
+
 ## [4.0.0]
 
 ### Changed
