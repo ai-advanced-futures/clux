@@ -82,6 +82,45 @@ use_real_ps() {
     ln -sf "$real" "$BATS_TEST_TMPDIR/stubs/ps"
 }
 
+@test "the start time of a process does not change with the TZ and the LC_ALL of the reader" {
+    use_real_ps
+    local live ny paris
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    ny=$(TZ=America/New_York LC_ALL=en_US.UTF-8 proc_start "$live")
+    paris=$(TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 proc_start "$live")
+    [ -n "$ny" ] || { kill "$live"; echo 'no start time'; false; }
+    run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 bash -c \
+        "source '$TERMINAL'; owner_alive '$live' '$ny'"
+    kill "$live"
+    [ "$ny" = "$paris" ] || { echo "New York: $ny, Paris: $paris"; false; }
+    [ "$status" -eq 0 ] || { echo 'a live owner looks dead in another TZ and LC_ALL'; false; }
+}
+
+@test "the sessions reaper in another TZ and LC_ALL keeps a live owner that open recorded" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live start
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    start=$(TZ=America/New_York LC_ALL=C proc_start "$live")
+    mkdir -p "$root/sessions/aaaaaaaa"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=aaaaaaaa-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "$live" "$start" > "$root/sessions/aaaaaaaa/state"
+    run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'; terminal_init; reap_companions"
+    kill "$live"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed the companion of a live owner'; false; }
+}
+
+# proc_start PID — the start time of PID in the form that the script stores
+# (process_start), so the tests and the script have one form. Needs
+# use_real_ps.
+proc_start() {
+    bash -c "source '$TERMINAL'; process_start \"\$1\" && printf '%s' \"\$PROC_START\"" _ "$1"
+}
+
 @test "a session owner needs a valid session id and a live CLAUDE_PID" {
     use_real_ps
     local root="$BATS_TEST_TMPDIR/root" sid=0123abcd-4567-4890-abcd-ef0123456789 id pid
@@ -342,8 +381,7 @@ STUB
     live=$!
     sleep 60 </dev/null >/dev/null 2>&1 3>&- &
     dead=$!
-    start=$(ps -o lstart= -p "$live")
-    start="${start%"${start##*[![:space:]]}"}"
+    start=$(proc_start "$live")
     mkdir -p "$root/sessions/aaaaaaaa" "$root/sessions/bbbbbbbb"
     printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=aaaaaaaa-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
         "$live" "$start" > "$root/sessions/aaaaaaaa/state"
@@ -366,12 +404,10 @@ STUB
     use_real_ps
     session_tmux_stub
     local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" s start other other_start
-    start=$(ps -o lstart= -p $$)
-    start="${start%"${start##*[![:space:]]}"}"
+    start=$(proc_start $$)
     sleep 60 </dev/null >/dev/null 2>&1 3>&- &
     other=$!
-    other_start=$(ps -o lstart= -p "$other")
-    other_start="${other_start%"${other_start##*[![:space:]]}"}"
+    other_start=$(proc_start "$other")
     for s in 11111111 22222222 33333333 44444444 55555555; do mkdir -p "$root/sessions/$s"; done
     # 11111111: no state, young. 22222222: no state, old.
     # 33333333: the process of the caller with another session id (a /clear left-over).
@@ -511,7 +547,7 @@ STUB
     grep -qx 'laya_pid=4242' "$before"
     grep -qx "session=$sid" "$before"
     grep -qx "owner_pid=$$" "$before"
-    grep -q '^owner_start=[A-Z]' "$before"
+    grep -q '^owner_start=[1-9][0-9]*$' "$before"
     grep -qx 'mode=window' "$d/state"
     grep -qx 'pane=%7' "$d/state"
     grep -qx 'socket=/tmp/user.sock' "$d/state"
@@ -529,8 +565,7 @@ STUB
     local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" other start
     sleep 60 </dev/null >/dev/null 2>&1 3>&- &
     other=$!
-    start=$(ps -o lstart= -p "$other")
-    start="${start%"${start##*[![:space:]]}"}"
+    start=$(proc_start "$other")
     mkdir -p "$root/sessions/0123abcd"
     printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=0123abcd-9999-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
         "$other" "$start" > "$root/sessions/0123abcd/state"
@@ -1781,7 +1816,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     run --separate-stderr bash -c "$stubs; run_command -- ls"
     [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
     sleep 30 3>&- & local live=$! start
-    start=$(ps -o lstart= -p "$live" | sed 's/[[:space:]]*$//')
+    start=$(proc_start "$live")
     [ -n "$start" ]
     mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s %s\n' "$live" "$start" > "$d/busy/pid"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
@@ -1790,7 +1825,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     # The pid of a dead holder that another process now has: the start time
     # does not match, so the lock is free.
     mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"
-    printf '%s %s\n' "$live" 'Thu Jan  1 00:00:00 1970' > "$d/busy/pid"
+    printf '%s %s\n' "$live" "$((start - 100))" > "$d/busy/pid"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
     kill "$live"; wait "$live" 2>/dev/null || true
     [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }

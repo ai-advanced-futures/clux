@@ -104,6 +104,7 @@ require_owner() {
     [ -n "$SESSION_ID" ] || fail 'clux terminal must run inside tmux or in a Claude Code session' 2
     valid_session_id "$SESSION_ID" || fail 'invalid Claude session id' 2
     OWNER_PID="${CLAUDE_PID:-}"
+    need_perl
     positive_integer "$OWNER_PID" && process_start "$OWNER_PID" \
         || fail 'cannot identify the Claude session process' 2
     OWNER_START="$PROC_START"
@@ -125,22 +126,36 @@ valid_short_id() {
     [[ $1 =~ $SHORT_ID_RE ]]
 }
 
-# process_start PID — the start time of PID in PROC_START, with the spaces
-# at the end removed: macOS ps adds them. A pid alone can repeat, the pid
-# and its start time cannot. Fails when ps does not know PID.
+# process_start PID — the start time of PID in PROC_START, in seconds since
+# 1970 (UTC). A pid alone can repeat, the pid and its start time cannot.
+# Fails when ps does not know PID. This is the one form of a start time
+# that clux stores and compares (owner_start in state, busy/pid, and the
+# server key of a foreign tmux server). The text of `ps -o lstart=` changes
+# with the TZ and the LC_TIME of the reader, so ps runs with LC_ALL=C and
+# TZ=UTC0, and START_PERL makes a number of the text: a verb with another
+# TZ or LANG than the open reads the same value.
+START_PERL='use Time::Local qw(timegm);
+my %mon = (Jan => 0, Feb => 1, Mar => 2, Apr => 3, May => 4, Jun => 5,
+           Jul => 6, Aug => 7, Sep => 8, Oct => 9, Nov => 10, Dec => 11);
+my @f = split;
+exit 1 unless @f == 5 && exists $mon{$f[1]} && $f[3] =~ /^(\d+):(\d+):(\d+)$/;
+print timegm($3, $2, $1, $f[2], $mon{$f[1]}, $f[4]), "\n";'
 PROC_START=
 process_start() {
-    local out
     PROC_START=
-    out=$(ps -o lstart= -p "$1" 2>/dev/null) || return 1
-    rtrim "$out"
-    PROC_START="$RTRIM"
-    [ -n "$PROC_START" ]
+    positive_integer "${1:-}" || return 1
+    PROC_START=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null | perl -n -e "$START_PERL" 2>/dev/null)
+    positive_integer "$PROC_START" || { PROC_START=; return 1; }
 }
 
-# owner_alive PID START — PID runs and started at START.
+# owner_alive PID START — PID runs and started at START (process_start).
 owner_alive() {
-    positive_integer "${1:-}" && [ -n "${2:-}" ] && process_start "$1" && [ "$PROC_START" = "$2" ]
+    [ -n "${2:-}" ] && process_start "${1:-}" && [ "$PROC_START" = "$2" ]
+}
+
+# need_perl — the locks (LOCK_HELPER) and process_start need perl.
+need_perl() {
+    command -v perl > /dev/null 2>&1 || fail 'clux terminal needs perl' 2
 }
 
 # random_hex BYTES — BYTES random bytes from /dev/urandom in hex, on one
@@ -540,7 +555,7 @@ terminal_init() {
     # is private. The pane shell keeps the user's own umask.
     umask 077
     # The locks of the verbs are flock locks that perl holds (LOCK_HELPER).
-    command -v perl > /dev/null 2>&1 || fail 'clux terminal needs perl' 2
+    need_perl
     resolve_root
     if [ "$OWNER_KIND" = session ]; then
         # A session owner needs no tmux server key (spec 2026-09-30,
@@ -690,12 +705,17 @@ locked() {
     return "$rc"
 }
 
-# tmux_server_alive PID — PID runs and is a tmux process: the liveness test
-# of a foreign server. kill -0 alone keeps the directory of a dead server
-# for ever when another process gets its pid.
+# tmux_server_alive KEY — the foreign tmux server of the server key KEY
+# (<pid>-<start time>, path.sh) runs: its pid is a tmux process that started
+# at the time in the key. The key holds the start_time of tmux; the process
+# can start up to 2 s before it. kill -0 alone, or a tmux command alone,
+# keeps the directory of a dead server for ever when another process (also
+# another tmux server) gets its pid.
 tmux_server_alive() {
-    local command
-    command=$(ps -o command= -p "$1" 2>/dev/null) || return 1
+    local pid="${1%%-*}" start="${1#*-}" command
+    process_start "$pid" || return 1
+    [ $((start - PROC_START)) -ge -2 ] && [ $((start - PROC_START)) -le 2 ] || return 1
+    command=$(ps -o command= -p "$pid" 2>/dev/null) || return 1
     case "$command" in *tmux*) return 0 ;; esac
     return 1
 }
@@ -704,7 +724,7 @@ tmux_server_alive() {
 # _clux_valid_server_key refuses the name "sessions", so this loop skips
 # the directories of session owners.
 reap_pane_dirs() {
-    local listing="$1" dir base server owner pid
+    local listing="$1" dir base server owner
     for dir in "$ROOT"/*; do
         [ -d "$dir" ] || continue
         base="${dir##*/}"
@@ -715,8 +735,7 @@ reap_pane_dirs() {
         if [ "$server" = "$SERVER_KEY" ]; then
             listing_has_pane "$listing" "%$owner" || locked "$dir" remove_companion_dir "$dir" 1
         else
-            pid="${server%%-*}"
-            tmux_server_alive "$pid" || locked "$dir" remove_companion_dir "$dir" 0
+            tmux_server_alive "$server" || locked "$dir" remove_companion_dir "$dir" 0
         fi
     done
 }

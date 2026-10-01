@@ -368,13 +368,18 @@ lock_holder() {
     "$REAL_TMUX" -S "$other" -f /dev/null new-session -d 3>&-
     foreign=$("$REAL_TMUX" -S "$other" display-message -p '#{pid}-#{start_time}')
     # $$ is a live process that is not tmux: the pid of a dead foreign
-    # server that another process now has.
-    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$foreign-3" "$CLUX_TERMINAL_DIR/$$-1-3"
+    # server that another process now has. The live foreign server with a
+    # start time 100 s before its own: the pid of a dead server that a new
+    # tmux server now has.
+    local reused="${foreign%%-*}-$(( ${foreign#*-} - 100 ))"
+    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$foreign-3" "$CLUX_TERMINAL_DIR/$$-1-3" \
+        "$CLUX_TERMINAL_DIR/$reused-4"
     "$TERMINAL" open >/dev/null
     "$REAL_TMUX" -S "$other" kill-server
-    [ ! -e "$CLUX_TERMINAL_DIR/$key-999" ]
-    [ -d "$CLUX_TERMINAL_DIR/$foreign-3" ]
-    [ ! -e "$CLUX_TERMINAL_DIR/$$-1-3" ]
+    [ ! -e "$CLUX_TERMINAL_DIR/$key-999" ] || { echo 'the gone owner stays'; false; }
+    [ -d "$CLUX_TERMINAL_DIR/$foreign-3" ] || { echo 'the live foreign server was removed'; false; }
+    [ ! -e "$CLUX_TERMINAL_DIR/$$-1-3" ] || { echo 'a pid that is not tmux keeps its directory'; false; }
+    [ ! -e "$CLUX_TERMINAL_DIR/$reused-4" ] || { echo 'a reused tmux pid keeps its directory'; false; }
 }
 
 # 14
