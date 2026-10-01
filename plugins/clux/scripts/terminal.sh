@@ -119,6 +119,25 @@ valid_session_id() {
     [[ $1 =~ $SESSION_ID_RE ]]
 }
 
+# caller_session_id — the Claude session id of the caller in
+# CALLER_SESSION, as require_owner reads it; empty when there is none or it
+# is not valid. A pane owner records it (open, owner_ensure), so the
+# SessionEnd hook closes only a companion of its own session.
+CALLER_SESSION=
+caller_session_id() {
+    CALLER_SESSION="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+    valid_session_id "$CALLER_SESSION" || CALLER_SESSION=
+}
+
+# session_matches ID — the state that state_load read belongs to the
+# session ID (the session id of a SessionEnd hook payload). This is the one
+# rule of each hook close path, direct and later, for both owner kinds.
+# With no ID, or no session in state (a pane owner that Claude Code gave no
+# id), the session cannot decide: it matches, and the other checks apply.
+session_matches() {
+    [ -z "${1:-}" ] || [ -z "$S_SESSION" ] || [ "$S_SESSION" = "$1" ]
+}
+
 # [inferred] The name of a session directory: the first 8 characters of a
 # session id.
 SHORT_ID_RE='^[0123456789abcdef]{8}$'
@@ -2206,8 +2225,8 @@ open_command() {
     # A pane owner records its session id too, when Claude Code gives one:
     # the later close of the SessionEnd hook (close_later) then closes only
     # a companion of the session that ended.
-    S_SESSION="${CLUX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
-    valid_session_id "$S_SESSION" || S_SESSION=
+    caller_session_id
+    S_SESSION="$CALLER_SESSION"
     if [ "$OWNER_KIND" = session ]; then
         S_SESSION="$SESSION_ID"
         S_OWNER_PID="$OWNER_PID"
@@ -3331,12 +3350,24 @@ watch_start() {
 # state, the watchdog would close the companion of a live session. The
 # typing lock, then the state again, as in watch_ensure. The status is 5
 # when the lock is not free.
+# For a pane owner the session in state becomes the session of the caller
+# (caller_session_id): a new Claude session in the same pane (after a crash,
+# or a /clear with no SessionEnd) re-uses the companion, so its own hook
+# closes it, and a late hook of the old session does not.
 owner_ensure() {
-    [ "$OWNER_KIND" = session ] || return 0
-    [ "$S_OWNER_PID" != "$OWNER_PID" ] || ! same_process_start "$S_OWNER_START" "$OWNER_START" || return 0
+    if [ "$OWNER_KIND" = session ]; then
+        [ "$S_OWNER_PID" != "$OWNER_PID" ] || ! same_process_start "$S_OWNER_START" "$OWNER_START" || return 0
+    else
+        caller_session_id
+        [ -n "$CALLER_SESSION" ] && [ "$CALLER_SESSION" != "$S_SESSION" ] || return 0
+    fi
     lock_and_load || return 5
-    S_OWNER_PID="$OWNER_PID"
-    S_OWNER_START="$OWNER_START"
+    if [ "$OWNER_KIND" = session ]; then
+        S_OWNER_PID="$OWNER_PID"
+        S_OWNER_START="$OWNER_START"
+    else
+        S_SESSION="$CALLER_SESSION"
+    fi
     write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ"
     release_typing_lock
 }
@@ -3429,9 +3460,10 @@ close_session() {
 }
 
 # close_session_locked ID [WHO] — the close steps of close_session, with the
-# lock and the state of $D loaded.
+# lock and the state of $D loaded. The state of a session owner always
+# names its session, so an empty one does not match here.
 close_session_locked() {
-    [ "$S_SESSION" = "$1" ] || return 0
+    [ -n "$S_SESSION" ] && session_matches "$1" || return 0
     close_session_dir "$D" "${2:-}"
 }
 
@@ -3463,10 +3495,10 @@ close_pane_locked() {
 # hook saw no state (an open was at work and had not written it), the
 # process closes the companion that it finds.
 #
-# The session id of the hook payload (HOOK_SESSION_ID) is a second check:
-# a state that names another session stays, also when the hook saw no
-# state. A pane owner that Claude Code gave no session id has no session in
-# state; then only the token check applies.
+# The session id of the hook payload (HOOK_SESSION_ID) is a second check
+# (session_matches): a state that names another session stays, also when
+# the hook saw no state. A pane owner that Claude Code gave no session id
+# has no session in state; then only the token check applies.
 close_later() {
     local token= session="${HOOK_SESSION_ID:-}"
     ! state_load || token="$S_TOKEN"
@@ -3474,7 +3506,7 @@ close_later() {
       dir_lock "$D" "$DIR_LOCK_WAIT" || exit 0
       state_load || exit 0
       [ -z "$token" ] || [ "$S_TOKEN" = "$token" ] || exit 0
-      [ -z "$session" ] || [ -z "$S_SESSION" ] || [ "$S_SESSION" = "$session" ] || exit 0
+      session_matches "$session" || exit 0
       "$@"
     ) < /dev/null > /dev/null 2>&1 3>&- &
 }
@@ -3529,6 +3561,9 @@ close_command() {
         # close_session above.
         dir_lock "$D" "$DIR_LOCK_HOOK_WAIT" || { close_later close_pane_locked; return 0; }
         state_load || return 0
+        # A second Claude session in this pane (claude -p from a script)
+        # ends: the companion of the first stays.
+        session_matches "$HOOK_SESSION_ID" || return 0
         close_pane_locked hook
         return 0
     fi

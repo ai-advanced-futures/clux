@@ -1867,6 +1867,59 @@ wait_gone() {
     [ -f "$d/state" ] || { echo 'the later close closed the companion of another session'; false; }
 }
 
+# hook_keeps DIR PAYLOAD free|busy — the SessionEnd hook with PAYLOAD, with
+# the lock of DIR free or held by another verb, does not close the companion.
+hook_keeps() {
+    [ "$3" = free ] || lock_holder "$1"
+    run "$TERMINAL" close --hook <<< "$2"
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "hook ($3): $status $output"; return 1; }
+    if [ "$3" = busy ]; then
+        stop_holders
+        wait_gone "$1.lock" 10
+        sleep 1
+    fi
+    [ -f "$1/state" ] || { echo "the hook of another session closed the companion (lock $3)"; return 1; }
+}
+
+A_HOOK='{"session_id":"aaaaaaaa-4567-4890-abcd-ef0123456789"}'
+B_HOOK='{"session_id":"bbbbbbbb-4567-4890-abcd-ef0123456789"}'
+
+@test "in split mode, the SessionEnd hook of another session in the same pane keeps the companion, with the lock free and busy" {
+    local d
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    # A second Claude session in this pane (claude -p from a script) ends.
+    hook_keeps "$d" "$B_HOOK" free
+    hook_keeps "$d" "$B_HOOK" busy
+    run "$TERMINAL" close --hook <<< "$A_HOOK"
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ] || { echo 'the hook of its own session did not close the companion'; false; }
+}
+
+@test "in split mode, a new session that re-uses the companion of the pane owns it: a late hook of the old session keeps it" {
+    local d first second
+    first=$(CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open 2>/dev/null)
+    d=$(companion_dir)
+    # Session aaaaaaaa ended with no SessionEnd hook (a crash); session
+    # bbbbbbbb in the same pane opens and re-uses the companion.
+    second=$(CLUX_SESSION_ID=bbbbbbbb-4567-4890-abcd-ef0123456789 "$TERMINAL" open 2>/dev/null)
+    [ "$second" = "$first" ] || { echo "a new companion: $second (was: $first)"; false; }
+    grep -qx 'session=bbbbbbbb-4567-4890-abcd-ef0123456789' "$d/state" \
+        || { echo 'open did not record the new session'; cat "$d/state"; false; }
+    # Old hook late, then new hook: the old one keeps it, the new one closes it.
+    hook_keeps "$d" "$A_HOOK" free
+    hook_keeps "$d" "$A_HOOK" busy
+    lock_holder "$d"
+    hook_close_while_held "$d" "$B_HOOK"
+    # New hook first, then the old one: nothing is left to close.
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    CLUX_SESSION_ID=bbbbbbbb-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    run "$TERMINAL" close --hook <<< "$B_HOOK"
+    [ "$status" -eq 0 ] && [ ! -e "$d" ] || { echo "the new hook did not close the companion: $output"; false; }
+    run "$TERMINAL" close --hook <<< "$A_HOOK"
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "old hook after close: $status $output"; false; }
+}
+
 @test "after claude --resume, open re-uses the companion with the new owner, and the old watchdog keeps it" {
     bg_setup
     local d pane watch first second
