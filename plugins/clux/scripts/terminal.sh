@@ -148,9 +148,45 @@ process_start() {
     positive_integer "$PROC_START" || { PROC_START=; return 1; }
 }
 
-# owner_alive PID START — PID runs and started at START (process_start).
-owner_alive() {
-    [ -n "${2:-}" ] && process_start "${1:-}" && [ "$PROC_START" = "$2" ]
+# same_process_start A B — the start times A and B (process_start) name one
+# process. This is the one compare of two start times. They can differ by
+# START_SLACK seconds: on Linux, ps makes the start time from the boot time
+# and the clock ticks, so two reads of one process can be 1 s apart, and
+# the start_time of tmux (the server key) can be a second after the
+# process start.
+START_SLACK=2
+same_process_start() {
+    positive_integer "${1:-}" && positive_integer "${2:-}" || return 1
+    [ $(($1 - $2)) -ge -"$START_SLACK" ] && [ $(($1 - $2)) -le "$START_SLACK" ]
+}
+
+# pid_exists PID — 0: a process has PID (also one of another user). 1: no
+# process has it (ESRCH). 2: not known (perl did not run).
+pid_exists() {
+    positive_integer "${1:-}" || return 1
+    perl -e 'exit 0 if kill 0, $ARGV[0]; exit($!{ESRCH} ? 1 : 0)' "$1" 2>/dev/null
+    case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# owner_check PID START — is PID the process that started at START?
+# 0: yes. 1: no — no process has PID, or it started at another time.
+# 2: not known — ps or perl failed for a process that exists. A caller
+# removes or closes only on 1, so an error keeps the companion (fail
+# closed). An empty START (busy/pid of clux 4.0.0 holds only the pid)
+# checks the pid only.
+owner_check() {
+    local rc
+    pid_exists "${1:-}"; rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    [ -n "${2:-}" ] || return 0
+    process_start "$1" || return 2
+    same_process_start "$PROC_START" "$2" || return 1
+}
+
+# owner_gone PID START — owner_check says no (1), not "not known".
+owner_gone() {
+    owner_check "${1:-}" "${2:-}"
+    [ "$?" -eq 1 ]
 }
 
 # need_perl — the locks (LOCK_HELPER) and process_start need perl.
@@ -712,15 +748,15 @@ locked() {
 
 # tmux_server_alive KEY — the foreign tmux server of the server key KEY
 # (<pid>-<start time>, path.sh) runs: its pid is a tmux process that started
-# at the time in the key. The key holds the start_time of tmux; the process
-# can start up to 2 s before it. kill -0 alone, or a tmux command alone,
-# keeps the directory of a dead server for ever when another process (also
-# another tmux server) gets its pid.
+# at the time in the key (owner_check, same_process_start). kill -0 alone,
+# or a tmux command alone, keeps the directory of a dead server for ever
+# when another process (also another tmux server) gets its pid. When ps or
+# perl fails, the server counts as alive: the directory stays (fail closed).
 tmux_server_alive() {
     local pid="${1%%-*}" start="${1#*-}" command
-    process_start "$pid" || return 1
-    [ $((start - PROC_START)) -ge -2 ] && [ $((start - PROC_START)) -le 2 ] || return 1
-    command=$(ps -o command= -p "$pid" 2>/dev/null) || return 1
+    positive_integer "$start" || return 1
+    owner_gone "$pid" "$start" && return 1
+    command=$(ps -o command= -p "$pid" 2>/dev/null) || return 0
     case "$command" in *tmux*) return 0 ;; esac
     return 1
 }
@@ -785,9 +821,9 @@ reap_session_dir() {
     if [ "$dir" = "$D" ] && [ "$OWNER_KIND" = session ] && state_is_ours; then
         return 0
     fi
-    if ! owner_alive "$S_OWNER_PID" "$S_OWNER_START" \
+    if owner_gone "$S_OWNER_PID" "$S_OWNER_START" \
         || { [ "$OWNER_KIND" = session ] && [ "$S_OWNER_PID" = "$OWNER_PID" ] \
-            && [ "$S_OWNER_START" = "$OWNER_START" ] && [ "$S_SESSION" != "$SESSION_ID" ]; } \
+            && same_process_start "$S_OWNER_START" "$OWNER_START" && [ "$S_SESSION" != "$SESSION_ID" ]; } \
         || { [ "$age" -ge "$OPEN_BUDGET_DEFAULT" ] && ! companion_pane_is_ours "$S_SOCKET" "$S_PANE"; }; then
         remove_companion_dir "$dir" 0
         watch_stop "$S_WATCH_PID" "${dir##*/}"
@@ -2152,7 +2188,7 @@ open_command() {
     # [inferred] Two sessions can have the same first 8 characters (spec
     # 2026-09-30, section 6). The directory of another live session stays.
     if [ "$OWNER_KIND" = session ] && state_load && ! state_is_ours \
-        && owner_alive "$S_OWNER_PID" "$S_OWNER_START"; then
+        && ! owner_gone "$S_OWNER_PID" "$S_OWNER_START"; then
         fail 'the companion directory belongs to another session' 2
     fi
     laya_open_check
@@ -2295,13 +2331,15 @@ release_busy() { rm -f "$D/busy/owner" "$D/busy/pid"; rmdir "$D/busy" 2>/dev/nul
 # typed __clux_run: its pid and its start time. When that verb is gone (the
 # Bash tool killed it during the gate), no run can start: the lock is free.
 # The start time must match too: a pid alone can come back as another
-# process, which would keep the lock for ever.
+# process, which would keep the lock for ever. When the start time cannot
+# be read, the holder counts as alive (owner_gone). A busy/pid of clux
+# 4.0.0 holds no start time: then the pid alone decides.
 busy_holder_dead() {
     local pid= start=
     [ -f "$D/busy/pid" ] || return 1
     read -r pid start 2>/dev/null < "$D/busy/pid" || return 1
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    ! owner_alive "$pid" "$start"
+    owner_gone "$pid" "$start"
 }
 
 # reader_live N — a wait --run or run of N is reporting its output now: a
@@ -3295,7 +3333,7 @@ watch_start() {
 # when the lock is not free.
 owner_ensure() {
     [ "$OWNER_KIND" = session ] || return 0
-    [ "$S_OWNER_PID" != "$OWNER_PID" ] || [ "$S_OWNER_START" != "$OWNER_START" ] || return 0
+    [ "$S_OWNER_PID" != "$OWNER_PID" ] || ! same_process_start "$S_OWNER_START" "$OWNER_START" || return 0
     lock_and_load || return 5
     S_OWNER_PID="$OWNER_PID"
     S_OWNER_START="$OWNER_START"
@@ -3337,14 +3375,16 @@ watch_command() {
     while sleep "$WATCH_INTERVAL"; do
         state_load "$dir" || exit 0
         [ "$S_WATCH_PID" = "$$" ] || exit 0
-        owner_alive "$S_OWNER_PID" "$S_OWNER_START" && continue
+        # Only an owner that is gone for certain closes the companion: when
+        # ps or perl fails, the watchdog tries again (owner_gone).
+        owner_gone "$S_OWNER_PID" "$S_OWNER_START" || continue
         # An open or a close at work holds the lock: try again after the
         # next pause. Under the lock, read the state again and test the
         # owner again: an open (owner_ensure) can have written a new owner.
         dir_lock "$dir" 0 || continue
         state_load "$dir" || exit 0
         [ "$S_WATCH_PID" = "$$" ] || exit 0
-        if owner_alive "$S_OWNER_PID" "$S_OWNER_START"; then
+        if ! owner_gone "$S_OWNER_PID" "$S_OWNER_START"; then
             dir_unlock "$dir"
             continue
         fi

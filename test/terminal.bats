@@ -91,7 +91,7 @@ use_real_ps() {
     paris=$(TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 proc_start "$live")
     [ -n "$ny" ] || { kill "$live"; echo 'no start time'; false; }
     run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 bash -c \
-        "source '$TERMINAL'; owner_alive '$live' '$ny'"
+        "source '$TERMINAL'; owner_check '$live' '$ny'"
     kill "$live"
     [ "$ny" = "$paris" ] || { echo "New York: $ny, Paris: $paris"; false; }
     [ "$status" -eq 0 ] || { echo 'a live owner looks dead in another TZ and LC_ALL'; false; }
@@ -112,6 +112,87 @@ use_real_ps() {
     kill "$live"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed the companion of a live owner'; false; }
+}
+
+# stub_ps — a ps stub: `-o lstart=` prints STUB_LSTART, `-o command=`
+# prints "tmux", and with STUB_PS_FAIL=1 each call fails with no output.
+stub_ps() {
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUB'
+#!/usr/bin/env bash
+[ "${STUB_PS_FAIL:-0}" = 1 ] && exit 1
+case "$*" in
+    *lstart=*) printf '%s\n' "${STUB_LSTART:-}" ;;
+    *command=*) echo 'tmux -S /tmp/other.sock' ;;
+esac
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+}
+
+# session_state DIR PID START — the state of a session companion in DIR.
+session_state() {
+    mkdir -p "$1"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=%s-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "${1##*/}" "$2" "$3" > "$1/state"
+}
+
+@test "a start time 1 s off names the same process: owner, busy holder, tmux server and reaper" {
+    stub_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live e
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    export STUB_LSTART='Thu Oct  1 02:55:05 2026'
+    e=$(proc_start "$live")
+    [ -n "$e" ] || { kill "$live"; echo 'the stub gave no start time'; false; }
+    session_state "$root/sessions/aaaaaaaa" "$live" "$((e - 1))"
+    mkdir -p "$root/busy"
+    printf '%s %s\n' "$live" "$((e + 1))" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'
+        owner_check '$live' '$((e - 1))' || { echo \"owner -1 s: \$?\"; exit 1; }
+        owner_check '$live' '$((e + 1))' || { echo \"owner +1 s: \$?\"; exit 1; }
+        owner_check '$live' '$((e - 3))'; [ \$? -eq 1 ] || { echo 'owner -3 s is not another process'; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'busy holder -1 s is dead'; exit 1; }
+        tmux_server_alive '$live-$((e + 1))' || { echo 'tmux server +1 s is dead'; exit 1; }
+        printf '%s\n' '$live' > '$root/busy/pid'
+        ! busy_holder_dead || { echo 'a live 4.0.0 busy holder (no start time) is dead'; exit 1; }
+        terminal_init; reap_companions"
+    kill "$live"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed a live owner 1 s off'; false; }
+}
+
+@test "when ps fails, a live owner is not known and keeps its companion; a gone owner still goes" {
+    stub_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live gone watch i=0
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    gone=$!
+    kill "$gone"; wait "$gone" 2>/dev/null || true
+    export STUB_PS_FAIL=1
+    session_state "$root/sessions/aaaaaaaa" "$live" 1700000000
+    session_state "$root/sessions/bbbbbbbb" "$gone" 1700000000
+    mkdir -p "$root/busy"
+    printf '%s 1700000000\n' "$live" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'
+        owner_check '$live' 1700000000; [ \$? -eq 2 ] || { echo 'a live owner is not \"not known\"'; exit 1; }
+        owner_check '$gone' 1700000000; [ \$? -eq 1 ] || { echo 'a gone owner is not gone'; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'a live busy holder is dead'; exit 1; }
+        tmux_server_alive '$live-1700000000' || { echo 'a live tmux server is dead'; exit 1; }
+        terminal_init; reap_companions"
+    [ "$status" -eq 0 ] || { kill "$live"; echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { kill "$live"; echo 'the reaper removed a live owner when ps failed'; false; }
+    [ ! -e "$root/sessions/bbbbbbbb" ] || { kill "$live"; echo 'the reaper kept a gone owner'; false; }
+    # The watchdog does not close the companion while ps fails.
+    CLUX_TERMINAL_DIR="$root" bash -c "source '$TERMINAL'; WATCH_INTERVAL=.3; watch_command --session aaaaaaaa" \
+        </dev/null >/dev/null 2>&1 3>&- &
+    watch=$!
+    printf 'watch_pid=%s\n' "$watch" >> "$root/sessions/aaaaaaaa/state"
+    sleep 1.5
+    kill -0 "$watch" 2>/dev/null || { kill "$live"; echo 'the watchdog ended'; false; }
+    [ -f "$root/sessions/aaaaaaaa/state" ] || { kill "$live" "$watch"; echo 'the watchdog closed a live owner when ps failed'; false; }
+    kill "$watch" "$live"
 }
 
 # proc_start PID — the start time of PID in the form that the script stores
