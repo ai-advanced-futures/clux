@@ -1734,15 +1734,66 @@ lock_holder() {
     run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" close
     [ "$status" -eq 5 ] || { echo "$output"; false; }
     [ -f "$d/state" ]
-    # The SessionEnd hook waits at most 2 s, says nothing, and leaves the
-    # companion to the watchdog or the reaper.
+    # The SessionEnd hook waits at most 2 s and says nothing. A separate
+    # process closes the companion when the holder ends.
+    hook_close_while_held "$d" '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+}
+
+# hook_close_while_held DIR PAYLOAD — with a live holder of the lock of DIR,
+# the SessionEnd hook ends in 3 s or less with status 0 and no output, and
+# the companion stays. When the holder ends, the companion closes with no
+# other call.
+hook_close_while_held() {
+    local start took
+    [ -f "$1/state" ]
+    start=$(date +%s)
+    run "$TERMINAL" close --hook <<< "$2"
+    took=$(( $(date +%s) - start ))
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "hook output: $output"; false; }
+    [ "$took" -le 3 ] || { echo "the hook took $took s"; false; }
+    [ -f "$1/state" ]
+    stop_holders
+    wait_gone "$1" 10 || { echo 'the later close did not close the companion'; false; }
+    wait_gone "$1.lock" 5
+}
+
+# wait_gone PATH S — wait at most S seconds until PATH is gone.
+wait_gone() {
+    local i
+    for i in $(seq 1 $(( $2 * 5 ))); do
+        [ -e "$1" ] || return 0
+        sleep 0.2
+    done
+    [ ! -e "$1" ]
+}
+
+@test "in split mode, the SessionEnd hook closes the companion later while another verb holds the lock" {
+    local d pane
+    "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    pane=$(sed -n 's/^pane=//p' "$d/state")
+    lock_holder "$d"
+    hook_close_while_held "$d" '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+    ! "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null 2>&1 \
+        || { echo "the companion pane $pane is still there"; false; }
+}
+
+@test "the later close of the SessionEnd hook does not close a new companion with another token" {
+    local d
+    "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    lock_holder "$d"
     run "$TERMINAL" close --hook <<< '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
     [ "$status" -eq 0 ]
-    [ -f "$d/state" ]
+    # A new session in the same pane opens a new companion before the lock
+    # is free: a new token in the state.
+    sed -i.bak 's/^token=.*/token=0000000000000000/' "$d/state"
     stop_holders
-    run "$TERMINAL" close
-    [ "$status" -eq 0 ]
-    [ ! -e "$d" ]
+    wait_gone "$d.lock" 10
+    sleep 1
+    [ -f "$d/state" ] || { echo 'the later close closed a companion it did not see'; false; }
+    rm -f "$d/state.bak"
 }
 
 @test "in split mode, open refuses with exit 5 while another verb holds the lock" {

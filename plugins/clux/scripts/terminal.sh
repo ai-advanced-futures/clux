@@ -65,10 +65,12 @@ OPEN_BUDGET_DEFAULT=120
 # The pause of the watchdog of a session owner (spec 2026-09-30, section 9).
 WATCH_INTERVAL=10
 # The directory lock (dir_lock). open and close wait at most DIR_LOCK_WAIT
-# seconds for a live holder: more than one open (laya_wait_ready 60 s and
-# wait_for_prompt 5 s). The SessionEnd hook has 5 s, so it waits
-# DIR_LOCK_HOOK_WAIT. CLUX_TERMINAL_LOCK_WAIT changes DIR_LOCK_WAIT (tests).
-DIR_LOCK_WAIT=75
+# seconds for a live holder: the time that one open can take
+# (OPEN_BUDGET_DEFAULT), so a second open does not fail while a cold first
+# open still starts its Laya server. The SessionEnd hook has 5 s, so it
+# waits DIR_LOCK_HOOK_WAIT, and then close_later waits DIR_LOCK_WAIT in a
+# separate process. CLUX_TERMINAL_LOCK_WAIT changes DIR_LOCK_WAIT (tests).
+DIR_LOCK_WAIT=$OPEN_BUDGET_DEFAULT
 case "${CLUX_TERMINAL_LOCK_WAIT:-}" in ''|*[!0-9]*) ;; *) DIR_LOCK_WAIT="$CLUX_TERMINAL_LOCK_WAIT" ;; esac
 DIR_LOCK_HOOK_WAIT=2
 
@@ -3313,18 +3315,64 @@ session_env_command() {
 # close_session ID [WHO] — close the companion of the session ID: for the
 # hook and for close --session. The state must name the same full id: two
 # sessions can have the same first 8 characters. The hook has 5 s, so it
-# waits DIR_LOCK_HOOK_WAIT for the lock; when the lock stays busy, the
-# watchdog or the reaper closes the companion later.
+# waits DIR_LOCK_HOOK_WAIT for the lock; when the lock stays busy,
+# close_later closes the companion.
 close_session() {
-    local wait="$DIR_LOCK_WAIT"
-    [ "${2:-}" != hook ] || wait="$DIR_LOCK_HOOK_WAIT"
     resolve_root
     D="$ROOT/sessions/${1:0:8}"
     [ -d "$ROOT/sessions" ] || return 0
-    dir_lock "$D" "$wait" || refuse_dir_lock
+    if [ "${2:-}" = hook ]; then
+        dir_lock "$D" "$DIR_LOCK_HOOK_WAIT" || { close_later close_session_locked "$1"; return 0; }
+    else
+        dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
+    fi
     state_load || return 0
+    close_session_locked "$1" "${2:-}"
+}
+
+# close_session_locked ID [WHO] — the close steps of close_session, with the
+# lock and the state of $D loaded.
+close_session_locked() {
     [ "$S_SESSION" = "$1" ] || return 0
     close_session_dir "$D" "${2:-}"
+}
+
+# close_pane_locked [WHO] — the close steps of a pane owner, with the lock
+# and the state of $D loaded. The screen, the pane and $D (with the key) go
+# first: the SessionEnd hook has 5 s, and the server can be slow to stop.
+# With WHO "hook" a separate process stops the server (kill -9 after 3 s),
+# because $D with the pid is gone and the reaper cannot find it again.
+close_pane_locked() {
+    tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
+    kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
+    rm -rf "$D"
+    if [ "${1:-}" = hook ]; then
+        laya_stop_server_later "$S_LAYA_PID"
+    else
+        laya_stop_server "$S_LAYA_PID"
+    fi
+}
+
+# close_later STEPS [ARG] — the SessionEnd hook did not get the lock of $D
+# in DIR_LOCK_HOOK_WAIT: another open or close is at work. The hook must
+# end in 5 s, and a pane owner has no watchdog and no reaper. So a separate
+# process waits DIR_LOCK_WAIT for the lock, loads the state and runs STEPS
+# ARG, for both owner kinds. It closes only the companion that the hook
+# saw: the token of the state, read with no lock (the state file is
+# replaced with mv, so it is always whole). A new session in the same pane
+# (for example after /clear) can open a new companion with a new token
+# while this process waits; this process then does not close it. When the
+# hook saw no state (an open was at work and had not written it), the
+# process closes the companion that it finds.
+close_later() {
+    local token=
+    ! state_load || token="$S_TOKEN"
+    ( trap '' HUP INT TERM
+      dir_lock "$D" "$DIR_LOCK_WAIT" || exit 0
+      state_load || exit 0
+      [ -z "$token" ] || [ "$S_TOKEN" = "$token" ] || exit 0
+      "$@"
+    ) < /dev/null > /dev/null 2>&1 3>&- &
 }
 
 close_command() {
@@ -3372,10 +3420,14 @@ close_command() {
     # companion, and no lock can be made.
     [ -d "${D%/*}" ] || return 0
     if [ "$hook" -eq 1 ]; then
-        dir_lock "$D" "$DIR_LOCK_HOOK_WAIT" || refuse_dir_lock
-    else
-        dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
+        # The hook arm is always a pane owner: with no pane it went to
+        # close_session above.
+        dir_lock "$D" "$DIR_LOCK_HOOK_WAIT" || { close_later close_pane_locked; return 0; }
+        state_load || return 0
+        close_pane_locked hook
+        return 0
     fi
+    dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
     state_load || return 0
     if [ "$OWNER_KIND" = session ]; then
         # [inferred] The state of another session: exit 4, touch nothing.
@@ -3383,18 +3435,7 @@ close_command() {
         close_session_dir "$D"
         return 0
     fi
-    # The screen, the pane and $D (with the key) go first: the SessionEnd
-    # hook has 5 s, and the server can be slow to stop. In --hook mode a
-    # separate process stops the server (kill -9 after 3 s), because $D
-    # with the pid is gone and the reaper cannot find it again.
-    tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
-    kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
-    rm -rf "$D"
-    if [ "$hook" -eq 1 ]; then
-        laya_stop_server_later "$S_LAYA_PID"
-    else
-        laya_stop_server "$S_LAYA_PID"
-    fi
+    close_pane_locked
 }
 
 # Install step 1. [inferred] The first of these names that is Python 3.10 or
