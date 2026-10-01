@@ -13,6 +13,8 @@ load test_helper
 
 VALIDATE_MD="$REPO_ROOT/plugins/clux/commands/validate.md"
 HOOKS_JSON="$REPO_ROOT/plugins/clux/hooks/hooks.json"
+# The start of each command in hooks.json, as text.
+PREFIX='${CLAUDE_PLUGIN_ROOT}/'
 
 # hooks_check_block — the bash block of "1. **Plugin hooks.json**", with the
 # indent of its fence removed, as the agent runs it.
@@ -85,17 +87,17 @@ json.dump(data, open(out, "w"), indent=2)' "$1" "$2" "$3" "$4" "$HOOKS_JSON"
     run_hooks_check "$HOOKS_JSON"
     [ "$status" -eq 0 ]
     [[ "$output" == *'OK  hooks.json found'* ]] || false
-    [[ "$output" == *'OK  hook: SessionStart → terminal.sh session-env --hook'* ]] || false
+    [[ "$output" == *'OK  hook: SessionStart → scripts/terminal.sh session-env --hook'* ]] || false
     ! grep -q '^FAIL' <<< "$output" || { echo "$output"; false; }
     run_hooks_check "$HOOKS_JSON" "$(only_python)"
-    [[ "$output" == *'OK  hook: SessionEnd → terminal.sh close --hook'* ]] || false
+    [[ "$output" == *'OK  hook: SessionEnd → scripts/terminal.sh close --hook'* ]] || false
     ! grep -q '^FAIL' <<< "$output" || { echo "$output"; false; }
 }
 
 @test "the hooks check fails closed when neither jq nor python3 is there" {
     mkdir -p "$BATS_TEST_TMPDIR/nobin"
     run_hooks_check "$HOOKS_JSON" "$BATS_TEST_TMPDIR/nobin"
-    [[ "$output" == *'FAIL hook: SessionStart → terminal.sh session-env --hook not checked (install jq or python3)'* ]] \
+    [[ "$output" == *'FAIL hook: SessionStart → scripts/terminal.sh session-env --hook not checked (install jq or python3)'* ]] \
         || { echo "$output"; false; }
 }
 
@@ -117,9 +119,29 @@ json.dump(data, open(out, "w"), indent=2)' "$1" "$2" "$3" "$4" "$HOOKS_JSON"
         while IFS=$'\t' read -r event cmd; do
             edit_hooks move "$event" "$cmd" "$BATS_TEST_TMPDIR/moved.json"
             run_hooks_check "$BATS_TEST_TMPDIR/moved.json" "$path"
-            grep -q "^FAIL hook: $event not wired to ${cmd##*/}" <<< "$output" \
+            grep -qF "FAIL hook: $event not wired to ${cmd#"$PREFIX"}" <<< "$output" \
                 || missed="$missed$event $cmd ($path)"$'\n'
         done < <(hook_entries)
     done
     [ -z "$missed" ] || { printf 'no check fails when it moves from:\n%s' "$missed"; false; }
+}
+
+@test "the hooks check says that hooks.json is not valid JSON, with jq and with python3" {
+    local path bad="$BATS_TEST_TMPDIR/bad.json"
+    printf '{"hooks": {"Stop": [\n' > "$bad"
+    for path in "$PATH" "$(only_python)"; do
+        run_hooks_check "$bad" "$path"
+        [[ "$output" == *'FAIL hooks.json is not valid JSON'* ]] || { echo "$output"; false; }
+        ! grep -q 'not wired to' <<< "$output" || { echo "$output"; false; }
+    done
+}
+
+@test "the hooks check gives a FAIL for a hook script of the same name in another directory" {
+    local path other="$BATS_TEST_TMPDIR/other.json"
+    sed 's#${CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh#/tmp/other/notify-tmux.sh#' "$HOOKS_JSON" > "$other"
+    ! grep -q 'CLAUDE_PLUGIN_ROOT}/hooks/notify-tmux.sh' "$other"
+    for path in "$PATH" "$(only_python)"; do
+        run_hooks_check "$other" "$path"
+        grep -q '^FAIL hook: Stop not wired to hooks/notify-tmux.sh' <<< "$output" || { echo "$output"; false; }
+    done
 }
