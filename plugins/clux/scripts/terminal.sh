@@ -537,6 +537,8 @@ terminal_init() {
     # Every file and directory this process makes ($D, state, busy, <n>.cmd)
     # is private. The pane shell keeps the user's own umask.
     umask 077
+    # The locks of the verbs are flock locks that perl holds (LOCK_HELPER).
+    command -v perl > /dev/null 2>&1 || fail 'clux terminal needs perl' 2
     resolve_root
     if [ "$OWNER_KIND" = session ]; then
         # A session owner needs no tmux server key (spec 2026-09-30,
@@ -2253,24 +2255,33 @@ busy_holder_dead() {
     ! kill -0 "$pid" 2>/dev/null
 }
 
-# reader_live N — a wait --run or run of N is reporting its output now
-# (<n>.reading is a symbolic link to the pid of that verb).
+# reader_live N — a wait --run or run of N is reporting its output now: a
+# verb holds the reading lock of N (lock_take). With no file, no verb holds
+# it. Else the test takes the lock one time and frees it at once; a reader
+# waits READ_LOCK_WAIT for it, so this short test does not refuse a reader.
+READ_LOCK_WAIT=2
 reader_live() {
-    local pid
-    pid=$(readlink "$D/$1.reading" 2>/dev/null) || return 1
-    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    kill -0 "$pid" 2>/dev/null
+    [ -e "$D/$1.reading" ] || return 1
+    ! lock_held "$D/$1.reading" || return 0
+    lock_take "$D/$1.reading" 0 || return 0
+    lock_drop "$D/$1.reading"
+    return 1
+}
+
+# take_reading_lock N — while this verb reports the output of run N, no new
+# run takes the busy lock or deletes the output, and no other verb reports
+# the same run: one reader would delete the output that the other reads.
+take_reading_lock() {
+    lock_take "$D/$1.reading" "$READ_LOCK_WAIT" \
+        || fail "another verb reads the output of run $1 now: try again" 5
 }
 
 TYPING_LOCK=0
-READING=
 
-# verb_exit — the EXIT trap of a verb: free the typing lock and the reader
-# marker that this verb holds.
+# verb_exit — the EXIT trap of a verb: free each lock of the verb.
 verb_exit() {
-    release_typing_lock
-    release_dir_locks
-    [ -z "$READING" ] || rm -f "$D/$READING.reading"
+    lock_drop_all
+    TYPING_LOCK=0
 }
 
 # run_not_started — after C-c: when the .cmd of the last run is still there,
@@ -2289,19 +2300,111 @@ run_not_started() {
     printf '126\n' > "$D/$n.rc.tmp" && mv -f "$D/$n.rc.tmp" "$D/$n.rc"
 }
 
+# The locks of the verbs: the typing lock ($D/typing), the reading lock of a
+# run ($D/<n>.reading) and the directory lock (DIR.lock, beside DIR). Each
+# is a kernel lock (flock) on its file. A small perl process (LOCK_HELPER)
+# holds it for the verb that started it. The kernel frees the lock when
+# that process ends, and the process ends when its parent (the verb) ends,
+# also after kill -9: it tests the parent pid each 0.2 s. So a verb that
+# was killed never keeps a lock. There is no stale lock to take over, and
+# no pid of a holder to test.
+#
+# A holder deletes the file first and then frees the lock. The helper takes
+# a lock only when the path still names the file that it locked (the same
+# device and inode). Else it tries again, so a verb that waited on a deleted
+# file does not hold it together with a verb that made the new file. A
+# symbolic link in the place of the file (the lock format of clux 4.0) is
+# deleted, and the helper tries again.
+#
+# The helper prints "ok <its pid>", "busy" (the wait ended) or "error" (it
+# cannot open the file).
+LOCK_HELPER='use strict; use Fcntl qw(:flock O_RDWR O_CREAT O_NOFOLLOW);
+my ($path, $wait) = @ARGV; my $parent = getppid(); my $end = time + $wait;
+$| = 1;
+while (1) {
+    my $fh;
+    unless (sysopen($fh, $path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600)) {
+        if (-l $path) { unlink $path or do { print "error\n"; exit 1 }; next }
+        print "error\n"; exit 1;
+    }
+    if (flock($fh, LOCK_EX | LOCK_NB)) {
+        my @held = stat($fh); my @now = lstat($path);
+        if (@now && $held[0] == $now[0] && $held[1] == $now[1]) {
+            print "ok $$\n"; close STDOUT;
+            select(undef, undef, undef, 0.2) while getppid() == $parent;
+            exit 0;
+        }
+        close $fh; next;
+    }
+    close $fh;
+    if (time >= $end || getppid() != $parent) { print "busy\n"; exit 1 }
+    select(undef, undef, undef, 0.2);
+}'
+
+# LOCKS — the locks of this process: a line "<path> <helper pid>" for each,
+# after a newline.
+LOCKS=$'\n'
+
+# lock_take PATH SECONDS — take the lock of PATH. Wait at most SECONDS while
+# another verb holds it (0: try one time). Returns 1 when it is not free or
+# the file cannot be opened. Call it in the verb itself, never in $(...) or
+# in a pipe: the lock ends with the process that took it. The exec in the
+# process substitution makes the verb the parent of the helper. The EXIT
+# trap frees the lock.
+lock_take() {
+    local line
+    exec 7< <(exec perl -e "$LOCK_HELPER" "$1" "$2" < /dev/null 2> /dev/null 3>&-)
+    read -r line <&7 || line=
+    exec 7<&-
+    case "$line" in
+        'ok '*)
+            LOCKS="$LOCKS$1 ${line#ok }"$'\n'
+            trap verb_exit EXIT
+            return 0
+            ;;
+        busy) return 1 ;;
+        error) printf 'clux: cannot open the lock file %s\n' "$1" >&2; return 1 ;;
+    esac
+    fail 'clux terminal needs perl' 2
+}
+
+# lock_held PATH — this process holds the lock of PATH.
+lock_held() {
+    case "$LOCKS" in *$'\n'"$1 "*) return 0 ;; esac
+    return 1
+}
+
+# lock_drop PATH — free the lock of PATH when this process holds it: delete
+# the file, then stop the helper.
+lock_drop() {
+    local rest pid nl=$'\n'
+    lock_held "$1" || return 0
+    rest="${LOCKS#*"$nl$1 "}"
+    pid="${rest%%"$nl"*}"
+    rm -f "$1"
+    kill "$pid" 2>/dev/null || true
+    LOCKS="${LOCKS%%"$nl$1 $pid$nl"*}$nl${LOCKS#*"$nl$1 $pid$nl"}"
+}
+
+# lock_drop_all — free each lock of this process (the EXIT trap).
+lock_drop_all() {
+    local line
+    while IFS= read -r line; do
+        [ -z "$line" ] || lock_drop "${line% *}"
+    done <<< "$LOCKS"
+}
+
 # take_typing_lock — one verb at a time reads the cursor line, asks Laya
 # and types (spec section 7). Without it, two sends in parallel read the
 # same cursor line, Laya examines each piece alone, and the two pieces make
-# one line that no gate examined. The lock is a symbolic link to the pid of
-# its holder, so a holder that was killed does not keep it. Returns 5 with
-# the message when a live verb holds it.
+# one line that no gate examined. Returns 5 with the message when another
+# verb holds it.
 take_typing_lock() {
-    pid_link "$D/typing" || {
+    lock_take "$D/typing" 0 || {
         printf '%s\n' 'another send or run is typing in the pane: try again' >&2
         return 5
     }
     TYPING_LOCK=1
-    trap verb_exit EXIT
 }
 
 # lock_and_load — take the typing lock, then read the state again: a run
@@ -2312,34 +2415,9 @@ lock_and_load() {
     state_load || fail 'no companion is open for this owner' 4
 }
 
-# pid_link LINK — make LINK a symbolic link to the pid of this verb, in one
-# step (ln -s makes it or fails). A link whose pid is not alive is taken
-# over: mv moves it away in one step, so only one verb gets it, and when the
-# moved link is not the dead holder (a new verb took it in the meantime), it
-# goes back. Returns 1 when a live verb holds it.
-pid_link() {
-    local pid stale="$1.stale.$$"
-    ln -s "$$" "$1" 2>/dev/null && return 0
-    pid=$(readlink "$1" 2>/dev/null) || pid=
-    [ "$pid" != "$$" ] || return 0
-    case "$pid" in
-        ''|*[!0-9]*) ;;
-        *) ! kill -0 "$pid" 2>/dev/null || return 1 ;;
-    esac
-    if mv "$1" "$stale" 2>/dev/null; then
-        if [ "$(readlink "$stale" 2>/dev/null)" = "$pid" ]; then
-            rm -f "$stale"
-        else
-            mv "$stale" "$1" 2>/dev/null || rm -f "$stale"
-            return 1
-        fi
-    fi
-    ln -s "$$" "$1" 2>/dev/null
-}
-
 release_typing_lock() {
     [ "$TYPING_LOCK" -eq 1 ] || return 0
-    rm -f "$D/typing"
+    lock_drop "$D/typing"
     TYPING_LOCK=0
 }
 
@@ -2348,55 +2426,37 @@ release_typing_lock() {
 # makes or removes DIR only while it holds DIR.lock. Without it, two opens
 # of one owner (two parallel Bash calls, or a session and its subagent) both
 # make DIR, and the one that fails removes the state of the other. The lock
-# is beside DIR, not in it, because open and close remove DIR. It is a
-# pid_link, so a holder that was killed does not keep it.
+# is beside DIR, not in it, because open and close remove DIR.
 #
-# dir_lock DIR SECONDS — take the lock of DIR. Wait at most SECONDS while a
-# live verb holds it (0: try one time). Returns 1 when it is not free. The
-# EXIT trap frees it.
+# dir_lock DIR SECONDS — take the lock of DIR. Wait at most SECONDS while
+# another verb holds it (0: try one time). Returns 1 when it is not free.
 dir_lock() {
-    local deadline=$((SECONDS + $2))
     [ -d "${1%/*}" ] || return 1
-    until pid_link "$1.lock"; do
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep .2
-    done
-    trap verb_exit EXIT
+    lock_take "$1.lock" "$2"
 }
 
 # dir_held DIR — this process holds the lock of DIR.
-dir_held() { [ "$(readlink "$1.lock" 2>/dev/null)" = "$$" ]; }
+dir_held() { lock_held "$1.lock"; }
 
 # dir_unlock DIR — free the lock of DIR when this process holds it.
-dir_unlock() {
-    ! dir_held "$1" || rm -f "$1.lock"
-}
-
-# release_dir_locks — free each directory lock that this process holds. The
-# links are the record, so no list can forget one.
-release_dir_locks() {
-    local link
-    [ -n "${ROOT:-}" ] || return 0
-    for link in "$ROOT"/*.lock "$ROOT"/sessions/*.lock; do
-        [ "$(readlink "$link" 2>/dev/null)" != "$$" ] || rm -f "$link"
-    done
-}
+dir_unlock() { lock_drop "$1.lock"; }
 
 # refuse_dir_lock — the message when another verb holds the lock too long.
 refuse_dir_lock() {
     fail 'another open or close of this companion is at work: try again' 5
 }
 
-# reap_stale_locks — remove the lock of a directory that is gone when its
-# holder is dead. pid_link takes it first, so a live verb that took it in
-# the meantime keeps it. The locks of this process stay: open holds the lock
-# of its own directory before it makes the directory.
+# reap_stale_locks — delete the lock file of a directory that is gone. A
+# holder deletes its file, so such a file stays only after a holder was
+# killed. The file goes only under its lock, so a verb that holds it keeps
+# it, and a verb that waits on it takes the new file (lock_take).
 reap_stale_locks() {
-    local link
-    for link in "$ROOT"/*.lock "$ROOT"/sessions/*.lock; do
-        [ -L "$link" ] && [ ! -e "${link%.lock}" ] || continue
-        ! dir_held "${link%.lock}" || continue
-        ! pid_link "$link" || rm -f "$link"
+    local file
+    for file in "$ROOT"/*.lock "$ROOT"/sessions/*.lock; do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        [ ! -e "${file%.lock}" ] || continue
+        ! lock_held "$file" || continue
+        ! lock_take "$file" 0 || lock_drop "$file"
     done
 }
 
@@ -2498,9 +2558,7 @@ report_run() {
     # While this verb reports, no new run takes the lock or deletes the
     # output, and no other verb reports the same run: one reader would
     # delete the output that the other reads.
-    pid_link "$D/$n.reading" || fail "another verb reads the output of run $n now: try again" 5
-    READING="$n"
-    trap verb_exit EXIT
+    take_reading_lock "$n"
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
     read -r rc 2>/dev/null < "$D/$n.rc"
     GUARD_HELD=0
@@ -2522,8 +2580,7 @@ report_run() {
             printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
             : > "$D/$n.held"
             printf 'laya not available: the output stays; use wait --run %s when Laya answers, or wait --run %s --discard\n' "$n" "$n" >&2
-            rm -f "$D/$n.reading"
-            READING=
+            lock_drop "$D/$n.reading"
             return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
@@ -2549,12 +2606,11 @@ report_run() {
         # again from the bottom with the same time limit. A retry helps
         # only when Laya was slow for a short time; the message says so.
         printf 'laya did not examine all of the output in the time limit: it stays; use wait --run %s again (this helps only when Laya was slow for a short time), or wait --run %s --discard and run the command again with less output (for example | head -n 50): --max-lines keeps the last lines, which Laya examined\n' "$n" "$n" >&2
-        rm -f "$D/$n.reading"
-        READING=
+        lock_drop "$D/$n.reading"
         return 0
     fi
-    rm -f "$D/$n.out" "$D/$n.held" "$D/$n.reading"
-    READING=
+    rm -f "$D/$n.out" "$D/$n.held"
+    lock_drop "$D/$n.reading"
     release_run "$n"
 }
 
@@ -2981,9 +3037,7 @@ wait_command() {
         # file) would keep the lock for ever: drop it, with no text.
         [ -e "$D/$value.held" ] || fail "run $value has no held output" 2
         # A verb that reads this output now keeps it.
-        pid_link "$D/$value.reading" || fail "another verb reads the output of run $value now: try again" 5
-        READING="$value"
-        trap verb_exit EXIT
+        take_reading_lock "$value"
         read -r rc 2>/dev/null < "$D/$value.rc"
         rm -f "$D/$value.out" "$D/$value.held"
         printf 'output discarded: laya did not examine it\nexit=%s\n' "$rc"

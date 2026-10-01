@@ -1155,8 +1155,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     mkdir -p "$d/busy"
     printf '3\n' > "$d/busy/owner"
     printf '0\n' > "$d/3.rc"; : > "$d/3.out"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/3.reading"
+    hold_lock "$d/3.reading"
+    local live=$HOLD_PID
     bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_if_done; remove_stale_output"
     [ -d "$d/busy" ]
     [ -e "$d/3.out" ]
@@ -1344,14 +1344,13 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local d="$BATS_TEST_TMPDIR/two"
     mkdir -p "$d"
     printf '0\n' > "$d/3.rc"; printf 'out\n' > "$d/3.out"; : > "$d/3.done"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/3.reading"
+    hold_lock "$d/3.reading"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; report_run 3 200"
     [ "$status" -eq 5 ]
     [ "$stderr" = 'another verb reads the output of run 3 now: try again' ]
     [ -e "$d/3.out" ] && [ ! -e "$d/3.held" ]
-    [ "$(readlink "$d/3.reading")" = "$live" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
+    # The refused verb leaves the lock file of the holder.
+    [ -f "$d/3.reading" ]
 }
 
 @test "each failure path of open goes through open_abort" {
@@ -1876,18 +1875,22 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "the typing lock refuses a live holder and takes the lock of a dead holder" {
     local d="$BATS_TEST_TMPDIR/lock"
     mkdir -p "$d"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/typing"
+    hold_lock "$d/typing"
     run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?"
     [[ "$output" == *'another send or run is typing in the pane: try again'* ]] || false
     [[ "$output" == *'rc=5' ]] || false
-    [ "$(readlink "$d/typing")" = "$live" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
-    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; readlink '$d/typing'; echo \$\$"
-    [ "${lines[0]}" = 'rc=0' ]
-    [ "${lines[1]}" = "${lines[2]}" ]
-    # The EXIT trap releases the lock.
-    [ ! -L "$d/typing" ]
+    [ -f "$d/typing" ]
+    # A holder that was killed leaves its file, and its lock is free.
+    stop_holders
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; [ -f '$d/typing' ] && echo held"
+    [ "$output" = $'rc=0\nheld' ]
+    # The EXIT trap releases the lock and deletes the file.
+    [ ! -e "$d/typing" ]
+    # The lock of clux 4.0 was a symbolic link: it goes, and the lock is taken.
+    ln -s 99999 "$d/typing"
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; [ -f '$d/typing' ] && [ ! -L '$d/typing' ] && echo file"
+    [ "$output" = $'rc=0\nfile' ]
+    [ ! -e "$d/typing" ] && [ ! -L "$d/typing" ]
 }
 
 @test "send refuses when the cursor line changed while Laya examined it" {
@@ -2206,10 +2209,9 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local d="$BATS_TEST_TMPDIR/dis"
     mkdir -p "$d"
     printf '0\n' > "$d/5.rc"; printf 'out\n' > "$d/5.out"; : > "$d/5.held"
-    sleep 30 3>&- & local reader=$!
-    ln -s "$reader" "$d/5.reading"
+    hold_lock "$d/5.reading"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; ensure_open() { :; }; wait_command --run 5 --discard"
-    kill "$reader" 2>/dev/null || true
+    stop_holders
     [ "$status" -eq 5 ]
     [ "$stderr" = 'another verb reads the output of run 5 now: try again' ]
     [ -e "$d/5.out" ] && [ -e "$d/5.held" ]

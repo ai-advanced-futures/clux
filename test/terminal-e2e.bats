@@ -135,21 +135,9 @@ bg_window_count() {
 }
 
 # lock_holder DIR — a live process that holds the lock of DIR, as a second
-# verb does. stop_holders stops all of them (teardown does it too).
+# verb does (hold_lock). stop_holders stops all of them (teardown does it too).
 lock_holder() {
-    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
-    ln -s "$!" "$1.lock"
-    printf '%s\n' "$!" >> "$BATS_TEST_TMPDIR/holders"
-}
-
-stop_holders() {
-    local pid
-    [ -f "$BATS_TEST_TMPDIR/holders" ] || return 0
-    while read -r pid; do
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    done < "$BATS_TEST_TMPDIR/holders"
-    rm -f "$BATS_TEST_TMPDIR/holders"
+    hold_lock "$1.lock"
 }
 
 # 1
@@ -1078,8 +1066,7 @@ stop_holders() {
 
 @test "send and run take the typing lock, and take over the lock of a dead holder" {
     "$TERMINAL" open >/dev/null
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$(companion_dir)/typing"
+    hold_lock "$(companion_dir)/typing"
     : > "$FAKE_LAYA_LOG"
     run "$TERMINAL" send -- 'echo x'
     [ "$status" -eq 5 ]
@@ -1088,11 +1075,11 @@ stop_holders() {
     [ "$status" -eq 5 ]
     [ ! -d "$(companion_dir)/busy" ]
     [ -z "$(fake_laya_states destructive)" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
+    stop_holders
     run "$TERMINAL" run -- 'echo taken'
     [ "$status" -eq 0 ]
     [ "$output" = $'run=1\ntaken\nexit=0' ]
-    [ ! -L "$(companion_dir)/typing" ]
+    [ ! -e "$(companion_dir)/typing" ]
 }
 
 @test "run holds all output and exits 6 when the guard fails, and wait --run gives it later" {
@@ -1793,4 +1780,78 @@ stop_holders() {
     [ ! -e "$old" ]
     [ ! -e "$old.lock" ]
     "$TERMINAL" close
+}
+
+# open_parallel N — start N opens at the same time; each writes its output
+# to $BATS_TEST_TMPDIR/o<n>. OPEN_FAILS names each open that did not exit 0.
+open_parallel() {
+    local n p
+    OPEN_FAILS=
+    : > "$BATS_TEST_TMPDIR/opens"
+    for n in $(seq 1 "$1"); do
+        "$TERMINAL" open > "$BATS_TEST_TMPDIR/o$n" 2>&1 3>&- &
+        printf '%s %s\n' "$n" "$!" >> "$BATS_TEST_TMPDIR/opens"
+    done
+    while read -r n p; do
+        wait "$p" || OPEN_FAILS="$OPEN_FAILS $n"
+    done < "$BATS_TEST_TMPDIR/opens"
+}
+
+# one_companion N — the N opens of open_parallel all name one pane, and the
+# private server of the session has one pane.
+one_companion() {
+    local n pane first=
+    for n in $(seq 1 "$1"); do
+        pane=$(sed -n 's/^pane=//p' "$BATS_TEST_TMPDIR/o$n")
+        [ -n "$pane" ] || { echo "open $n: no pane"; cat "$BATS_TEST_TMPDIR/o$n"; return 1; }
+        [ -n "$first" ] || first="$pane"
+        [ "$pane" = "$first" ] || { echo "open $n: pane $pane, not $first"; return 1; }
+    done
+    [ "$("$REAL_TMUX" -S "$(bg_dir)/sock" list-panes -a | wc -l | tr -d ' ')" = 1 ]
+}
+
+@test "after an open is killed with kill -9, eight parallel opens make one companion" {
+    bg_setup
+    local d p i=0 n
+    d=$(bg_dir)
+    "$TERMINAL" open > /dev/null 2>&1 3>&- &
+    p=$!
+    # The open holds the lock from its start: kill it while it works.
+    while [ ! -e "$d.lock" ] && [ ! -L "$d.lock" ] && [ "$i" -lt 100 ]; do sleep .05; i=$((i + 1)); done
+    sleep .3
+    kill -9 "$p"
+    wait "$p" 2>/dev/null || true
+    open_parallel 8
+    [ -z "$OPEN_FAILS" ] || { for n in $OPEN_FAILS; do echo "open $n:"; cat "$BATS_TEST_TMPDIR/o$n"; done; false; }
+    one_companion 8
+    run "$TERMINAL" run -- 'echo after-kill'
+    [[ "$output" == *$'after-kill\nexit=0' ]] || { echo "$output"; false; }
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+    [ ! -e "$d.lock" ]
+}
+
+@test "a lock left by a holder whose pid a live process now has does not block open or close" {
+    bg_setup
+    local d start
+    d=$(bg_dir)
+    mkdir -p "${d%/*}"
+    # The lock of clux 4.1.0 before this fix: a link to the pid of its
+    # holder. The pid is live (a sleep of the test), but the holder is gone.
+    sleep 600 < /dev/null > /dev/null 2>&1 3>&- &
+    printf '%s\n' "$!" >> "$BATS_TEST_TMPDIR/holders"
+    ln -s "$!" "$d.lock"
+    start=$SECONDS
+    run env CLUX_TERMINAL_LOCK_WAIT=5 "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ $((SECONDS - start)) -lt 5 ]
+    # A lock file that a killed holder left: its lock is free.
+    : > "$d.lock"
+    start=$SECONDS
+    run env CLUX_TERMINAL_LOCK_WAIT=5 "$TERMINAL" close
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ $((SECONDS - start)) -lt 5 ]
+    [ ! -e "$d" ]
+    [ ! -e "$d.lock" ] && [ ! -L "$d.lock" ]
 }
