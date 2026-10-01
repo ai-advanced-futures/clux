@@ -1768,6 +1768,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 }
 
 @test "run takes the busy lock of a run verb that died before it typed" {
+    use_real_ps
     local d="$BATS_TEST_TMPDIR/bz" dead
     mkdir -p "$d/busy"
     printf 'mode=split\npane=%%1\nsocket=\nseq=0\ntoken=ab12cd34\n' > "$d/state"
@@ -1779,12 +1780,20 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         wait_for_prompt() { echo TAKEOVER; return 1; }"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
     [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
-    sleep 30 3>&- & local live=$!
-    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s\n' "$live" > "$d/busy/pid"
+    sleep 30 3>&- & local live=$! start
+    start=$(ps -o lstart= -p "$live" | sed 's/[[:space:]]*$//')
+    [ -n "$start" ]
+    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s %s\n' "$live" "$start" > "$d/busy/pid"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
-    kill "$live"; wait "$live" 2>/dev/null || true
     [ "$status" -eq 5 ]
     [ "$stderr" = 'the companion is busy' ]
+    # The pid of a dead holder that another process now has: the start time
+    # does not match, so the lock is free.
+    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"
+    printf '%s %s\n' "$live" 'Thu Jan  1 00:00:00 1970' > "$d/busy/pid"
+    run --separate-stderr bash -c "$stubs; run_command -- ls"
+    kill "$live"; wait "$live" 2>/dev/null || true
+    [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
 }
 
 @test "one helper reads key names with no case, and it keeps nocasematch" {

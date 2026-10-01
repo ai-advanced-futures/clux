@@ -688,6 +688,16 @@ locked() {
     return "$rc"
 }
 
+# tmux_server_alive PID — PID runs and is a tmux process: the liveness test
+# of a foreign server. kill -0 alone keeps the directory of a dead server
+# for ever when another process gets its pid.
+tmux_server_alive() {
+    local command
+    command=$(ps -o command= -p "$1" 2>/dev/null) || return 1
+    case "$command" in *tmux*) return 0 ;; esac
+    return 1
+}
+
 # reap_pane_dirs LISTING — the 4.0.0 loop over $ROOT/<server-key>-<pane>.
 # _clux_valid_server_key refuses the name "sessions", so this loop skips
 # the directories of session owners.
@@ -703,10 +713,8 @@ reap_pane_dirs() {
         if [ "$server" = "$SERVER_KEY" ]; then
             listing_has_pane "$listing" "%$owner" || locked "$dir" remove_companion_dir "$dir" 1
         else
-            # kill -0 is the whole liveness test for a foreign server: had the
-            # kernel reused that pid, the start time in the key could not match.
             pid="${server%%-*}"
-            kill -0 "$pid" 2>/dev/null || locked "$dir" remove_companion_dir "$dir" 0
+            tmux_server_alive "$pid" || locked "$dir" remove_companion_dir "$dir" 0
         fi
     done
 }
@@ -2245,14 +2253,16 @@ clear_line() { send_key C-e; send_key C-u; }
 release_busy() { rm -f "$D/busy/owner" "$D/busy/pid"; rmdir "$D/busy" 2>/dev/null || true; }
 
 # busy_holder_dead — busy/pid names the run verb that holds the lock until it
-# typed __clux_run. When that verb is gone (the Bash tool killed it during
-# the gate), no run can start: the lock is free.
+# typed __clux_run: its pid and its start time. When that verb is gone (the
+# Bash tool killed it during the gate), no run can start: the lock is free.
+# The start time must match too: a pid alone can come back as another
+# process, which would keep the lock for ever.
 busy_holder_dead() {
-    local pid=
+    local pid= start=
     [ -f "$D/busy/pid" ] || return 1
-    read -r pid 2>/dev/null < "$D/busy/pid" || return 1
+    read -r pid start 2>/dev/null < "$D/busy/pid" || return 1
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    ! kill -0 "$pid" 2>/dev/null
+    ! owner_alive "$pid" "$start"
 }
 
 # reader_live N — a wait --run or run of N is reporting its output now: a
@@ -2680,7 +2690,8 @@ run_command() {
         { [ "${S_SEQ:-0}" -gt 0 ] && [ -f "$D/$S_SEQ.rc" ] && ! reader_live "$S_SEQ"; } \
             || busy_holder_dead || fail 'the companion is busy' 5
     fi
-    printf '%s\n' "$$" > "$D/busy/pid"
+    process_start "$$" || { release_busy; fail 'cannot read the start time of this process' 1; }
+    printf '%s %s\n' "$$" "$PROC_START" > "$D/busy/pid"
     printf 'pending\n' > "$D/busy/owner"
     # Two seconds, not one test: after a large output the pane shell draws its
     # prompt a moment after the last run reports.

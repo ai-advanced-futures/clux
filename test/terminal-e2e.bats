@@ -363,12 +363,18 @@ lock_holder() {
 
 # 12
 @test "the reaper removes a gone owner and keeps a live foreign server" {
-    local key
+    local key other="$BATS_TEST_TMPDIR/other.sock" foreign
     key=$("$REAL_TMUX" -S "$TMUX_SOCKET" display-message -p '#{pid}-#{start_time}')
-    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$$-1-3"
+    "$REAL_TMUX" -S "$other" -f /dev/null new-session -d 3>&-
+    foreign=$("$REAL_TMUX" -S "$other" display-message -p '#{pid}-#{start_time}')
+    # $$ is a live process that is not tmux: the pid of a dead foreign
+    # server that another process now has.
+    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$foreign-3" "$CLUX_TERMINAL_DIR/$$-1-3"
     "$TERMINAL" open >/dev/null
+    "$REAL_TMUX" -S "$other" kill-server
     [ ! -e "$CLUX_TERMINAL_DIR/$key-999" ]
-    [ -d "$CLUX_TERMINAL_DIR/$$-1-3" ]
+    [ -d "$CLUX_TERMINAL_DIR/$foreign-3" ]
+    [ ! -e "$CLUX_TERMINAL_DIR/$$-1-3" ]
 }
 
 # 14
