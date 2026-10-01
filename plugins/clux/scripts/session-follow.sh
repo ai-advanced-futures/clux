@@ -9,6 +9,10 @@
 # mode costs nothing while it is off. The hook is server state: a new tmux
 # server starts with mirror mode off.
 #
+# The hook holds the path of the copy that ran `on`. If that copy is removed,
+# the hook removes itself at the next session change (see hook_command), so the
+# state does not stay "on" with nothing behind it.
+#
 # `sync` moves only the clients that are on a DIFFERENT session. That is what
 # stops a loop: tmux fires client-session-changed for each client that `sync`
 # moves, and also for a switch to the session a client is on already (seen on
@@ -55,7 +59,12 @@ hook_command() {
     local sq="'" esc="'\\''" path sh
     path=${1//$sq/$esc}
     path=${path//#/##}
-    sh="'$path' sync '#{hook_client}'"
+    # A hook whose script is gone removes itself and says so. Without this,
+    # the status says "follow: on" while no client follows. The script can go
+    # when the hook was set from a plugin copy and the plugin updates.
+    sh="[ -x '$path' ] && exec '$path' sync '#{hook_client}'"
+    sh="$sh; tmux set-hook -gu '$HOOK'"
+    sh="$sh; tmux display-message 'clux: mirror mode is off, its script is gone. Run /clux:follow on' 2>/dev/null"
     sh=${sh//\\/\\\\}
     sh=${sh//\"/\\\"}
     sh=${sh//\$/\\\$}

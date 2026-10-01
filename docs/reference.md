@@ -230,6 +230,7 @@ You can also run the script with no Claude: `~/.config/clux/scripts/session-foll
 - **`on` brings the terminals together.** If they show different sessions, they go to the session of the terminal that you used last.
 - **A terminal that attaches moves the others.** tmux reports an attach as a session change. If you attach to session `x`, the other terminals go to `x`.
 - **The state is not saved.** Mirror mode is a tmux hook, `client-session-changed[92]`. A new tmux server starts with mirror mode off. To start it with the server, add this line to your `tmux.conf` after the clux lines: `run-shell "~/.config/clux/scripts/session-follow.sh on"`.
+- **If the script goes away, mirror mode stops.** The hook holds the path of the script that ran `on`. If that file is removed (a plugin update can do this when the hook was set from the plugin folder), the hook removes itself at the next session change and tmux shows a message. Run `/clux:follow on` again.
 - **Terminals of different sizes.** tmux uses the size of the terminal that you used last (`window-size latest`, the tmux default). The other terminal shows the window cut or with an empty area.
 - **All clients follow**, also control-mode clients such as iTerm2 `tmux -CC`.
 

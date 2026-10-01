@@ -32,6 +32,12 @@ Both were seen on tmux 3.5a with a first version, a one-line hook.
 
 `sync` avoids both. It reads the session of the client when it runs (`display-message -p -c <client>`), and it moves only the clients that are on a different session. The second pass finds nothing to move.
 
+## Rules that came from review
+
+- **Session ids, not names.** `sync` reads, compares and targets `#{session_id}`. tmux reads the name `a.c` as window `a` pane `c`, `a:c` as session `a` window `c`, and `%2` and `$9` as ids.
+- **The hook line quotes the script path three times:** for sh (single quotes), for `run-shell` (`#` becomes `##`) and for the tmux parser (`\`, `"` and `$` get a backslash). `set-hook` takes the command as one string, so no layer can be left out.
+- **The hook has a full lifecycle.** `on` sets it, `off` removes it, and it removes itself when its script is gone.
+
 ## Behaviour to know
 
 - An attach is a session change for tmux. A terminal that attaches to session `x` moves the others to `x`.

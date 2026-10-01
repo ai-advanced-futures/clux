@@ -238,6 +238,25 @@ _follows_from_dir() {
     _wait_for '[ "$(_sessions)" = "b b" ]' || { echo "clients on $(_sessions)"; false; }
 }
 
+@test "session-follow: when the script of the hook is gone, the hook removes itself" {
+    # The hook holds the path of the copy that ran `on`. A plugin update can
+    # remove that copy. The state must not stay "on" with no script behind it.
+    local dir="$BATS_TEST_TMPDIR/old-version"
+    mkdir -p "$dir"
+    cp "$FOLLOW" "$dir/session-follow.sh"
+    _t set-hook -g 'client-session-changed[90]' 'run-shell "true"'
+    _attach 1 a; _attach 2 a
+    env PATH="$BATS_TEST_TMPDIR/bin:$PATH" "$dir/session-follow.sh" on >/dev/null
+    rm -f "$dir/session-follow.sh"
+
+    _t switch-client -c "$(_client 1)" -t b
+    _wait_for '! _t show-hooks -g | grep -qF "client-session-changed[92]"' \
+        || { echo "the [92] hook is still set"; false; }
+    run _follow status
+    [[ "$output" == *"follow: off"* ]]
+    _t show-hooks -g | grep -qF 'client-session-changed[90]'
+}
+
 @test "session-follow: sync for a client that is gone does nothing and gives exit code 0" {
     _attach 1 a
     run _follow sync 'no-such-client'
