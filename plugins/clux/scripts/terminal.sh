@@ -858,12 +858,17 @@ reap_session_dir() {
         return 0
     fi
     if owner_gone "$S_OWNER_PID" "$S_OWNER_START" \
-        || { [ "$OWNER_KIND" = session ] && [ "$S_OWNER_PID" = "$OWNER_PID" ] \
-            && same_process_start "$S_OWNER_START" "$OWNER_START" && [ "$S_SESSION" != "$SESSION_ID" ]; } \
+        || { [ "$OWNER_KIND" = session ] && state_owner_is_caller && [ "$S_SESSION" != "$SESSION_ID" ]; } \
         || { [ "$age" -ge "$OPEN_BUDGET_DEFAULT" ] && ! companion_pane_is_ours "$S_SOCKET" "$S_PANE"; }; then
         remove_companion_dir "$dir" 0
         watch_stop "$S_WATCH_PID" "${dir##*/}"
     fi
+}
+
+# state_owner_is_caller — the owner process in the loaded state is the
+# process of the caller (a session owner: OWNER_PID and OWNER_START).
+state_owner_is_caller() {
+    [ "$S_OWNER_PID" = "$OWNER_PID" ] && same_process_start "$S_OWNER_START" "$OWNER_START"
 }
 
 # dir_mtime DIR — the last change of DIR in seconds since the epoch: GNU
@@ -2216,7 +2221,7 @@ open_command() {
         laya_restart_if_down || return
         owner_ensure || return 5
         # [inferred] The companion is alive and stays. With no watchdog, open
-        # says so and exits 1; the next open tries again. [inferred]
+        # says so and exits 1; the next open tries again.
         watch_ensure || { [ "$?" -eq 5 ] && return 5; fail 'cannot start the companion watchdog' 1; }
         report_open
         return
@@ -2324,7 +2329,7 @@ open_command() {
     wait_for_prompt 5 || open_abort 1 'the companion shell did not reach its prompt' 1
     # The watchdog of a session owner (spec 2026-09-30, section 9).
     # [inferred] A new companion with no watchdog is not safe: open undoes it
-    # and exits 1, as for the other failures of a new companion. [inferred]
+    # and exits 1, as for the other failures of a new companion.
     watch_ensure || open_abort 1 'cannot start the companion watchdog' 1
     report_open
 }
@@ -2399,12 +2404,9 @@ take_reading_lock() {
         || fail "another verb reads the output of run $1 now: try again" 5
 }
 
-TYPING_LOCK=0
-
 # verb_exit — the EXIT trap of a verb: free each lock of the verb.
 verb_exit() {
     lock_drop_all
-    TYPING_LOCK=0
 }
 
 # run_not_started — after C-c: when the .cmd of the last run is still there,
@@ -2527,7 +2529,6 @@ take_typing_lock() {
         printf '%s\n' 'another send or run is typing in the pane: try again' >&2
         return 5
     }
-    TYPING_LOCK=1
 }
 
 # lock_and_load — take the typing lock, then read the state again: a run
@@ -2538,10 +2539,9 @@ lock_and_load() {
     state_load || fail 'no companion is open for this owner' 4
 }
 
+# release_typing_lock — lock_drop does nothing when the lock is not held.
 release_typing_lock() {
-    [ "$TYPING_LOCK" -eq 1 ] || return 0
     lock_drop "$D/typing"
-    TYPING_LOCK=0
 }
 
 # The directory lock: the ONE rule for the verbs that make or remove a
@@ -2678,9 +2678,6 @@ report_run() {
         release_run "$n"
         return 0
     fi
-    # While this verb reports, no new run takes the lock or deletes the
-    # output, and no other verb reports the same run: one reader would
-    # delete the output that the other reads.
     take_reading_lock "$n"
     while [ ! -e "$D/$n.done" ] && [ "$i" -lt 5 ]; do sleep .2; i=$((i + 1)); done
     read -r rc 2>/dev/null < "$D/$n.rc"
@@ -3339,7 +3336,14 @@ close_session_dir() {
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
     [ "${2:-}" = watchdog ] || watch_stop "$S_WATCH_PID" "${D##*/}"
-    if [ "${2:-}" = hook ]; then
+    close_stop_server "${2:-}"
+}
+
+# close_stop_server [WHO] — the last close step of the two owner kinds: stop
+# the Laya server of the loaded state. With WHO "hook" a separate process
+# stops it, because the hook has 5 s.
+close_stop_server() {
+    if [ "${1:-}" = hook ]; then
         laya_stop_server_later "$S_LAYA_PID"
     else
         laya_stop_server "$S_LAYA_PID"
@@ -3352,7 +3356,7 @@ close_session_dir() {
 # so the watchdog gets the absolute path. [inferred] It returns 1, with no
 # change to state, when the script directory is not known. Otherwise it
 # returns the status of write_state. [inferred] It prints nothing when the
-# directory is not known: the callers print the message. [inferred]
+# directory is not known: the callers print the message.
 watch_start() {
     local dir
     dir=$(cd "$SCRIPT_DIR" 2>/dev/null && pwd) || return 1
@@ -3373,7 +3377,7 @@ watch_start() {
 # closes it, and a late hook of the old session does not.
 owner_ensure() {
     if [ "$OWNER_KIND" = session ]; then
-        [ "$S_OWNER_PID" != "$OWNER_PID" ] || ! same_process_start "$S_OWNER_START" "$OWNER_START" || return 0
+        ! state_owner_is_caller || return 0
     else
         caller_session_id
         [ -n "$CALLER_SESSION" ] && [ "$CALLER_SESSION" != "$S_SESSION" ] || return 0
@@ -3395,7 +3399,7 @@ owner_ensure() {
 # [inferred] The status is 5 when the lock is not free, 1 when watch_start
 # fails, and 0 otherwise. The lock is released in each path. A companion with
 # no watchdog can stay after a crash of the session (spec section 13), so the
-# callers do not ignore status 1. [inferred]
+# callers do not ignore status 1.
 watch_ensure() {
     local rc=0
     [ "$OWNER_KIND" = session ] || return 0
@@ -3493,11 +3497,7 @@ close_pane_locked() {
     tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
-    if [ "${1:-}" = hook ]; then
-        laya_stop_server_later "$S_LAYA_PID"
-    else
-        laya_stop_server "$S_LAYA_PID"
-    fi
+    close_stop_server "${1:-}"
 }
 
 # close_later STEPS [ARG] — the SessionEnd hook did not get the lock of $D

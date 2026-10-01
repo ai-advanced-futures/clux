@@ -104,9 +104,7 @@ use_real_ps() {
     sleep 60 </dev/null >/dev/null 2>&1 3>&- &
     live=$!
     start=$(TZ=America/New_York LC_ALL=C proc_start "$live")
-    mkdir -p "$root/sessions/aaaaaaaa"
-    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=aaaaaaaa-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
-        "$live" "$start" > "$root/sessions/aaaaaaaa/state"
+    session_state "$root/sessions/aaaaaaaa" "$live" "$start"
     run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
         TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'; terminal_init; reap_companions"
     kill "$live"
@@ -488,9 +486,8 @@ STUB
     sleep 60 </dev/null >/dev/null 2>&1 3>&- &
     dead=$!
     start=$(proc_start "$live")
-    mkdir -p "$root/sessions/aaaaaaaa" "$root/sessions/bbbbbbbb"
-    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=aaaaaaaa-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
-        "$live" "$start" > "$root/sessions/aaaaaaaa/state"
+    mkdir -p "$root/sessions/bbbbbbbb"
+    session_state "$root/sessions/aaaaaaaa" "$live" "$start"
     # The first state of open: the owner and the Laya pid, no pane yet.
     printf 'mode=\npane=\nsocket=\nseq=0\nlaya_pid=4242\nsession=bbbbbbbb-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=x\n' \
         "$dead" > "$root/sessions/bbbbbbbb/state"
@@ -517,8 +514,7 @@ STUB
     for s in 11111111 22222222 33333333 44444444 55555555; do mkdir -p "$root/sessions/$s"; done
     # 11111111: no state, young. 22222222: no state, old.
     # 33333333: the process of the caller with another session id (a /clear left-over).
-    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=33333333-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
-        "$$" "$start" > "$root/sessions/33333333/state"
+    session_state "$root/sessions/33333333" "$$" "$start"
     # 44444444: another live owner, old, and its pane holds another mark.
     printf 'mode=window\npane=%%6\nsocket=/tmp/user.sock\nseq=0\ntoken=cd34ab12\nsession=44444444-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
         "$other" "$other_start" > "$root/sessions/44444444/state"
@@ -634,7 +630,7 @@ STUB
     d="$root/sessions/0123abcd"
     before="$BATS_TEST_TMPDIR/state.before"
     # The Laya functions are replaced: the pid 4242 is only a record here.
-    # watch_start is replaced too: Task 7 starts a watchdog in open.
+    # watch_start is replaced too: open starts a watchdog.
     run env -u TMUX -u TMUX_PANE -u CLUX_LAYA_URL STUB_LOG="$log" STUB_STATE="$d/state" STUB_STATE_COPY="$before" \
         CLUX_TERMINAL_DIR="$root" CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents" \
         CLAUDE_CODE_SESSION_ID="$sid" CLAUDE_PID=$$ bash -c "source '$TERMINAL'
@@ -1630,7 +1626,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local later="printf 'mode=split\\npane=%%1\\nsocket=\\nseq=6\\ntoken=ab12cd34\\n' > '$d/state'; : > '$d/6.confirm'; mkdir -p '$d/busy'"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
         ensure_open() { state_load; }
-        take_typing_lock() { $later; TYPING_LOCK=1; }
+        take_typing_lock() { $later; }
         send_command --enter -- y"
     [ "$status" -eq 3 ]
     [ "$stderr" = 'laya confirmation in the companion pane: the user must answer it there' ]
@@ -1638,7 +1634,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
         ensure_open() { state_load; }
-        take_typing_lock() { $later; rm -f '$d/6.confirm'; TYPING_LOCK=1; }
+        take_typing_lock() { $later; rm -f '$d/6.confirm'; }
         wait_for_prompt() { echo TAKEOVER; return 1; }
         run_command -- 'ls'"
     [ "$status" -eq 5 ]

@@ -1585,7 +1585,6 @@ lock_holder() {
     d=$(bg_dir)
     stale=$(sed -n 's/^pane=//p' "$d/state")
     # Stop the watchdog, so that only the verbs of the test act on $d.
-    # [inferred] This matters only from Task 7, which starts the watchdog.
     [ -z "$(sed -n 's/^watch_pid=//p' "$d/state")" ] || kill "$(sed -n 's/^watch_pid=//p' "$d/state")"
     "$REAL_TMUX" kill-server
     sleep .5
@@ -1687,8 +1686,7 @@ lock_holder() {
     kill -0 "$pid"
     kill "$CLAUDE_PID"
     wait "$CLAUDE_PID" 2>/dev/null || true
-    while [ -e "$d" ] && [ "$i" -lt 75 ]; do sleep .2; i=$((i + 1)); done
-    [ ! -e "$d" ] || { echo 'the directory stayed'; false; }
+    wait_gone "$d" 15 || { echo 'the directory stayed'; false; }
     [ "$(bg_window_count)" = 1 ] || { echo 'the window stayed'; false; }
     i=0
     while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
