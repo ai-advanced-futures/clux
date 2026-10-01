@@ -191,13 +191,14 @@ pid_exists() {
 # 0: yes. 1: no — no process has PID, or it started at another time.
 # 2: not known — ps or perl failed for a process that exists. A caller
 # removes or closes only on 1, so an error keeps the companion (fail
-# closed). An empty START (busy/pid of clux 4.0.0 holds only the pid)
-# checks the pid only.
+# closed). An empty START (busy/pid of clux 4.0.0 holds only the pid), or
+# one that is not a number in base 10 (positive_integer), checks the pid
+# only.
 owner_check() {
     local rc
     pid_exists "${1:-}"; rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
-    [ -n "${2:-}" ] || return 0
+    positive_integer "${2:-}" || return 0
     process_start "$1" || return 2
     same_process_start "$PROC_START" "$2" || return 1
 }
@@ -219,8 +220,11 @@ random_hex() {
     LC_ALL=C od -An -N"$1" -tx1 /dev/urandom | LC_ALL=C tr -d ' \n'
 }
 
+# A leading zero is refused: bash reads 08 in $(( )) as a bad octal number
+# and stops the script. A pid, a start time, a count or a time limit never
+# starts with 0.
 positive_integer() {
-    case "$1" in ''|*[!0-9]*|0) return 1 ;; esac
+    case "$1" in ''|*[!0-9]*|0*) return 1 ;; esac
     return 0
 }
 
@@ -675,6 +679,14 @@ state_load() {
             watch_pid) S_WATCH_PID="$value" ;;
         esac
     done 2>/dev/null < "$dir/state"
+    # seq goes into $(( )): read it in base 10 (08 is not octal), and a
+    # value that is not a number is 0, so a damaged state does not stop
+    # the script.
+    case "$S_SEQ" in
+        '') ;;
+        *[!0-9]*) S_SEQ=0 ;;
+        *) S_SEQ=$((10#$S_SEQ)) ;;
+    esac
     # A companion that an older clux opened has no token.
     PROMPT_MARK='clux$'
     CONT_MARK=

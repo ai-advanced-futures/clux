@@ -195,6 +195,31 @@ session_state() {
     kill "$watch" "$live"
 }
 
+@test "a number with a leading zero in state, busy/pid or an argument does not stop the script under bash 3.2" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    session_state "$root/sessions/aaaaaaaa" "$live" 08
+    printf 'seq=08\n' >> "$root/sessions/aaaaaaaa/state"
+    mkdir -p "$root/busy"
+    printf '%s 08\n' "$live" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 /bin/bash -c "source '$TERMINAL'
+        ! same_process_start 1700000009 08 || { echo '08 is a start time'; exit 1; }
+        ! positive_integer 08 || { echo '08 is a positive integer'; exit 1; }
+        owner_check '$live' 08 || { echo \"owner with start 08: \$?\"; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'a live busy holder with start 08 is dead'; exit 1; }
+        state_load '$root/sessions/aaaaaaaa'; [ \"\$S_SEQ\" = 8 ] || { echo \"seq 08 read as \$S_SEQ\"; exit 1; }
+        terminal_init; reap_companions
+        echo reached"
+    kill "$live"
+    [ "$status" -eq 0 ] && [[ "$output" == *reached ]] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed a live owner with start 08'; false; }
+    run env CLUX_TERMINAL_DIR="$root" TMUX=fake TMUX_PANE=%0 /bin/bash "$TERMINAL" wait --idle --timeout 08
+    [ "$status" -eq 2 ] || { echo "wait --timeout 08: $status $output"; false; }
+}
+
 # proc_start PID — the start time of PID in the form that the script stores
 # (process_start), so the tests and the script have one form. Needs
 # use_real_ps.
