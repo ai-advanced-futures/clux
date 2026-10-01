@@ -68,9 +68,13 @@ When `laya install` gives exit code 2 and `CLUX_LAYA_PYTHON cannot import laya`,
 ## Open the companion
 
 - `terminal.sh open` opens a split pane below Claude. Use this mode by default.
-- `terminal.sh open --socket` opens the companion on a private tmux server. Use it only when the user asks for it. Give the user the `attach=` line from the output.
+- `terminal.sh open --socket` opens the companion on a private tmux server. Use it only when the user asks for it. Give the user the `attach=` line from the output. When the user is in tmux, give the `attach_in_tmux=` line: tmux refuses an attach from inside tmux when `TMUX` is set.
 - `open` re-uses the companion when it is open. It is safe to call `open` again.
-- The script refuses to operate outside tmux (exit code 2). Tell the user to start Claude Code in tmux.
+- Only one `open` or `close` of a companion works at a time. A second one waits for the first. When it waits more than 120 seconds, you get exit code 5 and `another open or close of this companion is at work: try again`. Try again. Because of this wait, run `open` and `close` with the Bash tool `timeout` parameter set to 300000.
+- The script needs `perl` for its locks. Without it, you get exit code 2 and `clux terminal needs perl`. Tell the user to install `perl`.
+- In a Claude Code session with no tmux pane (for example a background session that `claude --bg` or a `claude agents` dashboard starts), `open` opens the companion as a new window, `clux-terminal <id>`, in the tmux session of the dashboard. Give the user the `window=` line from the output. When there is no dashboard, `open` opens the companion on a private tmux server: give the user the `attach=` line and the `attach_in_tmux=` line.
+- When the session restarts (for example `claude stop`, then `claude attach`), the companion closes, and a verb gives exit code 4. Use `open` again.
+- Outside tmux and outside a Claude Code session, the script does not operate (exit code 2). Tell the user to start Claude Code in tmux.
 - `open` starts a Laya server for this companion. When the user sets `CLUX_LAYA_URL`, `open` uses that server. It must be on this machine: `127.0.0.1`, `localhost` or `::1`.
 
 ## Time limits
@@ -139,7 +143,7 @@ Laya examines each `send` before it goes to the pane: text with or without `--en
 - A cursor line that is too long for the Laya pane check gives exit code 2 and `laya: the cursor line is too long to examine: send --key C-c`.
 - When the cursor line changes while Laya examines it, `send` types nothing. You get exit code 5 and `the line changed while Laya examined it: read, then send again`. A program that draws its line again and again (for example a spinner) can cause this. Use `read`, then send again.
 - When the user types in the pane while Laya examines a `run` command, `run` types nothing. You get exit code 5 and `the pane is not at an empty prompt: use read, then run again`. Use `read`, then run again or tell the user.
-- Only one `send` or `run` types at a time. When another one types, you get exit code 5 and `another send or run is typing in the pane: try again`. Do not start two `send` or `run` calls in parallel.
+- Only one `send` or `run` types at a time. When another one types, you get exit code 5 and `another send or run is typing in the pane: try again`. Do not start two `send` or `run` calls in parallel. `open` takes the same lock when it uses the companion of the pane again for a new Claude session (it records the new session), so it can also give this exit code 5. Try again.
 - When Laya finds the line dangerous, `send` does not send the text or the key. At the clux prompt, you get exit code 6 and `laya: dangerous (<reason>): use run, it asks the user`: use `run`, it asks the user. In another program (for example `ssh` or `python3`), you get `laya: dangerous (<reason>): ask the user to type this line in the pane`: tell the user.
 
 Answer plain prompts yourself, for example `[y/N]` or a menu.
@@ -158,10 +162,10 @@ Answer plain prompts yourself, for example `[y/N]` or a menu.
 |---|---|---|
 | 0 | The verb completed. For `run`, read `exit=<rc>`. | Continue. |
 | 1 | The time limit ended. The command continues in the pane, or it waits for the answer of the user. | Use `wait --run <n>`. |
-| 2 | The script cannot operate: not in tmux, a bad argument, or no tmux. Also a line or a command that is too long for Laya, or a key that does not work at the clux prompt. Also `--enter` or a key that ends the line at a nested shell prompt. | Correct the call, or tell the user. At a nested shell prompt, send the text with no `--enter` and ask the user to press Enter in the pane. |
+| 2 | The script cannot operate: not in tmux and not in a Claude Code session, a bad argument, or no tmux. Also a line or a command that is too long for Laya, or a key that does not work at the clux prompt. Also `--enter` or a key that ends the line at a nested shell prompt. | Correct the call, or tell the user. At a nested shell prompt, send the text with no `--enter` and ask the user to press Enter in the pane. |
 | 3 | A credential prompt or a Laya confirmation is in the pane, or the last run was secret, or text that the pane did not show is on the line. | Tell the user to answer in the pane. Then use `wait --run <n>`. For hidden text, use `send --key C-c`. |
-| 4 | No companion is open for this session. | Use `open`. |
-| 5 | Busy: a run is not complete, the pane is not at its prompt or not at an empty prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`) or the cursor (`cannot read the cursor position: try again`), another `send` or `run` types (`another send or run is typing in the pane`), another verb reads the output of the same run (`another verb reads the output of run <n> now: try again`), the pane shell waits for the rest of a command, the clux prompt is not on the screen (`the clux prompt is not on the screen: send --key C-c, then try again`), or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
+| 4 | No companion is open for this session. This is also true after the session restarts. | Use `open`. |
+| 5 | Busy: a run is not complete, the pane is not at its prompt or not at an empty prompt, the output of the last run is held because Laya did not answer, the script cannot read the pane (`cannot read the companion pane: try again`) or the cursor (`cannot read the cursor position: try again`), another `send` or `run` types (`another send or run is typing in the pane`; also for `open` when a new session uses the companion of the pane again), another verb reads the output of the same run (`another verb reads the output of run <n> now: try again`), another `open` or `close` of this companion is at work (`another open or close of this companion is at work: try again`), the pane shell waits for the rest of a command, the clux prompt is not on the screen (`the clux prompt is not on the screen: send --key C-c, then try again`), or the line changed while Laya examined it. No run started, and no text went to the pane. | Use `wait --run <n>`, `wait --idle`, `send` or `read`. Then run again. When `wait --run <n>` gives exit code 6 for held output two times, use `wait --run <n> --discard`: it deletes that output and frees the companion. |
 | 6 | Laya: not installed, not available, a dangerous line on `send`, or output held because Laya did not answer. The message tells which. | `laya not installed`: see "Install Laya". `laya not available: run <n> continues` or `the output stays`: use `wait --run <n>` again later. `laya not available: this companion has no Laya server: use close, then open`: use `close`, then `open`. `laya not available: the server at CLUX_LAYA_URL refused CLUX_LAYA_KEY`: tell the user to set the key of that server. Other `laya not available`: use `open` again (it starts a new Laya server when the old one stopped). When that fails, use `close`, then `open`. `laya: dangerous ...: use run`: use `run`. `laya: dangerous ...: ask the user to type this line`: tell the user. |
 
 ## Laya settings
@@ -170,7 +174,7 @@ Do not edit the files in `config/laya/`. Only the user changes the Laya policies
 
 ## Close the companion
 
-`terminal.sh close` clears the history, closes the pane (or stops the private server), deletes the private files, and then stops the Laya server that `open` started. The `SessionEnd` hook does the same at the end of the session.
+`terminal.sh close` clears the history, closes the pane or the window (or stops the private server), deletes the private files, and then stops the Laya server that `open` started. The `SessionEnd` hook does the same at the end of the session. In a session with no tmux pane, a watchdog process also closes the companion when the session process ends, also after a crash.
 
 ## Use from another skill
 

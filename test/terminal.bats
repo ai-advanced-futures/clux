@@ -62,14 +62,229 @@ EOF
 @test "tmux verbs refuse outside tmux while hook close is silent" {
     local args
     for args in 'open' 'run -- true' 'send -- x' 'read' 'wait --idle' 'close' 'list'; do
-        run env -u TMUX -u TMUX_PANE bash -c "'$TERMINAL' $args"
+        run env -u TMUX -u TMUX_PANE -u CLAUDE_CODE_SESSION_ID -u CLUX_SESSION_ID -u CLAUDE_PID \
+            bash -c "'$TERMINAL' $args"
         [ "$status" -eq 2 ] || { echo "$args returned $status"; false; }
-        [[ "$output" == *'inside tmux'* ]] || false
+        [ "$output" = 'clux terminal must run inside tmux or in a Claude Code session' ]
     done
 
-    run env -u TMUX -u TMUX_PANE bash -c "printf hook-input | '$TERMINAL' close --hook"
+    run env -u TMUX -u TMUX_PANE -u CLAUDE_CODE_SESSION_ID -u CLUX_SESSION_ID -u CLAUDE_PID \
+        bash -c "printf hook-input | '$TERMINAL' close --hook"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+# use_real_ps — a session owner needs `ps -o lstart=`, and the committed ps
+# stub prints nothing.
+use_real_ps() {
+    local real=/bin/ps
+    [ -x "$real" ] || real=/usr/bin/ps
+    ln -sf "$real" "$BATS_TEST_TMPDIR/stubs/ps"
+}
+
+@test "the start time of a process does not change with the TZ and the LC_ALL of the reader" {
+    use_real_ps
+    local live ny paris
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    ny=$(TZ=America/New_York LC_ALL=en_US.UTF-8 proc_start "$live")
+    paris=$(TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 proc_start "$live")
+    [ -n "$ny" ] || { kill "$live"; echo 'no start time'; false; }
+    run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 bash -c \
+        "source '$TERMINAL'; owner_check '$live' '$ny'"
+    kill "$live"
+    [ "$ny" = "$paris" ] || { echo "New York: $ny, Paris: $paris"; false; }
+    [ "$status" -eq 0 ] || { echo 'a live owner looks dead in another TZ and LC_ALL'; false; }
+}
+
+@test "the sessions reaper in another TZ and LC_ALL keeps a live owner that open recorded" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live start
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    start=$(TZ=America/New_York LC_ALL=C proc_start "$live")
+    session_state "$root/sessions/aaaaaaaa" "$live" "$start"
+    run env TZ=Europe/Paris LC_ALL=fr_FR.UTF-8 LANG=fr_FR.UTF-8 STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'; terminal_init; reap_companions"
+    kill "$live"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed the companion of a live owner'; false; }
+}
+
+# stub_ps — a ps stub: `-o lstart=` prints STUB_LSTART, `-o command=`
+# prints "tmux", and with STUB_PS_FAIL=1 each call fails with no output.
+stub_ps() {
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUB'
+#!/usr/bin/env bash
+[ "${STUB_PS_FAIL:-0}" = 1 ] && exit 1
+case "$*" in
+    *lstart=*) printf '%s\n' "${STUB_LSTART:-}" ;;
+    *command=*) echo 'tmux -S /tmp/other.sock' ;;
+esac
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/stubs/ps"
+}
+
+# session_state DIR PID START — the state of a session companion in DIR.
+session_state() {
+    mkdir -p "$1"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=%s-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "${1##*/}" "$2" "$3" > "$1/state"
+}
+
+@test "a start time 1 s off names the same process: owner, busy holder, tmux server and reaper" {
+    stub_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live e
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    export STUB_LSTART='Thu Oct  1 02:55:05 2026'
+    e=$(proc_start "$live")
+    [ -n "$e" ] || { kill "$live"; echo 'the stub gave no start time'; false; }
+    session_state "$root/sessions/aaaaaaaa" "$live" "$((e - 1))"
+    mkdir -p "$root/busy"
+    printf '%s %s\n' "$live" "$((e + 1))" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'
+        owner_check '$live' '$((e - 1))' || { echo \"owner -1 s: \$?\"; exit 1; }
+        owner_check '$live' '$((e + 1))' || { echo \"owner +1 s: \$?\"; exit 1; }
+        owner_check '$live' '$((e - 3))'; [ \$? -eq 1 ] || { echo 'owner -3 s is not another process'; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'busy holder -1 s is dead'; exit 1; }
+        tmux_server_alive '$live-$((e + 1))' || { echo 'tmux server +1 s is dead'; exit 1; }
+        printf '%s\n' '$live' > '$root/busy/pid'
+        ! busy_holder_dead || { echo 'a live 4.0.0 busy holder (no start time) is dead'; exit 1; }
+        terminal_init; reap_companions"
+    kill "$live"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed a live owner 1 s off'; false; }
+}
+
+@test "when ps fails, a live owner is not known and keeps its companion; a gone owner still goes" {
+    stub_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live gone watch i=0
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    gone=$!
+    kill "$gone"; wait "$gone" 2>/dev/null || true
+    export STUB_PS_FAIL=1
+    session_state "$root/sessions/aaaaaaaa" "$live" 1700000000
+    session_state "$root/sessions/bbbbbbbb" "$gone" 1700000000
+    mkdir -p "$root/busy"
+    printf '%s 1700000000\n' "$live" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 bash -c "source '$TERMINAL'
+        owner_check '$live' 1700000000; [ \$? -eq 2 ] || { echo 'a live owner is not \"not known\"'; exit 1; }
+        owner_check '$gone' 1700000000; [ \$? -eq 1 ] || { echo 'a gone owner is not gone'; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'a live busy holder is dead'; exit 1; }
+        tmux_server_alive '$live-1700000000' || { echo 'a live tmux server is dead'; exit 1; }
+        terminal_init; reap_companions"
+    [ "$status" -eq 0 ] || { kill "$live"; echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { kill "$live"; echo 'the reaper removed a live owner when ps failed'; false; }
+    [ ! -e "$root/sessions/bbbbbbbb" ] || { kill "$live"; echo 'the reaper kept a gone owner'; false; }
+    # The watchdog does not close the companion while ps fails.
+    CLUX_TERMINAL_DIR="$root" bash -c "source '$TERMINAL'; WATCH_INTERVAL=.3; watch_command --session aaaaaaaa" \
+        </dev/null >/dev/null 2>&1 3>&- &
+    watch=$!
+    printf 'watch_pid=%s\n' "$watch" >> "$root/sessions/aaaaaaaa/state"
+    sleep 1.5
+    kill -0 "$watch" 2>/dev/null || { kill "$live"; echo 'the watchdog ended'; false; }
+    [ -f "$root/sessions/aaaaaaaa/state" ] || { kill "$live" "$watch"; echo 'the watchdog closed a live owner when ps failed'; false; }
+    kill "$watch" "$live"
+}
+
+@test "a number with a leading zero in state, busy/pid or an argument does not stop the script under bash 3.2" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" live
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    session_state "$root/sessions/aaaaaaaa" "$live" 08
+    printf 'seq=08\n' >> "$root/sessions/aaaaaaaa/state"
+    mkdir -p "$root/busy"
+    printf '%s 08\n' "$live" > "$root/busy/pid"
+    run env CLUX_TERMINAL_DIR="$root" STUB_MARK=ab12cd34 TMUX=fake TMUX_PANE=%0 /bin/bash -c "source '$TERMINAL'
+        ! same_process_start 1700000009 08 || { echo '08 is a start time'; exit 1; }
+        ! positive_integer 08 || { echo '08 is a positive integer'; exit 1; }
+        owner_check '$live' 08 || { echo \"owner with start 08: \$?\"; exit 1; }
+        D='$root'; ! busy_holder_dead || { echo 'a live busy holder with start 08 is dead'; exit 1; }
+        state_load '$root/sessions/aaaaaaaa'; [ \"\$S_SEQ\" = 8 ] || { echo \"seq 08 read as \$S_SEQ\"; exit 1; }
+        terminal_init; reap_companions
+        echo reached"
+    kill "$live"
+    [ "$status" -eq 0 ] && [[ "$output" == *reached ]] || { echo "$output"; false; }
+    [ -d "$root/sessions/aaaaaaaa" ] || { echo 'the reaper removed a live owner with start 08'; false; }
+    run env CLUX_TERMINAL_DIR="$root" TMUX=fake TMUX_PANE=%0 /bin/bash "$TERMINAL" wait --idle --timeout 08
+    [ "$status" -eq 2 ] || { echo "wait --timeout 08: $status $output"; false; }
+}
+
+# proc_start PID — the start time of PID in the form that the script stores
+# (process_start), so the tests and the script have one form. Needs
+# use_real_ps.
+proc_start() {
+    bash -c "source '$TERMINAL'; process_start \"\$1\" && printf '%s' \"\$PROC_START\"" _ "$1"
+}
+
+@test "a session owner needs a valid session id and a live CLAUDE_PID" {
+    use_real_ps
+    local root="$BATS_TEST_TMPDIR/root" sid=0123abcd-4567-4890-abcd-ef0123456789 id pid
+    for id in ../../etc 0123ABCD-4567-4890-abcd-ef0123456789 0123abcd-4567-4890-abcd-ef01234567890 x; do
+        run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" CLAUDE_CODE_SESSION_ID="$id" \
+            CLAUDE_PID=$$ "$TERMINAL" list
+        [ "$status" -eq 2 ] || { echo "$id returned $status"; false; }
+        [ "$output" = 'invalid Claude session id' ]
+    done
+    # CLUX_SESSION_ID comes first, also when it is not valid.
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" CLUX_SESSION_ID=bad \
+        CLAUDE_CODE_SESSION_ID="$sid" CLAUDE_PID=$$ "$TERMINAL" list
+    [ "$status" -eq 2 ]
+    [ "$output" = 'invalid Claude session id' ]
+    for pid in '' 0 12x 99999999; do
+        run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" CLAUDE_CODE_SESSION_ID="$sid" \
+            CLAUDE_PID="$pid" "$TERMINAL" list
+        [ "$status" -eq 2 ] || { echo "pid '$pid' returned $status"; false; }
+        [ "$output" = 'cannot identify the Claude session process' ]
+    done
+    run env -u TMUX -u TMUX_PANE -u CLAUDE_PID CLUX_TERMINAL_DIR="$root" CLAUDE_CODE_SESSION_ID="$sid" \
+        "$TERMINAL" list
+    [ "$status" -eq 2 ]
+    [ "$output" = 'cannot identify the Claude session process' ]
+    [ ! -e "$root" ]
+}
+
+@test "a session owner has its directory under sessions, named by the first 8 characters of its id" {
+    use_real_ps
+    local root="$BATS_TEST_TMPDIR/root"
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" \
+        CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ bash -c \
+        "source '$TERMINAL'; require_owner; terminal_init
+        echo \"\$OWNER_KIND \$D \$OWNER_PID\"; [ -n \"\$OWNER_START\" ]"
+    [ "$status" -eq 0 ]
+    [ "$output" = "session $root/sessions/0123abcd $$" ]
+    # CLUX_SESSION_ID comes first.
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" CLUX_SESSION_ID=fedcba98-4567-4890-abcd-ef0123456789 \
+        CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ bash -c \
+        "source '$TERMINAL'; require_owner; terminal_init; echo \"\$D\""
+    [ "$status" -eq 0 ]
+    [ "$output" = "$root/sessions/fedcba98" ]
+    # TMUX and TMUX_PANE make a pane owner, also with a session id.
+    run env TMUX=fake TMUX_PANE=%0 CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 \
+        CLAUDE_PID=$$ bash -c "source '$TERMINAL'; require_owner; echo \"\$OWNER_KIND\""
+    [ "$status" -eq 0 ]
+    [ "$output" = pane ]
+}
+
+@test "the socket path of a session owner fits in 100 bytes under a 49-byte TMPDIR" {
+    use_real_ps
+    local tmp
+    # 49 bytes with the slash at the end, as the macOS TMPDIR.
+    tmp=$(printf '/%047s/' '' | tr ' ' x)
+    [ "${#tmp}" -eq 49 ]
+    run env -u TMUX -u TMUX_PANE -u CLUX_TERMINAL_DIR TMPDIR="$tmp" \
+        CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ bash -c \
+        "source '$TERMINAL'; require_owner; terminal_init; printf '%s' \"\$D/sock\""
+    [ "$status" -eq 0 ]
+    [ "${#output}" -le 100 ] || { echo "${#output} bytes: $output"; false; }
 }
 
 @test "malformed verb arguments exit 2" {
@@ -119,6 +334,206 @@ STUB
     [ ! -e "$root/1234-1700000000-9" ]
     [ ! -e "$root/999999999-1-4" ]
     ! grep -q 'kill-pane' "$log" || false
+}
+
+# session_tmux_stub — tmux for the session-owner tests. It writes each call
+# to STUB_LOG. display-message gives STUB_MARK for the @clux-companion mark,
+# else the server key 1234-1700000000. list-panes gives %0.
+session_tmux_stub() {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUB'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    *'#{@clux-companion}'*) printf '%s\n' "${STUB_MARK:-}" ;;
+    *display-message*) echo 1234-1700000000 ;;
+    *list-panes*) echo %0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+}
+
+@test "the window arm kills only a pane that holds the mark, and never the server" {
+    session_tmux_stub
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    run env STUB_LOG="$log" STUB_MARK=ffff0000 bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34
+        kill_companion window %5 /tmp/user.sock 1"
+    [ "$status" -eq 0 ]
+    ! grep -q 'kill-pane' "$log" || false
+    run env STUB_LOG="$log" STUB_MARK=ab12cd34 bash -c "source '$TERMINAL'; S_TOKEN=ab12cd34
+        kill_companion window %5 /tmp/user.sock 0"
+    [ "$status" -eq 0 ]
+    grep -qx 'tmux -S /tmp/user.sock kill-pane -t %5' "$log"
+    ! grep -q 'kill-server' "$log" || false
+}
+
+@test "a session owner finds its companion by the mark and by its session id" {
+    session_tmux_stub
+    local d="$BATS_TEST_TMPDIR/d" log="$BATS_TEST_TMPDIR/stub.log" sid=0123abcd-4567-4890-abcd-ef0123456789
+    mkdir -p "$d"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=%s\n' "$sid" > "$d/state"
+    alive_as() {
+        run env STUB_LOG="$log" STUB_MARK="$1" bash -c "source '$TERMINAL'; D='$d'
+            OWNER_KIND=session SESSION_ID=$2
+            if current_companion_alive; then echo alive; else echo gone; fi"
+    }
+    alive_as ab12cd34 "$sid"
+    [ "$output" = alive ]
+    alive_as ffff0000 "$sid"
+    [ "$output" = gone ]
+    grep -qx "tmux -S /tmp/user.sock display-message -p -t %5 #{@clux-companion}" "$log"
+    ! grep -q 'list-panes' "$log" || false
+    # The state of another session with the same first 8 characters.
+    : > "$log"
+    alive_as ab12cd34 0123abcd-9999-4890-abcd-ef0123456789
+    [ "$output" = gone ]
+    [ ! -s "$log" ]
+}
+
+@test "tmux_state and the user patterns use the socket of a window companion" {
+    session_tmux_stub
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    run env STUB_LOG="$log" bash -c "source '$TERMINAL'; S_MODE=window S_SOCKET=/tmp/user.sock
+        tmux_state send-keys -t %5 x
+        _load_user_patterns"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$log")" = $'tmux -S /tmp/user.sock send-keys -t %5 x\ntmux -S /tmp/user.sock show-option -gqv @clux-terminal-patterns' ]
+}
+
+@test "close --hook with no tmux closes the companion of the session in the payload" {
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" sid=0123abcd-4567-4890-abcd-ef0123456789
+    mkdir -p "$root/sessions/0123abcd"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=%s\n' "$sid" \
+        > "$root/sessions/0123abcd/state"
+    # A bad session_id does nothing.
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" bash -c \
+        "printf '{\"session_id\":\"../../x\",\"reason\":\"other\"}' | '$TERMINAL' close --hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -d "$root/sessions/0123abcd" ]
+    # Another session with the same first 8 characters does nothing.
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" bash -c \
+        "printf '{\"session_id\":\"0123abcd-9999-4890-abcd-ef0123456789\"}' | '$TERMINAL' close --hook"
+    [ "$status" -eq 0 ]
+    [ -d "$root/sessions/0123abcd" ]
+    ! grep -q 'kill-pane' "$log" || false
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" bash -c \
+        "printf '{\"session_id\": \"$sid\", \"hook_event_name\": \"SessionEnd\"}' | '$TERMINAL' close --hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -e "$root/sessions/0123abcd" ]
+    grep -qx 'tmux -S /tmp/user.sock clear-history -t %5' "$log"
+    grep -qx 'tmux -S /tmp/user.sock kill-pane -t %5' "$log"
+    ! grep -q 'kill-server' "$log" || false
+}
+
+@test "close --session needs a valid id, and close by another session exits 4 and changes nothing" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log"
+    local sid=0123abcd-4567-4890-abcd-ef0123456789 other=0123abcd-9999-4890-abcd-ef0123456789
+    mkdir -p "$root/sessions/0123abcd"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=%s\n' "$sid" \
+        > "$root/sessions/0123abcd/state"
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" "$TERMINAL" close --session ../x
+    [ "$status" -eq 2 ]
+    [ "$output" = 'invalid Claude session id' ]
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        CLAUDE_CODE_SESSION_ID="$other" CLAUDE_PID=$$ "$TERMINAL" close
+    [ "$status" -eq 4 ]
+    [ "$output" = 'no companion is open for this owner' ]
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        "$TERMINAL" close --session "$other"
+    [ "$status" -eq 0 ]
+    [ -d "$root/sessions/0123abcd" ]
+    ! grep -q 'kill-pane\|clear-history' "$log" || false
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        CLAUDE_CODE_SESSION_ID="$sid" CLAUDE_PID=$$ "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$root/sessions/0123abcd" ]
+    grep -qx 'tmux -S /tmp/user.sock kill-pane -t %5' "$log"
+}
+
+@test "watch_stop stops only the watchdog of the same directory" {
+    use_real_ps
+    local fake="$BATS_TEST_TMPDIR/fake" watch other rc=0
+    mkdir -p "$fake"
+    # A process with the command line of a watchdog. Short sleeps: when the
+    # kill stops the script, its sleep child ends in 1 s.
+    printf 'while :; do sleep 1; done\n' > "$fake/terminal.sh"
+    bash "$fake/terminal.sh" watch --session abcdef01 </dev/null >/dev/null 2>&1 3>&- &
+    watch=$!
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    other=$!
+    run bash -c "source '$TERMINAL'; watch_stop $other abcdef01; watch_stop $watch 12345678; watch_stop '' abcdef01"
+    [ "$status" -eq 0 ]
+    kill -0 "$watch"
+    kill -0 "$other"
+    run bash -c "source '$TERMINAL'; watch_stop $watch abcdef01"
+    kill "$other"
+    [ "$status" -eq 0 ]
+    wait "$watch" || rc=$?
+    [ "$rc" -eq 143 ]
+}
+
+@test "the sessions reaper removes the directory of a dead owner, stops its laya server, and keeps a live one" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" live dead start
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    live=$!
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    dead=$!
+    start=$(proc_start "$live")
+    mkdir -p "$root/sessions/bbbbbbbb"
+    session_state "$root/sessions/aaaaaaaa" "$live" "$start"
+    # The first state of open: the owner and the Laya pid, no pane yet.
+    printf 'mode=\npane=\nsocket=\nseq=0\nlaya_pid=4242\nsession=bbbbbbbb-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=x\n' \
+        "$dead" > "$root/sessions/bbbbbbbb/state"
+    kill "$dead"
+    wait "$dead" 2>/dev/null || true
+    run env STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" TMUX=fake TMUX_PANE=%0 bash -c \
+        "source '$TERMINAL'; laya_stop_server() { echo \"stop \$*\"; }; terminal_init; reap_companions"
+    kill "$live"
+    [ "$status" -eq 0 ]
+    [ "$output" = 'stop 4242' ]
+    [ -d "$root/sessions/aaaaaaaa" ]
+    [ ! -e "$root/sessions/bbbbbbbb" ]
+    ! grep -q 'kill-pane\|kill-server' "$log" || false
+}
+
+@test "the sessions reaper keeps a young directory with no state and removes an old one, a clear left-over and a pane with no mark" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" s start other other_start
+    start=$(proc_start $$)
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    other=$!
+    other_start=$(proc_start "$other")
+    for s in 11111111 22222222 33333333 44444444 55555555; do mkdir -p "$root/sessions/$s"; done
+    # 11111111: no state, young. 22222222: no state, old.
+    # 33333333: the process of the caller with another session id (a /clear left-over).
+    session_state "$root/sessions/33333333" "$$" "$start"
+    # 44444444: another live owner, old, and its pane holds another mark.
+    printf 'mode=window\npane=%%6\nsocket=/tmp/user.sock\nseq=0\ntoken=cd34ab12\nsession=44444444-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "$other" "$other_start" > "$root/sessions/44444444/state"
+    # 55555555: the companion of the caller.
+    printf 'mode=window\npane=%%7\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=55555555-4567-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "$$" "$start" > "$root/sessions/55555555/state"
+    touch -t 202601010000 "$root/sessions/22222222" "$root/sessions/44444444"
+    run env -u TMUX -u TMUX_PANE STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" \
+        CLAUDE_CODE_SESSION_ID=55555555-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ bash -c \
+        "source '$TERMINAL'; require_owner; terminal_init; reap_companions"
+    kill "$other"
+    [ "$status" -eq 0 ]
+    [ -d "$root/sessions/11111111" ]
+    [ ! -e "$root/sessions/22222222" ]
+    [ ! -e "$root/sessions/33333333" ]
+    [ ! -e "$root/sessions/44444444" ]
+    [ -d "$root/sessions/55555555" ]
+    grep -qx 'tmux -S /tmp/user.sock kill-pane -t %5' "$log"
+    ! grep -q 'kill-pane -t %6\|kill-pane -t %7\|kill-server\|list-panes' "$log" || false
 }
 
 @test "the terminal skill carries Snippet S1 unchanged" {
@@ -191,6 +606,220 @@ STUB
     [ "$output" = 'laya not available at CLUX_LAYA_URL' ]
 }
 
+# open_session_tmux_stub — tmux for open of a session owner. new-window
+# copies STUB_STATE to STUB_STATE_COPY (the state before the pane) and gives
+# the pane %7. The window line of report_open gets dash:1.
+open_session_tmux_stub() {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUB'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+case "$*" in
+    -V) echo 'tmux 3.4' ;;
+    *new-window*) cp "$STUB_STATE" "$STUB_STATE_COPY"; echo %7 ;;
+    *'#{session_name}:#{window_index}'*) echo dash:1 ;;
+esac
+exit 0
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+}
+
+@test "open of a session owner writes state with laya_pid before the pane, then marks a window in the dashboard session" {
+    use_real_ps
+    open_session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" sid=0123abcd-4567-4890-abcd-ef0123456789 d before token
+    d="$root/sessions/0123abcd"
+    before="$BATS_TEST_TMPDIR/state.before"
+    # The Laya functions are replaced: the pid 4242 is only a record here.
+    # watch_start is replaced too: open starts a watchdog.
+    run env -u TMUX -u TMUX_PANE -u CLUX_LAYA_URL STUB_LOG="$log" STUB_STATE="$d/state" STUB_STATE_COPY="$before" \
+        CLUX_TERMINAL_DIR="$root" CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents" \
+        CLAUDE_CODE_SESSION_ID="$sid" CLAUDE_PID=$$ bash -c "source '$TERMINAL'
+        laya_open_check() { :; }
+        laya_start_server() { LAYA_PID=4242 LAYA_URL=http://127.0.0.1:9 LAYA_KEY=k1; }
+        laya_wait_ready() { :; }
+        wait_for_prompt() { :; }
+        watch_start() { :; }
+        find_dashboard() { DASH_SERVER=1234-1700000000 DASH_SOCKET=/tmp/user.sock DASH_PANE=%3 DASH_SESSION=dash; }
+        require_owner
+        open_command"
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ "$output" = $'pane=%7\nmode=window\nwindow=dash:1' ]
+    grep -qx 'mode=' "$before"
+    grep -qx 'pane=' "$before"
+    grep -qx 'laya_pid=4242' "$before"
+    grep -qx "session=$sid" "$before"
+    grep -qx "owner_pid=$$" "$before"
+    grep -q '^owner_start=[1-9][0-9]*$' "$before"
+    grep -qx 'mode=window' "$d/state"
+    grep -qx 'pane=%7' "$d/state"
+    grep -qx 'socket=/tmp/user.sock' "$d/state"
+    grep -qx 'server=1234-1700000000' "$d/state"
+    token=$(sed -n 's/^token=//p' "$d/state")
+    grep -qF "tmux -S /tmp/user.sock new-window -d -P -F #{pane_id} -t dash: -n clux-terminal 0123abcd -c $PWD -e PATH=" "$log"
+    grep -qx 'tmux -S /tmp/user.sock set-option -w -t %7 automatic-rename off' "$log"
+    grep -qx "tmux -S /tmp/user.sock set-option -p -t %7 @clux-companion $token" "$log"
+    ! grep -q 'split-window\|kill-server\|kill-pane' "$log" || false
+}
+
+@test "open exits 2 when another live session with the same first 8 characters owns the directory" {
+    use_real_ps
+    open_session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" other start
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    other=$!
+    start=$(proc_start "$other")
+    mkdir -p "$root/sessions/0123abcd"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=0123abcd-9999-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
+        "$other" "$start" > "$root/sessions/0123abcd/state"
+    # No Laya (XDG_DATA_HOME has no venv): the check of the owner comes first.
+    run env -u TMUX -u TMUX_PANE -u CLUX_LAYA_URL STUB_LOG="$log" CLUX_TERMINAL_DIR="$root" \
+        XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents" \
+        CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ "$TERMINAL" open
+    kill "$other"
+    [ "$status" -eq 2 ]
+    [ "$output" = 'the companion directory belongs to another session' ]
+    grep -q '^session=0123abcd-9999' "$root/sessions/0123abcd/state"
+    ! grep -q 'new-window\|new-session\|kill-pane' "$log" || false
+}
+
+@test "the watchdog closes the companion when its owner is gone, and exits when a newer watchdog owns the directory" {
+    use_real_ps
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root" log="$BATS_TEST_TMPDIR/stub.log" dead
+    sleep 60 </dev/null >/dev/null 2>&1 3>&- &
+    dead=$!
+    kill "$dead"
+    wait "$dead" 2>/dev/null || true
+    mkdir -p "$root/sessions/aaaaaaaa" "$root/sessions/bbbbbbbb"
+    # aaaaaaaa: another watchdog (pid 1) owns it.
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nowner_pid=%s\nowner_start=x\nwatch_pid=1\n' \
+        "$dead" > "$root/sessions/aaaaaaaa/state"
+    # bbbbbbbb: this watchdog owns it, and its owner is gone. The subshell
+    # has the $$ of its parent, so watch_pid=$$ names the watchdog.
+    run env STUB_LOG="$log" STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" bash -c "source '$TERMINAL'
+        WATCH_INTERVAL=0
+        laya_stop_server() { echo \"stop \$*\"; }
+        ( watch_command --session aaaaaaaa ); echo \"a=\$?\"
+        D='$root/sessions/bbbbbbbb' S_TOKEN=ab12cd34 S_OWNER_PID=$dead S_OWNER_START=x S_WATCH_PID=\$\$
+        write_state window %6 /tmp/user.sock 0 4242 '' ''
+        ( watch_command --session bbbbbbbb ); echo \"b=\$?\""
+    [ "$status" -eq 0 ]
+    [ "$output" = $'a=0\nstop 4242\nb=0' ]
+    [ -d "$root/sessions/aaaaaaaa" ]
+    [ ! -e "$root/sessions/bbbbbbbb" ]
+    grep -qx 'tmux -S /tmp/user.sock kill-pane -t %6' "$log"
+    ! grep -q 'kill-pane -t %5' "$log" || false
+}
+
+@test "watch_ensure starts one watchdog with nohup and keeps the seq" {
+    use_real_ps
+    local d="$BATS_TEST_TMPDIR/root/sessions/abcdef01" first
+    mkdir -p "$d"
+    # CLUX_TERMINAL_DIR: the watchdog reads the state of this test, not of
+    # the user.
+    run env CLUX_TERMINAL_DIR="$BATS_TEST_TMPDIR/root" bash -c "source '$TERMINAL'; D='$d'; OWNER_KIND=session
+        write_state window %5 /tmp/user.sock 3
+        watch_ensure
+        state_load
+        echo \"\$S_WATCH_PID \$S_SEQ\"
+        sleep .5
+        watch_ensure
+        state_load
+        echo \"\$S_WATCH_PID\""
+    [ "$status" -eq 0 ]
+    first="${lines[0]% *}"
+    [ "${lines[0]#* }" = 3 ]
+    [ "${lines[1]}" = "$first" ]
+    ps -ww -o command= -p "$first" | grep -q 'terminal.sh watch --session abcdef01'
+    [ ! -e "$d/typing" ]
+    kill "$first"
+}
+
+@test "watch_ensure fails, keeps state and frees the lock when the watchdog cannot start" {
+    use_real_ps
+    local d="$BATS_TEST_TMPDIR/root/sessions/abcdef01"
+    mkdir -p "$d"
+    run env CLUX_TERMINAL_DIR="$BATS_TEST_TMPDIR/root" bash -c "source '$TERMINAL'; D='$d'; OWNER_KIND=session
+        write_state window %5 /tmp/user.sock 3
+        SCRIPT_DIR='$BATS_TEST_TMPDIR/no-such-dir'
+        watch_ensure; echo \"rc=\$?\"
+        state_load
+        echo \"[\$S_WATCH_PID] \$S_SEQ\""
+    [ "$status" -eq 0 ]
+    [ "$output" = $'rc=1\n[] 3' ]
+    [ ! -e "$d/typing" ]
+    # open tells the user and keeps the live companion, or undoes a new one.
+    grep -qF "fail 'cannot start the companion watchdog' 1" "$TERMINAL"
+    grep -qF "open_abort 1 'cannot start the companion watchdog' 1" "$TERMINAL"
+}
+
+@test "watch refuses a name that is not 8 hex characters" {
+    run "$TERMINAL" watch --session ../x
+    [ "$status" -eq 2 ]
+    [ "$output" = 'invalid Claude session id' ]
+    run "$TERMINAL" watch
+    [ "$status" -eq 2 ]
+}
+
+@test "session-env --hook appends the session id to CLAUDE_ENV_FILE and prints nothing" {
+    local env_file="$BATS_TEST_TMPDIR/env" sid=0123abcd-4567-4890-abcd-ef0123456789
+    printf 'export OTHER=1\n' > "$env_file"
+    run env -u TMUX -u TMUX_PANE CLAUDE_ENV_FILE="$env_file" bash -c \
+        "printf '{\"session_id\":\"$sid\",\"source\":\"startup\"}' | '$TERMINAL' session-env --hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(cat "$env_file")" = "export OTHER=1"$'\n'"export CLUX_SESSION_ID=$sid" ]
+    # A bad id writes nothing.
+    run env -u TMUX -u TMUX_PANE CLAUDE_ENV_FILE="$env_file" bash -c \
+        "printf '{\"session_id\":\"../../x\"}' | '$TERMINAL' session-env --hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(wc -l < "$env_file" | tr -d ' ')" = 2 ]
+    # No CLAUDE_ENV_FILE: nothing to do.
+    run env -u TMUX -u TMUX_PANE -u CLAUDE_ENV_FILE bash -c \
+        "printf '{\"session_id\":\"$sid\"}' | '$TERMINAL' session-env --hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "the SessionStart hook runs session-env after the agent-state remove" {
+    run python3 -c 'import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]["SessionStart"][0]["hooks"]
+print("\n".join(h["command"] + " " + str(h["timeout"]) for h in hooks))' "$REPO_ROOT/plugins/clux/hooks/hooks.json"
+    [ "$status" -eq 0 ]
+    [ "$output" = $'${CLAUDE_PLUGIN_ROOT}/hooks/agent-state.sh remove 5\n${CLAUDE_PLUGIN_ROOT}/scripts/terminal.sh session-env --hook 5' ]
+}
+
+@test "list shows the directories of session owners with the state of their mark" {
+    session_tmux_stub
+    local root="$BATS_TEST_TMPDIR/root"
+    mkdir -p "$root/sessions/aaaaaaaa" "$root/sessions/bbbbbbbb"
+    printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\n' > "$root/sessions/aaaaaaaa/state"
+    printf 'mode=socket\npane=%%0\nsocket=/tmp/private.sock\nseq=0\ntoken=cd34ab12\n' > "$root/sessions/bbbbbbbb/state"
+    run env TMUX=fake TMUX_PANE=%0 STUB_MARK=ab12cd34 CLUX_TERMINAL_DIR="$root" "$TERMINAL" list
+    [ "$status" -eq 0 ]
+    [ "$output" = $'owner=sessions/aaaaaaaa mode=window pane=%5 state=alive\nowner=sessions/bbbbbbbb mode=socket pane=%0 state=gone' ]
+}
+
+@test "laya status names the server of a session owner" {
+    require_laya_python
+    use_real_ps
+    start_fake_laya '{}'
+    local root="$BATS_TEST_TMPDIR/root" sid=0123abcd-4567-4890-abcd-ef0123456789
+    mkdir -p "$root/sessions/0123abcd"
+    printf 'mode=socket\npane=%%1\nsocket=/tmp/private.sock\nseq=0\nlaya_url=%s\nlaya_key=%s\nsession=%s\n' \
+        "$CLUX_LAYA_URL" "$CLUX_LAYA_KEY" "$sid" > "$root/sessions/0123abcd/state"
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" \
+        CLAUDE_CODE_SESSION_ID="$sid" CLAUDE_PID=$$ "$TERMINAL" laya status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\nserver=external health=ok' ]] || false
+    # Another session with the same first 8 characters has no server here.
+    run env -u TMUX -u TMUX_PANE CLUX_TERMINAL_DIR="$root" XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" \
+        CLAUDE_CODE_SESSION_ID=0123abcd-9999-4890-abcd-ef0123456789 CLAUDE_PID=$$ "$TERMINAL" laya status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\nserver=none' ]] || false
+}
+
 @test "open with no venv, or with no checkpoint, gives exit 6 and the install message" {
     open_tmux_stub
     local log="$BATS_TEST_TMPDIR/stub.log"
@@ -221,6 +850,25 @@ STUB
         cat \"\$D/state\""
     [ "$status" -eq 0 ]
     [ "$output" = $'3 4242 http://127.0.0.1:5 k1\n4 4242 http://127.0.0.1:5 k1\nmode=split\npane=%1\nsocket=\nseq=5' ]
+}
+
+@test "write_state keeps the session fields on each rewrite and renames a temporary file" {
+    run bash -c "source '$TERMINAL'
+        D='$BATS_TEST_TMPDIR/d'; mkdir -p \"\$D\"
+        S_SESSION=0123abcd-4567-4890-abcd-ef0123456789 S_OWNER_PID=77
+        S_OWNER_START='Wed Sep 30 10:00:00 2026' S_SERVER=1234-1700000000 S_WATCH_PID=88
+        write_state window %3 /tmp/user.sock 0 4242 http://127.0.0.1:5 k1
+        S_SESSION=; S_OWNER_PID=; S_OWNER_START=; S_SERVER=; S_WATCH_PID=
+        state_load
+        write_state \"\$S_MODE\" \"\$S_PANE\" \"\$S_SOCKET\" 1
+        cat \"\$D/state\"
+        ls \"\$D\"
+        printf 'mode=split\npane=%%1\nsocket=\nseq=0\n' > \"\$D/state\"
+        state_load
+        echo \"[\$S_SESSION\$S_OWNER_PID\$S_OWNER_START\$S_SERVER\$S_WATCH_PID]\""
+    [ "$status" -eq 0 ]
+    [ "$output" = $'mode=window\npane=%3\nsocket=/tmp/user.sock\nseq=1\nlaya_pid=4242\nlaya_url=http://127.0.0.1:5\nlaya_key=k1\nsession=0123abcd-4567-4890-abcd-ef0123456789\nowner_pid=77\nowner_start=Wed Sep 30 10:00:00 2026\nserver=1234-1700000000\nwatch_pid=88\nstate\n[]' ]
+    grep -qF 'mv -f "$tmp" "$D/state"' "$TERMINAL"
 }
 
 @test "pane_state: the regex layer adds credential, and a client failure gives 6" {
@@ -644,8 +1292,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     mkdir -p "$d/busy"
     printf '3\n' > "$d/busy/owner"
     printf '0\n' > "$d/3.rc"; : > "$d/3.out"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/3.reading"
+    hold_lock "$d/3.reading"
+    local live=$HOLD_PID
     bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; release_if_done; remove_stale_output"
     [ -d "$d/busy" ]
     [ -e "$d/3.out" ]
@@ -833,19 +1481,18 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local d="$BATS_TEST_TMPDIR/two"
     mkdir -p "$d"
     printf '0\n' > "$d/3.rc"; printf 'out\n' > "$d/3.out"; : > "$d/3.done"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/3.reading"
+    hold_lock "$d/3.reading"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; S_SEQ=3; report_run 3 200"
     [ "$status" -eq 5 ]
     [ "$stderr" = 'another verb reads the output of run 3 now: try again' ]
     [ -e "$d/3.out" ] && [ ! -e "$d/3.held" ]
-    [ "$(readlink "$d/3.reading")" = "$live" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
+    # The refused verb leaves the lock file of the holder.
+    [ -f "$d/3.reading" ]
 }
 
 @test "each failure path of open goes through open_abort" {
     ! grep -q 'rm -rf "$D"; fail' "$TERMINAL" || false
-    [ "$(grep -c "open_abort [01] 'cannot open\|open_abort 1 'the companion shell did not reach its prompt' 1" "$TERMINAL")" -eq 3 ]
+    [ "$(grep -c "open_abort [01] 'cannot open\|open_abort 1 'the companion shell did not reach its prompt' 1" "$TERMINAL")" -eq 4 ]
 }
 
 @test "laya install makes a broken venv again, and names a CLUX_LAYA_PYTHON with no laya" {
@@ -979,7 +1626,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local later="printf 'mode=split\\npane=%%1\\nsocket=\\nseq=6\\ntoken=ab12cd34\\n' > '$d/state'; : > '$d/6.confirm'; mkdir -p '$d/busy'"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
         ensure_open() { state_load; }
-        take_typing_lock() { $later; TYPING_LOCK=1; }
+        take_typing_lock() { $later; }
         send_command --enter -- y"
     [ "$status" -eq 3 ]
     [ "$stderr" = 'laya confirmation in the companion pane: the user must answer it there' ]
@@ -987,7 +1634,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     printf 'mode=split\npane=%%1\nsocket=\nseq=5\ntoken=ab12cd34\n' > "$d/state"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'
         ensure_open() { state_load; }
-        take_typing_lock() { $later; rm -f '$d/6.confirm'; TYPING_LOCK=1; }
+        take_typing_lock() { $later; rm -f '$d/6.confirm'; }
         wait_for_prompt() { echo TAKEOVER; return 1; }
         run_command -- 'ls'"
     [ "$status" -eq 5 ]
@@ -1258,6 +1905,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 }
 
 @test "run takes the busy lock of a run verb that died before it typed" {
+    use_real_ps
     local d="$BATS_TEST_TMPDIR/bz" dead
     mkdir -p "$d/busy"
     printf 'mode=split\npane=%%1\nsocket=\nseq=0\ntoken=ab12cd34\n' > "$d/state"
@@ -1269,12 +1917,20 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
         wait_for_prompt() { echo TAKEOVER; return 1; }"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
     [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
-    sleep 30 3>&- & local live=$!
-    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s\n' "$live" > "$d/busy/pid"
+    sleep 30 3>&- & local live=$! start
+    start=$(proc_start "$live")
+    [ -n "$start" ]
+    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"; printf '%s %s\n' "$live" "$start" > "$d/busy/pid"
     run --separate-stderr bash -c "$stubs; run_command -- ls"
-    kill "$live"; wait "$live" 2>/dev/null || true
     [ "$status" -eq 5 ]
     [ "$stderr" = 'the companion is busy' ]
+    # The pid of a dead holder that another process now has: the start time
+    # does not match, so the lock is free.
+    mkdir -p "$d/busy"; printf 'pending\n' > "$d/busy/owner"
+    printf '%s %s\n' "$live" "$((start - 100))" > "$d/busy/pid"
+    run --separate-stderr bash -c "$stubs; run_command -- ls"
+    kill "$live"; wait "$live" 2>/dev/null || true
+    [[ "$output" == *TAKEOVER* ]] || { echo "$output $stderr"; false; }
 }
 
 @test "one helper reads key names with no case, and it keeps nocasematch" {
@@ -1365,18 +2021,22 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "the typing lock refuses a live holder and takes the lock of a dead holder" {
     local d="$BATS_TEST_TMPDIR/lock"
     mkdir -p "$d"
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$d/typing"
+    hold_lock "$d/typing"
     run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?"
     [[ "$output" == *'another send or run is typing in the pane: try again'* ]] || false
     [[ "$output" == *'rc=5' ]] || false
-    [ "$(readlink "$d/typing")" = "$live" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
-    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; readlink '$d/typing'; echo \$\$"
-    [ "${lines[0]}" = 'rc=0' ]
-    [ "${lines[1]}" = "${lines[2]}" ]
-    # The EXIT trap releases the lock.
-    [ ! -L "$d/typing" ]
+    [ -f "$d/typing" ]
+    # A holder that was killed leaves its file, and its lock is free.
+    stop_holders
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; [ -f '$d/typing' ] && echo held"
+    [ "$output" = $'rc=0\nheld' ]
+    # The EXIT trap releases the lock and deletes the file.
+    [ ! -e "$d/typing" ]
+    # The lock of clux 4.0 was a symbolic link: it goes, and the lock is taken.
+    ln -s 99999 "$d/typing"
+    run bash -c "source '$TERMINAL'; D='$d'; take_typing_lock; echo rc=\$?; [ -f '$d/typing' ] && [ ! -L '$d/typing' ] && echo file"
+    [ "$output" = $'rc=0\nfile' ]
+    [ ! -e "$d/typing" ] && [ ! -L "$d/typing" ]
 }
 
 @test "send refuses when the cursor line changed while Laya examined it" {
@@ -1495,12 +2155,32 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 @test "the 4.0.0 release names Laya and the run time limit" {
     local t section
     t=$(bash -c "source '$TERMINAL'; echo \"\$RUN_TIMEOUT_DEFAULT\"")
-    grep -q '"version": "4.0.0"' "$REPO_ROOT/plugins/clux/.claude-plugin/plugin.json"
-    [ "$(grep -m1 '^## \[' "$REPO_ROOT/CHANGELOG.md")" = '## [4.0.0]' ]
     section=$(awk '/^## \[4\.0\.0\]/ { on = 1; next } /^## \[/ { on = 0 } on' "$REPO_ROOT/CHANGELOG.md")
     [[ "$section" == *'needs Laya'* ]] || false
     [[ "$section" == *"$t seconds"* ]] || false
     grep -q 'terminal.sh laya install' "$REPO_ROOT/README.md"
+}
+
+@test "the 4.1.0 release names background sessions" {
+    local section
+    grep -q '"version": "4.1.0"' "$REPO_ROOT/plugins/clux/.claude-plugin/plugin.json"
+    [ "$(grep -m1 '^## \[' "$REPO_ROOT/CHANGELOG.md")" = '## [4.1.0]' ]
+    section=$(awk '/^## \[4\.1\.0\]/ { on = 1; next } /^## \[/ { on = 0 } on' "$REPO_ROOT/CHANGELOG.md")
+    [[ "$section" == *'background sessions'* ]] || false
+    [[ "$section" == *'clux terminal must run inside tmux or in a Claude Code session'* ]] || false
+    [[ "$section" == *'attach_in_tmux='* ]] || false
+    grep -q 'Background sessions' "$REPO_ROOT/README.md"
+    grep -q '^### Background sessions' "$REPO_ROOT/docs/reference.md"
+}
+
+@test "the terminal skill covers background sessions and hides the internal verbs" {
+    local skill="$REPO_ROOT/plugins/clux/skills/terminal/SKILL.md"
+    grep -qF 'window=' "$skill"
+    grep -qF 'attach_in_tmux=' "$skill"
+    grep -qF 'claude agents' "$skill"
+    grep -qF 'Use `open` again' "$skill"
+    ! grep -qF 'The script refuses to operate outside tmux (exit code 2)' "$skill" || false
+    ! grep -q 'session-env\|close --session\|watch --session' "$skill" || false
 }
 
 @test "MAIL, MAILPATH, MAILCHECK and FUNCNEST are unset and read-only in the pane shell, and run does not carry them" {
@@ -1675,10 +2355,9 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     local d="$BATS_TEST_TMPDIR/dis"
     mkdir -p "$d"
     printf '0\n' > "$d/5.rc"; printf 'out\n' > "$d/5.out"; : > "$d/5.held"
-    sleep 30 3>&- & local reader=$!
-    ln -s "$reader" "$d/5.reading"
+    hold_lock "$d/5.reading"
     run --separate-stderr bash -c "source '$TERMINAL'; D='$d'; ensure_open() { :; }; wait_command --run 5 --discard"
-    kill "$reader" 2>/dev/null || true
+    stop_holders
     [ "$status" -eq 5 ]
     [ "$stderr" = 'another verb reads the output of run 5 now: try again' ]
     [ -e "$d/5.out" ] && [ -e "$d/5.held" ]

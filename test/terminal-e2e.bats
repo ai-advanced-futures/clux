@@ -12,6 +12,7 @@ TERMINAL="$SCRIPTS_DIR/terminal.sh"
 # these end-to-end tests exist to drive. Everything else it does is repeated
 # below, including its teardown cleanup.
 setup() {
+    unset CLAUDE_CODE_SESSION_ID CLUX_SESSION_ID CLAUDE_PID
     export HOME="$BATS_TEST_TMPDIR/home"
     # A short root, not BATS_TEST_TMPDIR: `open --socket` puts its socket
     # inside this directory and tmux caps that path at ~100 bytes.
@@ -34,9 +35,17 @@ setup() {
 teardown() {
     local sock
     stop_fake_laya
-    for sock in "$CLUX_TERMINAL_DIR"/*/sock; do
-        [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1
+    stop_holders
+    for sock in "$CLUX_TERMINAL_DIR"/*/sock "$CLUX_TERMINAL_DIR"/sessions/*/sock; do
+        [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1 || true
     done
+    # bg_setup: the default server of the test and the owner process.
+    # An empty bg-tmpdir would name the default server of the user: skip it.
+    if [ -s "$BATS_TEST_TMPDIR/bg-tmpdir" ] && [ -n "$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")" ]; then
+        env -u TMUX TMUX_TMPDIR="$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")" "$REAL_TMUX" kill-server >/dev/null 2>&1 || true
+        rm -rf "$(cat "$BATS_TEST_TMPDIR/bg-tmpdir")"
+    fi
+    [ ! -f "$BATS_TEST_TMPDIR/bg-owner" ] || kill "$(cat "$BATS_TEST_TMPDIR/bg-owner")" 2>/dev/null || true
     "$REAL_TMUX" -S "$TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
     rm -rf "$CLUX_TERMINAL_DIR" "$BATS_TEST_TMPDIR"
 }
@@ -71,6 +80,64 @@ pane_shows() {
         i=$((i + 1))
     done
     return 1
+}
+
+# bg_setup — a background Claude session: no TMUX and no TMUX_PANE, a
+# session id, and an owner process (a sleep of the test). TMUX_TMPDIR makes
+# the default tmux server a test server, with the dashboard session "dash".
+bg_setup() {
+    local raw
+    unset TMUX TMUX_PANE CLUX_SESSION_ID
+    export TMUX_TMPDIR
+    raw=$(mktemp -d /tmp/ctt.XXXX)
+    [ -n "$raw" ] && [ -d "$raw" ] || { echo 'bg_setup: no test tmux directory'; return 1; }
+    # tmux resolves TMUX_TMPDIR with realpath. On macOS /tmp is a link to
+    # /private/tmp, so the guard below needs the resolved path, as the
+    # prototype does (test.sh, pwd -P). [inferred] The cd is a separate step:
+    # with an empty mktemp result, cd would stay in the current directory.
+    TMUX_TMPDIR=$(cd "$raw" && pwd -P) && [ -n "$TMUX_TMPDIR" ] && [ -d "$TMUX_TMPDIR" ] \
+        || { echo 'bg_setup: no test tmux directory'; return 1; }
+    printf '%s\n' "$TMUX_TMPDIR" > "$BATS_TEST_TMPDIR/bg-tmpdir"
+    export CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents"
+    export CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    "$REAL_TMUX" -f /dev/null new-session -d -s dash -x 120 -y 40 3>&-
+    # The isolation guard of the prototype: the default server must be the
+    # test server. Test 4 stops the default server; it must never be the
+    # server of the user.
+    case "$("$REAL_TMUX" display-message -p '#{socket_path}')" in
+        "$TMUX_TMPDIR"/*) ;;
+        *) echo 'bg_setup: the default tmux server is not the test server'; return 1 ;;
+    esac
+    BG_DASH_PANE=$("$REAL_TMUX" list-panes -t dash -F '#{pane_id}')
+    BG_DASH_KEY=$("$REAL_TMUX" display-message -p '#{pid}-#{start_time}')
+}
+
+# bg_add_cache — the agent-state file that maps the session to the
+# dashboard pane, as hooks/agent-state.sh writes it at the first prompt.
+bg_add_cache() {
+    local sid="${CLUX_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}"
+    mkdir -p "$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents"
+    : > "$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents/$BG_DASH_PANE~$sid"
+}
+
+# bg_dir — the private directory of the session owner of the test.
+bg_dir() {
+    local sid="${CLUX_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}"
+    printf '%s' "$CLUX_TERMINAL_DIR/sessions/${sid:0:8}"
+}
+
+# bg_window_count — the number of windows in the dashboard session.
+bg_window_count() {
+    "$REAL_TMUX" list-windows -t dash | wc -l | tr -d ' '
+}
+
+# lock_holder DIR — a live process that holds the lock of DIR, as a second
+# verb does (hold_lock). stop_holders stops all of them (teardown does it too).
+lock_holder() {
+    hold_lock "$1.lock"
 }
 
 # 1
@@ -296,12 +363,23 @@ pane_shows() {
 
 # 12
 @test "the reaper removes a gone owner and keeps a live foreign server" {
-    local key
+    local key other="$BATS_TEST_TMPDIR/other.sock" foreign
     key=$("$REAL_TMUX" -S "$TMUX_SOCKET" display-message -p '#{pid}-#{start_time}')
-    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$$-1-3"
+    "$REAL_TMUX" -S "$other" -f /dev/null new-session -d 3>&-
+    foreign=$("$REAL_TMUX" -S "$other" display-message -p '#{pid}-#{start_time}')
+    # $$ is a live process that is not tmux: the pid of a dead foreign
+    # server that another process now has. The live foreign server with a
+    # start time 100 s before its own: the pid of a dead server that a new
+    # tmux server now has.
+    local reused="${foreign%%-*}-$(( ${foreign#*-} - 100 ))"
+    mkdir -p "$CLUX_TERMINAL_DIR/$key-999" "$CLUX_TERMINAL_DIR/$foreign-3" "$CLUX_TERMINAL_DIR/$$-1-3" \
+        "$CLUX_TERMINAL_DIR/$reused-4"
     "$TERMINAL" open >/dev/null
-    [ ! -e "$CLUX_TERMINAL_DIR/$key-999" ]
-    [ -d "$CLUX_TERMINAL_DIR/$$-1-3" ]
+    "$REAL_TMUX" -S "$other" kill-server
+    [ ! -e "$CLUX_TERMINAL_DIR/$key-999" ] || { echo 'the gone owner stays'; false; }
+    [ -d "$CLUX_TERMINAL_DIR/$foreign-3" ] || { echo 'the live foreign server was removed'; false; }
+    [ ! -e "$CLUX_TERMINAL_DIR/$$-1-3" ] || { echo 'a pid that is not tmux keeps its directory'; false; }
+    [ ! -e "$CLUX_TERMINAL_DIR/$reused-4" ] || { echo 'a reused tmux pid keeps its directory'; false; }
 }
 
 # 14
@@ -999,8 +1077,7 @@ pane_shows() {
 
 @test "send and run take the typing lock, and take over the lock of a dead holder" {
     "$TERMINAL" open >/dev/null
-    sleep 30 3>&- & local live=$!
-    ln -s "$live" "$(companion_dir)/typing"
+    hold_lock "$(companion_dir)/typing"
     : > "$FAKE_LAYA_LOG"
     run "$TERMINAL" send -- 'echo x'
     [ "$status" -eq 5 ]
@@ -1009,11 +1086,11 @@ pane_shows() {
     [ "$status" -eq 5 ]
     [ ! -d "$(companion_dir)/busy" ]
     [ -z "$(fake_laya_states destructive)" ]
-    kill "$live"; wait "$live" 2>/dev/null || true
+    stop_holders
     run "$TERMINAL" run -- 'echo taken'
     [ "$status" -eq 0 ]
     [ "$output" = $'run=1\ntaken\nexit=0' ]
-    [ ! -L "$(companion_dir)/typing" ]
+    [ ! -e "$(companion_dir)/typing" ]
 }
 
 @test "run holds all output and exits 6 when the guard fails, and wait --run gives it later" {
@@ -1448,4 +1525,497 @@ pane_shows() {
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     "$TERMINAL" wait --timeout 5 --idle >/dev/null
     [ "$(cat "$BATS_TEST_TMPDIR/v.txt")" = hello ]
+}
+
+# Background 1
+@test "a background session opens a window in the dashboard session and closes it" {
+    bg_setup
+    bg_add_cache
+    local want
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [[ "$output" == *$'\nmode=window\nwindow=dash:1' ]] || false
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | tail -1)" = 'clux-terminal 0123abcd' ]
+    run "$TERMINAL" run -- 'echo hi'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'hi\nexit=0' ]] || false
+    want=$(pwd -P)
+    run "$TERMINAL" run -- 'pwd -P'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$want"$'\nexit=0' ]] || false
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$(bg_dir)" ]
+    [ "$(bg_window_count)" = 1 ]
+}
+
+# Background 2
+@test "a background session with no dashboard opens a private server and prints both attach lines" {
+    bg_setup
+    local sock agents="$CLUX_AGENT_STATE_DIR/$BG_DASH_KEY/agents" decoy
+    mkdir -p "$agents" "$CLUX_AGENT_STATE_DIR/1-1/agents"
+    # Each decoy names a pane that is not the dashboard of this session, so
+    # open must refuse it: the file of another session, a pane that is gone,
+    # and the file of this session under another tmux server.
+    for decoy in \
+        "$agents/$BG_DASH_PANE~fedcba98-4567-4890-abcd-ef0123456789" \
+        "$agents/%99~$CLAUDE_CODE_SESSION_ID" \
+        "$CLUX_AGENT_STATE_DIR/1-1/agents/$BG_DASH_PANE~$CLAUDE_CODE_SESSION_ID"; do
+        : > "$decoy"
+        run "$TERMINAL" open
+        [ "$status" -eq 0 ] || { echo "$decoy: $output"; false; }
+        sock="$(bg_dir)/sock"
+        [[ "$output" == *$'\nmode=socket\nattach=tmux -S '"$sock"$' attach\nattach_in_tmux=TMUX= tmux -S '"$sock"' attach' ]] \
+            || { echo "$decoy: $output"; false; }
+        run "$TERMINAL" run -- 'echo sock-ok'
+        [[ "$output" == *$'sock-ok\nexit=0' ]] || false
+        [ "$(bg_window_count)" = 1 ] || { echo "$decoy: a window in the dashboard"; false; }
+        "$TERMINAL" close
+        ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
+        rm -f "$decoy"
+    done
+}
+
+# Background 4
+@test "after a restart of the tmux server, a stale pane id reaches no pane of the user" {
+    bg_setup
+    bg_add_cache
+    local d stale i=0
+    "$TERMINAL" open >/dev/null
+    d=$(bg_dir)
+    stale=$(sed -n 's/^pane=//p' "$d/state")
+    # Stop the watchdog, so that only the verbs of the test act on $d.
+    [ -z "$(sed -n 's/^watch_pid=//p' "$d/state")" ] || kill "$(sed -n 's/^watch_pid=//p' "$d/state")"
+    "$REAL_TMUX" kill-server
+    sleep .5
+    "$REAL_TMUX" -f /dev/null new-session -d -s user -x 120 -y 40 'bash --noprofile --norc -i' 3>&-
+    while ! "$REAL_TMUX" list-panes -t "$stale" >/dev/null 2>&1 && [ "$i" -lt 8 ]; do
+        "$REAL_TMUX" split-window -d -t user 'bash --noprofile --norc -i' 3>&- 2>/dev/null \
+            || "$REAL_TMUX" new-window -d -t user 'bash --noprofile --norc -i' 3>&-
+        i=$((i + 1))
+    done
+    "$REAL_TMUX" list-panes -t "$stale" >/dev/null
+    # History in the pane of the user, so that a clear-history would show.
+    "$REAL_TMUX" send-keys -t "$stale" 'seq 1 100' Enter
+    i=0
+    while [ "$("$REAL_TMUX" display-message -p -t "$stale" '#{history_size}')" -eq 0 ] && [ "$i" -lt 25 ]; do
+        sleep .2
+        i=$((i + 1))
+    done
+    run "$TERMINAL" run -- 'echo SHOULD-NOT-TYPE'
+    [ "$status" -eq 4 ]
+    ! "$REAL_TMUX" capture-pane -p -t "$stale" | grep -q SHOULD-NOT-TYPE || false
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+    "$REAL_TMUX" list-panes -t "$stale" >/dev/null
+    [ "$("$REAL_TMUX" display-message -p -t "$stale" '#{history_size}')" -gt 0 ]
+}
+
+# Background 5
+@test "after a clear with no hook, open under the new session id closes the old companion" {
+    bg_setup
+    bg_add_cache
+    local old
+    "$TERMINAL" open >/dev/null
+    old=$(bg_dir)
+    export CLUX_SESSION_ID=fedcba98-4567-4890-abcd-ef0123456789
+    run "$TERMINAL" run -- 'echo x'
+    [ "$status" -eq 4 ]
+    [ -d "$old" ]
+    bg_add_cache
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$old" ]
+    [ -d "$(bg_dir)" ]
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | grep -c '^clux-terminal 0123abcd$')" = 0 ]
+    [ "$("$REAL_TMUX" list-windows -t dash -F '#{window_name}' | grep -c '^clux-terminal fedcba98$')" = 1 ]
+    "$TERMINAL" close
+}
+
+# Background 6
+@test "the directory and the exported variables stay between runs in window mode" {
+    bg_setup
+    bg_add_cache
+    run "$TERMINAL" open
+    [[ "$output" == *'mode=window'* ]] || false
+    "$TERMINAL" run -- 'cd /tmp' >/dev/null
+    "$TERMINAL" run -- 'export X=1' >/dev/null
+    run "$TERMINAL" run -- 'pwd; echo $X'
+    [[ "$output" == *$'/tmp\n1\nexit=0' ]] || false
+    "$TERMINAL" close
+}
+
+@test "open starts a watchdog for a background companion, open starts it again when it is gone, and close stops it" {
+    bg_setup
+    bg_add_cache
+    local d watch new i=0
+    "$TERMINAL" open >/dev/null
+    d=$(bg_dir)
+    watch=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$watch" ]
+    ps -ww -o command= -p "$watch" | grep -q 'terminal.sh watch --session 0123abcd'
+    "$TERMINAL" open >/dev/null
+    [ "$(sed -n 's/^watch_pid=//p' "$d/state")" = "$watch" ]
+    kill "$watch"
+    while kill -0 "$watch" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    "$TERMINAL" open >/dev/null
+    new=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$new" ]
+    [ "$new" != "$watch" ]
+    kill -0 "$new"
+    "$TERMINAL" close
+    i=0
+    while kill -0 "$new" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    ! kill -0 "$new" 2>/dev/null || false
+}
+
+# Background 3
+@test "the watchdog closes a background companion and stops its laya server when the owner process ends" {
+    bg_setup
+    bg_add_cache
+    local data="$BATS_TEST_TMPDIR/data" d pid i=0
+    make_fake_venv "$data/clux/laya"
+    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
+    run env CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
+        "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    d=$(bg_dir)
+    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
+    [ -n "$pid" ]
+    kill -0 "$pid"
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    wait_gone "$d" 15 || { echo 'the directory stayed'; false; }
+    [ "$(bg_window_count)" = 1 ] || { echo 'the window stayed'; false; }
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
+    ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; echo 'the laya server stayed'; false; }
+}
+
+# The directory lock: open, close, the watchdog and the reaper make or remove
+# a companion directory only while they hold DIR.lock.
+@test "two parallel opens of one background session make one companion, and close removes it" {
+    bg_setup
+    local d p1 p2
+    "$TERMINAL" open > "$BATS_TEST_TMPDIR/o1" 2>&1 &
+    p1=$!
+    "$TERMINAL" open > "$BATS_TEST_TMPDIR/o2" 2>&1 &
+    p2=$!
+    wait "$p1" || { echo 'open 1 failed:'; cat "$BATS_TEST_TMPDIR/o1"; false; }
+    wait "$p2" || { echo 'open 2 failed:'; cat "$BATS_TEST_TMPDIR/o2"; false; }
+    d=$(bg_dir)
+    [ -f "$d/state" ] || { echo 'no state after the opens'; false; }
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o1" || { echo 'open 1:'; cat "$BATS_TEST_TMPDIR/o1"; false; }
+    grep -q '^mode=socket$' "$BATS_TEST_TMPDIR/o2" || { echo 'open 2:'; cat "$BATS_TEST_TMPDIR/o2"; false; }
+    local panes
+    panes=$("$REAL_TMUX" -S "$d/sock" list-panes -a | wc -l | tr -d ' ')
+    [ "$panes" = 1 ] || { echo "panes on the private server: $panes"; false; }
+    run "$TERMINAL" run -- 'echo race-ok'
+    [[ "$output" == *$'race-ok\nexit=0' ]] || { echo "run: status $status: $output"; false; }
+    [ ! -e "$d.lock" ] || { echo 'the lock file stays after the opens'; ls -la "${d%/*}"; false; }
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ] || { echo "close: status $status: $output"; false; }
+    [ ! -e "$d" ] || { echo 'the directory stays after close'; ls -la "$d"; false; }
+    [ ! -e "$d.lock" ] || { echo 'the lock file stays after close'; false; }
+}
+
+@test "while another verb holds the lock, open and close refuse with exit 5 and change nothing" {
+    bg_setup
+    local d
+    d=$(bg_dir)
+    mkdir -p "${d%/*}"
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" open
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [[ "$output" == *'another open or close of this companion is at work'* ]] || false
+    [ ! -e "$d" ]
+    [ "$(bg_window_count)" = 1 ]
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$d.lock" ]
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" close
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [ -f "$d/state" ]
+    # The SessionEnd hook waits at most 2 s and says nothing. A separate
+    # process closes the companion when the holder ends.
+    hook_close_while_held "$d" '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+}
+
+# hook_close_while_held DIR PAYLOAD — with a live holder of the lock of DIR,
+# the SessionEnd hook ends in 3 s or less with status 0 and no output, and
+# the companion stays. When the holder ends, the companion closes with no
+# other call.
+hook_close_while_held() {
+    local start took
+    [ -f "$1/state" ]
+    start=$(date +%s)
+    run "$TERMINAL" close --hook <<< "$2"
+    took=$(( $(date +%s) - start ))
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "hook output: $output"; false; }
+    [ "$took" -le 3 ] || { echo "the hook took $took s"; false; }
+    [ -f "$1/state" ]
+    stop_holders
+    wait_gone "$1" 10 || { echo 'the later close did not close the companion'; false; }
+    wait_gone "$1.lock" 5
+}
+
+# wait_gone PATH S — wait at most S seconds until PATH is gone.
+wait_gone() {
+    local i
+    for i in $(seq 1 $(( $2 * 5 ))); do
+        [ -e "$1" ] || return 0
+        sleep 0.2
+    done
+    [ ! -e "$1" ]
+}
+
+@test "in split mode, the SessionEnd hook closes the companion later while another verb holds the lock" {
+    local d pane
+    "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    pane=$(sed -n 's/^pane=//p' "$d/state")
+    lock_holder "$d"
+    hook_close_while_held "$d" '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+    ! "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null 2>&1 \
+        || { echo "the companion pane $pane is still there"; false; }
+}
+
+@test "the later close of the SessionEnd hook does not close a new companion with another token" {
+    local d
+    "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    lock_holder "$d"
+    run "$TERMINAL" close --hook <<< '{"session_id":"0123abcd-4567-4890-abcd-ef0123456789"}'
+    [ "$status" -eq 0 ]
+    # A new session in the same pane opens a new companion before the lock
+    # is free: a new token in the state.
+    sed -i.bak 's/^token=.*/token=0000000000000000/' "$d/state"
+    stop_holders
+    wait_gone "$d.lock" 10
+    sleep 1
+    [ -f "$d/state" ] || { echo 'the later close closed a companion it did not see'; false; }
+    rm -f "$d/state.bak"
+}
+
+@test "in split mode, open refuses with exit 5 while another verb holds the lock" {
+    local d
+    "$TERMINAL" open >/dev/null
+    d=$(companion_dir)
+    "$TERMINAL" close
+    [ ! -e "$d" ]
+    lock_holder "$d"
+    run env CLUX_TERMINAL_LOCK_WAIT=1 "$TERMINAL" open
+    [ "$status" -eq 5 ] || { echo "$output"; false; }
+    [ ! -e "$d" ]
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -f "$d/state" ]
+    "$TERMINAL" close
+}
+
+@test "the reaper keeps a dead companion while a live verb holds its lock, and removes it after" {
+    bg_setup
+    local old watch
+    "$TERMINAL" open >/dev/null
+    old=$(bg_dir)
+    watch=$(sed -n 's/^watch_pid=//p' "$old/state")
+    [ -z "$watch" ] || kill "$watch"
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    lock_holder "$old"
+    # A second session: its open runs the reaper over the dead companion.
+    export CLUX_SESSION_ID=fedcba98-4567-4890-abcd-ef0123456789
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ -f "$old/state" ] || { echo 'the reaper removed a locked companion'; false; }
+    stop_holders
+    run "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ ! -e "$old" ]
+    [ ! -e "$old.lock" ]
+    "$TERMINAL" close
+}
+
+@test "in split mode, the later close of a hook that saw no state keeps a companion of another session" {
+    local d
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    grep -qx 'session=aaaaaaaa-4567-4890-abcd-ef0123456789' "$d/state" \
+        || { echo 'a pane owner does not record its session'; cat "$d/state"; false; }
+    lock_holder "$d"
+    # The hook of session aaaaaaaa runs while an open is at work and has no
+    # state yet.
+    mv "$d/state" "$d/state.hidden"
+    run "$TERMINAL" close --hook <<< '{"session_id":"aaaaaaaa-4567-4890-abcd-ef0123456789"}'
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "hook: $status $output"; false; }
+    # The open that holds the lock is of a new session in the same pane.
+    sed 's/^session=.*/session=bbbbbbbb-4567-4890-abcd-ef0123456789/' "$d/state.hidden" > "$d/state"
+    rm -f "$d/state.hidden"
+    stop_holders
+    wait_gone "$d.lock" 10
+    sleep 1
+    [ -f "$d/state" ] || { echo 'the later close closed the companion of another session'; false; }
+}
+
+# hook_keeps DIR PAYLOAD free|busy — the SessionEnd hook with PAYLOAD, with
+# the lock of DIR free or held by another verb, does not close the companion.
+hook_keeps() {
+    [ "$3" = free ] || lock_holder "$1"
+    run "$TERMINAL" close --hook <<< "$2"
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "hook ($3): $status $output"; return 1; }
+    if [ "$3" = busy ]; then
+        stop_holders
+        wait_gone "$1.lock" 10
+        sleep 1
+    fi
+    [ -f "$1/state" ] || { echo "the hook of another session closed the companion (lock $3)"; return 1; }
+}
+
+A_HOOK='{"session_id":"aaaaaaaa-4567-4890-abcd-ef0123456789"}'
+B_HOOK='{"session_id":"bbbbbbbb-4567-4890-abcd-ef0123456789"}'
+
+@test "in split mode, the SessionEnd hook of another session in the same pane keeps the companion, with the lock free and busy" {
+    local d
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    d=$(companion_dir)
+    # A second Claude session in this pane (claude -p from a script) ends.
+    hook_keeps "$d" "$B_HOOK" free
+    hook_keeps "$d" "$B_HOOK" busy
+    run "$TERMINAL" close --hook <<< "$A_HOOK"
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ] || { echo 'the hook of its own session did not close the companion'; false; }
+}
+
+@test "in split mode, a new session that re-uses the companion of the pane owns it: a late hook of the old session keeps it" {
+    local d first second
+    first=$(CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open 2>/dev/null)
+    d=$(companion_dir)
+    # Session aaaaaaaa ended with no SessionEnd hook (a crash); session
+    # bbbbbbbb in the same pane opens and re-uses the companion.
+    second=$(CLUX_SESSION_ID=bbbbbbbb-4567-4890-abcd-ef0123456789 "$TERMINAL" open 2>/dev/null)
+    [ "$second" = "$first" ] || { echo "a new companion: $second (was: $first)"; false; }
+    grep -qx 'session=bbbbbbbb-4567-4890-abcd-ef0123456789' "$d/state" \
+        || { echo 'open did not record the new session'; cat "$d/state"; false; }
+    # Old hook late, then new hook: the old one keeps it, the new one closes it.
+    hook_keeps "$d" "$A_HOOK" free
+    hook_keeps "$d" "$A_HOOK" busy
+    lock_holder "$d"
+    hook_close_while_held "$d" "$B_HOOK"
+    # New hook first, then the old one: nothing is left to close.
+    CLUX_SESSION_ID=aaaaaaaa-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    CLUX_SESSION_ID=bbbbbbbb-4567-4890-abcd-ef0123456789 "$TERMINAL" open > /dev/null
+    run "$TERMINAL" close --hook <<< "$B_HOOK"
+    [ "$status" -eq 0 ] && [ ! -e "$d" ] || { echo "the new hook did not close the companion: $output"; false; }
+    run "$TERMINAL" close --hook <<< "$A_HOOK"
+    [ "$status" -eq 0 ] && [ -z "$output" ] || { echo "old hook after close: $status $output"; false; }
+}
+
+@test "after claude --resume, open re-uses the companion with the new owner, and the old watchdog keeps it" {
+    bg_setup
+    local d pane watch first second
+    # Stdout only: the dashboard search of path.sh can write to stderr.
+    first=$("$TERMINAL" open 2> "$BATS_TEST_TMPDIR/err1") || { cat "$BATS_TEST_TMPDIR/err1"; false; }
+    d=$(bg_dir)
+    pane=$(sed -n 's/^pane=//p' "$d/state")
+    watch=$(sed -n 's/^watch_pid=//p' "$d/state")
+    [ -n "$watch" ] && kill -0 "$watch" || { echo 'no watchdog'; false; }
+    # The Claude process ends; `claude --resume` starts a new process with
+    # the same session id, within the pause of the watchdog.
+    kill "$CLAUDE_PID"
+    wait "$CLAUDE_PID" 2>/dev/null || true
+    sleep 600 </dev/null >/dev/null 2>&1 3>&- &
+    export CLAUDE_PID=$!
+    printf '%s\n' "$CLAUDE_PID" > "$BATS_TEST_TMPDIR/bg-owner"
+    second=$("$TERMINAL" open 2> "$BATS_TEST_TMPDIR/err2") || { echo "second open failed"; cat "$BATS_TEST_TMPDIR/err2"; false; }
+    [ "$second" = "$first" ] || { echo "a new companion: $second (was: $first)"; false; }
+    grep -qx "owner_pid=$CLAUDE_PID" "$d/state" || { echo 'the owner is not the new process'; cat "$d/state"; false; }
+    # The old watchdog reads the state at its next pause (10 s).
+    sleep 12
+    [ -f "$d/state" ] || { echo 'the watchdog closed the companion of a live owner'; false; }
+    "$REAL_TMUX" -S "$d/sock" list-panes -t "$pane" >/dev/null 2>&1 || { echo 'the companion pane is gone'; false; }
+    run "$TERMINAL" run -- 'echo resumed'
+    [[ "$output" == *$'resumed\nexit=0' ]] || { echo "run: $output"; false; }
+    "$TERMINAL" close
+}
+
+# open_parallel N — start N opens at the same time; each writes its output
+# to $BATS_TEST_TMPDIR/o<n>. OPEN_FAILS names each open that did not exit 0.
+open_parallel() {
+    local n p
+    OPEN_FAILS=
+    : > "$BATS_TEST_TMPDIR/opens"
+    for n in $(seq 1 "$1"); do
+        "$TERMINAL" open > "$BATS_TEST_TMPDIR/o$n" 2>&1 3>&- &
+        printf '%s %s\n' "$n" "$!" >> "$BATS_TEST_TMPDIR/opens"
+    done
+    while read -r n p; do
+        wait "$p" || OPEN_FAILS="$OPEN_FAILS $n"
+    done < "$BATS_TEST_TMPDIR/opens"
+}
+
+# one_companion N — the N opens of open_parallel all name one pane, and the
+# private server of the session has one pane.
+one_companion() {
+    local n pane first=
+    for n in $(seq 1 "$1"); do
+        pane=$(sed -n 's/^pane=//p' "$BATS_TEST_TMPDIR/o$n")
+        [ -n "$pane" ] || { echo "open $n: no pane"; cat "$BATS_TEST_TMPDIR/o$n"; return 1; }
+        [ -n "$first" ] || first="$pane"
+        [ "$pane" = "$first" ] || { echo "open $n: pane $pane, not $first"; return 1; }
+    done
+    [ "$("$REAL_TMUX" -S "$(bg_dir)/sock" list-panes -a | wc -l | tr -d ' ')" = 1 ]
+}
+
+@test "after an open is killed with kill -9, eight parallel opens make one companion" {
+    bg_setup
+    local d p i=0 n
+    d=$(bg_dir)
+    "$TERMINAL" open > /dev/null 2>&1 3>&- &
+    p=$!
+    # The open holds the lock from its start: kill it while it works.
+    while [ ! -e "$d.lock" ] && [ ! -L "$d.lock" ] && [ "$i" -lt 100 ]; do sleep .05; i=$((i + 1)); done
+    sleep .3
+    kill -9 "$p"
+    wait "$p" 2>/dev/null || true
+    open_parallel 8
+    [ -z "$OPEN_FAILS" ] || { for n in $OPEN_FAILS; do echo "open $n:"; cat "$BATS_TEST_TMPDIR/o$n"; done; false; }
+    one_companion 8
+    run "$TERMINAL" run -- 'echo after-kill'
+    [[ "$output" == *$'after-kill\nexit=0' ]] || { echo "$output"; false; }
+    run "$TERMINAL" close
+    [ "$status" -eq 0 ]
+    [ ! -e "$d" ]
+    [ ! -e "$d.lock" ]
+}
+
+@test "a lock left by a holder whose pid a live process now has does not block open or close" {
+    bg_setup
+    local d start
+    d=$(bg_dir)
+    mkdir -p "${d%/*}"
+    # The lock of clux 4.1.0 before this fix: a link to the pid of its
+    # holder. The pid is live (a sleep of the test), but the holder is gone.
+    sleep 600 < /dev/null > /dev/null 2>&1 3>&- &
+    printf '%s\n' "$!" >> "$BATS_TEST_TMPDIR/holders"
+    ln -s "$!" "$d.lock"
+    start=$SECONDS
+    run env CLUX_TERMINAL_LOCK_WAIT=5 "$TERMINAL" open
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ $((SECONDS - start)) -lt 5 ]
+    # A lock file that a killed holder left: its lock is free.
+    : > "$d.lock"
+    start=$SECONDS
+    run env CLUX_TERMINAL_LOCK_WAIT=5 "$TERMINAL" close
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    [ $((SECONDS - start)) -lt 5 ]
+    [ ! -e "$d" ]
+    [ ! -e "$d.lock" ] && [ ! -L "$d.lock" ]
 }
