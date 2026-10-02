@@ -121,6 +121,7 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
 7. **Dependencies**:
    ```bash
    command -v jq &>/dev/null && echo "OK  jq" || echo "WARN jq (missing)"
+   command -v perl &>/dev/null && echo "OK  perl" || echo "WARN perl (missing — only clux:terminal needs it, for its locks and process start times)"
    command -v fzf &>/dev/null && echo "OK  fzf" || echo "INFO fzf (missing — pickers fall back to choose-tree)"
    command -v flock &>/dev/null && echo "OK  flock" || echo "INFO flock (unavailable — using mkdir fallback)"
    ```
@@ -261,34 +262,78 @@ Prompt the agent to run these checks and return structured results. Do NOT modif
    # copy) yields a non-empty HOOKS_FILE that does not exist. Empty it here so the
    # not-found branch below still fires.
    [ -f "$HOOKS_FILE" ] || HOOKS_FILE=""
+   # hook_wired EVENT COMMAND — one hook entry of EVENT in hooks.json runs
+   # COMMAND: the command is ${CLAUDE_PLUGIN_ROOT}/COMMAND, the clux script
+   # and its arguments, so a script of the same name in another directory
+   # does not count. The event and the command must be in the same entry: a
+   # command under the wrong event does not run when it must. Returns 1 when
+   # it is not wired, 2 when neither jq nor python3 is there, and 3 when the
+   # tool cannot read the file (hooks_json_valid runs first).
+   hook_wired() {
+       local c='${CLAUDE_PLUGIN_ROOT}/'"$2" rc
+       if command -v jq >/dev/null 2>&1; then
+           jq -e --arg e "$1" --arg c "$c" \
+               '[.hooks[$e][]?.hooks[]?.command // empty | select(. == $c)] | length > 0' \
+               "$HOOKS_FILE" >/dev/null 2>&1
+           rc=$?
+       elif command -v python3 >/dev/null 2>&1; then
+           python3 -c '
+   import json, sys
+   try:
+       hooks = json.load(open(sys.argv[1])).get("hooks", {})
+       commands = [h.get("command", "") for g in hooks.get(sys.argv[2], []) for h in g.get("hooks", [])]
+   except Exception:
+       sys.exit(3)
+   sys.exit(0 if sys.argv[3] in commands else 1)
+   ' "$HOOKS_FILE" "$1" "$c" 2>/dev/null
+           rc=$?
+       else
+           return 2
+       fi
+       case $rc in 0|1) return "$rc" ;; esac
+       return 3
+   }
+   # hooks_json_valid — 0 when jq or python3 reads hooks.json as JSON, 1 when
+   # it does not, 2 when neither tool is there.
+   hooks_json_valid() {
+       if command -v jq >/dev/null 2>&1; then
+           jq empty "$HOOKS_FILE" >/dev/null 2>&1 || return 1
+       elif command -v python3 >/dev/null 2>&1; then
+           python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$HOOKS_FILE" >/dev/null 2>&1 || return 1
+       else
+           return 2
+       fi
+   }
+   # check_hook EVENT COMMAND — one OK or FAIL line for hook_wired.
+   check_hook() {
+       hook_wired "$1" "$2"
+       case $? in
+           0) echo "OK  hook: $1 → $2" ;;
+           1) echo "FAIL hook: $1 not wired to $2 in hooks.json" ;;
+           2) echo "FAIL hook: $1 → $2 not checked (install jq or python3)" ;;
+           *) echo "FAIL hook: $1 → $2 not checked (cannot read hooks.json)" ;;
+       esac
+   }
    if [ -z "$HOOKS_FILE" ]; then
        echo "FAIL plugin hooks.json not found"
+   elif hooks_json_valid; [ $? -eq 1 ]; then
+       echo "FAIL hooks.json is not valid JSON ($HOOKS_FILE)"
    else
        echo "OK  hooks.json found ($HOOKS_FILE)"
        for EVENT in Stop StopFailure Notification TeammateIdle UserPromptSubmit SessionEnd; do
-           if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "notify-tmux" "$HOOKS_FILE"; then
-               echo "OK  hook: $EVENT → notify-tmux.sh"
-           else
-               echo "FAIL hook: $EVENT not configured in hooks.json"
-           fi
+           check_hook "$EVENT" hooks/notify-tmux.sh
        done
        # Agent-state second command, registered beside notify-tmux.sh (see
        # CHANGELOG 3.1.0), plus SessionStart, which carries only agent-state.sh
-       # (3.8.0). Each pair below must appear verbatim in hooks.json.
-       for PAIR in "UserPromptSubmit:busy" "Notification:needs-you" "Stop:finished" "StopFailure:failed" "SessionStart:remove" "SessionEnd:remove"; do
-           EVENT="${PAIR%%:*}"
-           ARG="${PAIR#*:}"
-           if grep -q "\"$EVENT\"" "$HOOKS_FILE" && grep -q "agent-state.sh $ARG" "$HOOKS_FILE"; then
-               echo "OK  hook: $EVENT → agent-state.sh $ARG"
-           else
-               echo "FAIL hook: $EVENT not wired to agent-state.sh $ARG in hooks.json"
-           fi
+       # (3.8.0). The companion terminal: close (4.0.0) and session-env
+       # (4.1.0). Each hook command in hooks.json has a check here, under its
+       # own event (test/validate-hooks.bats).
+       for PAIR in "UserPromptSubmit:hooks/agent-state.sh busy" "Notification:hooks/agent-state.sh needs-you" \
+           "Stop:hooks/agent-state.sh finished" "StopFailure:hooks/agent-state.sh failed" \
+           "SessionStart:hooks/agent-state.sh remove" "SessionEnd:hooks/agent-state.sh remove" \
+           "SessionStart:scripts/terminal.sh session-env --hook" "SessionEnd:scripts/terminal.sh close --hook"; do
+           check_hook "${PAIR%%:*}" "${PAIR#*:}"
        done
-       if grep -qF 'terminal.sh close --hook' "$HOOKS_FILE"; then
-           echo "OK  hook: SessionEnd → terminal.sh close --hook"
-       else
-           echo "FAIL hook: SessionEnd not wired to terminal.sh close --hook"
-       fi
    fi
    ```
 2. **Hook scripts executable**:

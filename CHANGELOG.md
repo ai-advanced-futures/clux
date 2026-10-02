@@ -2,7 +2,7 @@
 
 All notable changes to clux are documented here.
 
-## [4.1.0]
+## [4.2.0]
 
 ### Added
 
@@ -12,6 +12,28 @@ All notable changes to clux are documented here.
 - `sync` reads, compares and targets a session by its id. A session name is not a safe tmux target: `a.c`, `a:c`, `%2` and `$9` each mean something else to tmux
 - The hook line quotes the path of the script for sh, for `run-shell` and for the tmux parser. A hook whose script is gone removes itself at the next session change and shows a message, so the state does not stay "on" with no script behind it
 - `/clux:validate` reports mirror mode, and does not warn about index `[92]` when `session-follow.sh` holds it. The free band is now 93–99
+
+## [4.1.0]
+
+### Added
+
+- **The companion operates in background sessions.** In a Claude Code session with no tmux pane (`claude --bg`, or a session that a `claude agents` dashboard starts), `terminal.sh open` opens the companion as a new window, `clux-terminal <id>`, in the tmux session of the dashboard (`mode=window`, `window=<session>:<index>`). With no dashboard, or with `--socket`, it opens on a private tmux server. The owner is the Claude session: `CLUX_SESSION_ID`, which the `SessionStart` hook now writes to `CLAUDE_ENV_FILE`, else `CLAUDE_CODE_SESSION_ID`, and the process `CLAUDE_PID`. Its private directory is `sessions/<first 8 characters of the session id>`
+- A watchdog process closes a background companion and stops its Laya server when the session process ends, also after a crash with no `SessionEnd`. `close --hook` with no `TMUX` closes the companion of the `session_id` in the hook payload
+- A background companion pane holds a mark (`@clux-companion`). A verb that does not find the mark gives exit code 4, so a stale pane ID after a restart of the tmux server never names a pane of the user
+- The reaper also removes the directory of a session whose process ended, and a companion left from a `/clear` whose `SessionEnd` hook did not run
+
+### Changed
+
+- Outside tmux and outside a Claude Code session, the verbs give exit code 2 and `clux terminal must run inside tmux or in a Claude Code session` (it was `clux terminal must run inside tmux`)
+- `open` in socket mode also prints `attach_in_tmux=TMUX= tmux -S <sock> attach`, because tmux refuses an attach from inside tmux when `TMUX` is set
+- `state` is written to a temporary file and then renamed, so a reader never sees a half-written file
+- `open`, `close`, the watchdog and the reaper make or remove a companion directory only while they hold its lock (`<dir>.lock`). Two parallel `open` calls of one session make one companion: the second waits and re-uses it. Before, the call that failed removed the directory of the call that worked. A second `open` or `close` waits at most 120 seconds (the time that one `open` can take), then gives exit code 5 and `another open or close of this companion is at work: try again`. The `SessionEnd` hook waits at most 2 seconds; then a separate process waits for the lock and closes the companion that the hook saw, for a pane owner and for a session owner. The watchdog and the reaper skip a companion that another verb holds
+- **The locks are kernel locks (`flock`) that a small `perl` process holds for the verb.** This is true for the directory lock, the typing lock of `send` and `run`, and the reading lock of a run output. The kernel frees a lock when its holder ends, also after `kill -9`, so no verb takes over a lock with a pid test. Before, a lock was a link with the pid of its holder: two verbs could both take over a stale lock, and a pid that a new process got kept a lock for ever. `perl` is now necessary (macOS and most Linux systems have it); without it the verbs give exit code 2 and `clux terminal needs perl`
+- The busy lock of `run` holds the pid and the start time of its holder, so a new process with the same pid does not keep it. A start time is stored in one form, seconds since 1970 in UTC, so a verb with another `TZ` or `LC_ALL` does not see a live owner as dead. Two start times name one process when they are 2 s apart or less (on Linux, two reads of one process can differ by 1 s). When `ps` or `perl` cannot read the start time of a process that exists, the owner counts as alive: the watchdog, the reaper and `run` keep the companion and the busy lock. A busy lock of clux 4.0.0 holds only a pid; the pid alone then decides. The reaper keeps the directory of a foreign tmux server only while a tmux process has its pid and the start time in the server key
+- After `claude --resume`, `open` uses the companion again and records the new Claude process as its owner, so the watchdog of the old process does not close it. A verb that holds the directory lock and calls a step that takes the same lock now runs that step, and does not skip it
+- The `SessionEnd` hook closes only a companion of its own session, at once or later. A pane companion now records its session id too, so a second Claude session in the same pane (for example `claude -p` from a script) does not close it when it ends. When a new session in the same pane uses the companion again (`open`), the companion records the new session: its hook closes it, and a late hook of the old session does not
+- Limits: the 2 s slack of a start time covers rounding, not a step of the system clock (on Linux, `ps` makes the start time from the boot time). A pane `open` by a caller with no valid session id keeps the session in state, so the hook of that caller does not close the companion
+- `/clux:validate` checks the event and the command of each hook in one `hooks.json` entry (with `jq`, else `python3`). A command under the wrong event is a `FAIL`. With neither tool, the check is a `FAIL` that says so. The check compares the full command path, so a script of the same name in another directory is a `FAIL`. A `hooks.json` that is not valid JSON gives `FAIL hooks.json is not valid JSON`. A missing `perl` is a `WARN` that names `clux:terminal`, the only part that needs it
 
 ## [4.0.0]
 

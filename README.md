@@ -21,7 +21,7 @@ Restart Claude Code. Run:
 
 ## Requirements
 
-tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 is only for the companion terminal.
+tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 and perl are only for the companion terminal (macOS and most Linux systems have perl). Without perl, `terminal.sh` gives exit code 2 and `clux terminal needs perl`.
 
 ## Mirror mode
 
@@ -34,6 +34,8 @@ The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude ru
 ```bash
 <plugin>/scripts/terminal.sh laya install
 ```
+
+**Background sessions.** A Claude Code session with no tmux pane (`claude --bg`, or a session that a `claude agents` dashboard starts) also gets a companion. It opens as a new window, `clux-terminal <id>`, in the tmux session of the dashboard. With no dashboard, it opens on a private tmux server, and Claude gives you the line to attach to it. The companion closes when the session ends, also after a crash.
 
 For more detail, read the [reference](docs/reference.md).
 

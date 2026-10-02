@@ -128,8 +128,40 @@ stop_live_laya() {
     kill "$pid" 2>/dev/null || true
 }
 
+# hold_lock PATH — a live process that holds the flock lock of PATH, as a verb
+# of terminal.sh does (LOCK_HELPER). It sets HOLD_PID when the lock is held.
+# stop_holders stops each holder (the teardown does it too). A holder that
+# is stopped leaves its file, as a verb that was killed does.
+HOLD_PID=
+hold_lock() {
+    local ready="$BATS_TEST_TMPDIR/hold.$RANDOM" i=0
+    perl -e 'use Fcntl qw(:flock O_RDWR O_CREAT);
+        sysopen(my $f, $ARGV[0], O_RDWR | O_CREAT, 0600) or die;
+        flock($f, LOCK_EX) or die;
+        open(my $r, ">", $ARGV[1]) or die; close $r;
+        sleep 600' "$1" "$ready" < /dev/null > /dev/null 2>&1 3>&- &
+    HOLD_PID=$!
+    printf '%s\n' "$HOLD_PID" >> "$BATS_TEST_TMPDIR/holders"
+    while [ ! -e "$ready" ] && [ "$i" -lt 50 ]; do sleep .1; i=$((i + 1)); done
+    [ -e "$ready" ] || { echo "hold_lock: no lock on $1"; return 1; }
+}
+
+stop_holders() {
+    local pid
+    [ -f "$BATS_TEST_TMPDIR/holders" ] || return 0
+    while read -r pid; do
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done < "$BATS_TEST_TMPDIR/holders"
+    rm -f "$BATS_TEST_TMPDIR/holders"
+}
+
 setup() {
     install_stubs
+    # A run from a Claude Code Bash call gets the session of that call. Each
+    # test selects its owner: a pane (TMUX and TMUX_PANE) or a session that
+    # the test sets.
+    unset CLAUDE_CODE_SESSION_ID CLUX_SESSION_ID CLAUDE_PID
     export QUEUE_FILE="$BATS_TEST_TMPDIR/queue"
     export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME"
     export CLUX_NOTIFY_FILE="$QUEUE_FILE"   # agent path resolves via resolve_notify_file() -> CLUX_NOTIFY_FILE (tier 1)
@@ -137,5 +169,6 @@ setup() {
 
 teardown() {
     stop_fake_laya
+    stop_holders
     rm -rf "$BATS_TEST_TMPDIR"
 }
