@@ -26,7 +26,8 @@ plugins/clux/
 ├── claude-notify.tmux           # tpm entry point
 ├── commands/                    # Claude Code slash commands
 │   ├── setup.md                 # /clux:setup — an entry point; states no rules
-│   └── validate.md              # /clux:validate
+│   ├── validate.md              # /clux:validate
+│   └── follow.md                # /clux:follow — mirror mode on and off
 ├── skills/
 │   └── configuring-tmux/        # The whole setup procedure and every rule
 │       └── SKILL.md             #   governing it. /clux:setup invokes this
@@ -58,6 +59,7 @@ plugins/clux/
 │   ├── session-reorder.sh       # Moves a session in the bar
 │   ├── switch-session.sh        # Next/previous session in bar order
 │   ├── session-picker.sh        # Session picker with pane preview
+│   ├── session-follow.sh        # Mirror mode: all clients show one session
 │   ├── new-workspace.sh         # Creates an editor + agents window pair
 │   ├── new-workspace-prompt.sh  # Reads both answers inside a popup
 │   │                            # Status-line helper (opt-in)

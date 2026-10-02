@@ -213,6 +213,27 @@ clux uses tmux's `automatic-rename` with `#{pane_title}` — Claude Code sets th
 **Solution:** Jump to notification first using `N` (or configured key) before dismissing.
 
 
+## Mirror mode (/clux:follow)
+
+Mirror mode is for two or more terminals that are attached to the same tmux server, for example two computers that connect to one remote machine with SSH. tmux moves only the terminal in which you change session. With mirror mode on, the other terminals go to the same session, so all of them show the same screen.
+
+| Command | Result |
+|---------|--------|
+| `/clux:follow` | Shows the state, the sessions and the attached clients, then asks |
+| `/clux:follow on` | Starts mirror mode |
+| `/clux:follow off` | Stops mirror mode |
+| `/clux:follow status` | Shows the state, the sessions and the clients |
+
+You can also run the script with no Claude: `~/.config/clux/scripts/session-follow.sh on`.
+
+- **There is no leader.** A session change in any terminal moves all the others.
+- **`on` brings the terminals together.** If they show different sessions, they go to the session of the terminal that you used last.
+- **A terminal that attaches moves the others.** tmux reports an attach as a session change. If you attach to session `x`, the other terminals go to `x`.
+- **The state is not saved.** Mirror mode is a tmux hook, `client-session-changed[92]`. A new tmux server starts with mirror mode off. To start it with the server, add this line to your `tmux.conf` after the clux lines: `run-shell "~/.config/clux/scripts/session-follow.sh on"`.
+- **If the script goes away, mirror mode stops.** The hook holds the path of the script that ran `on`. If that file is removed (a plugin update can do this when the hook was set from the plugin folder), the hook removes itself at the next session change and tmux shows a message. Run `/clux:follow on` again.
+- **Terminals of different sizes.** tmux uses the size of the terminal that you used last (`window-size latest`, the tmux default). The other terminal shows the window cut or with an empty area.
+- **All clients follow**, also control-mode clients such as iTerm2 `tmux -CC`.
+
 ## Companion terminal (clux:terminal)
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it, and the pane shell keeps its directory and its exported variables from one command to the next.

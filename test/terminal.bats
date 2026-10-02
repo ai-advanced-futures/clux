@@ -2152,6 +2152,14 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     grep -qF "(S + 56) × 1000" "$skill"
 }
 
+@test "the plugin version is the top CHANGELOG heading" {
+    # No fixed number: the check holds for each release.
+    local v
+    v=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$REPO_ROOT/plugins/clux/.claude-plugin/plugin.json")
+    [ -n "$v" ]
+    [ "$(grep -m1 '^## \[' "$REPO_ROOT/CHANGELOG.md")" = "## [$v]" ]
+}
+
 @test "the 4.0.0 release names Laya and the run time limit" {
     local t section
     t=$(bash -c "source '$TERMINAL'; echo \"\$RUN_TIMEOUT_DEFAULT\"")
@@ -2163,8 +2171,6 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
 
 @test "the 4.1.0 release names background sessions" {
     local section
-    grep -q '"version": "4.1.0"' "$REPO_ROOT/plugins/clux/.claude-plugin/plugin.json"
-    [ "$(grep -m1 '^## \[' "$REPO_ROOT/CHANGELOG.md")" = '## [4.1.0]' ]
     section=$(awk '/^## \[4\.1\.0\]/ { on = 1; next } /^## \[/ { on = 0 } on' "$REPO_ROOT/CHANGELOG.md")
     [[ "$section" == *'background sessions'* ]] || false
     [[ "$section" == *'clux terminal must run inside tmux or in a Claude Code session'* ]] || false

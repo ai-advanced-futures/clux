@@ -31,7 +31,7 @@ Two goals, and setup must reach whichever one the machine asks for:
 - **Refuse rather than guess.** If the status line cannot be located with confidence, refuse and explain
 - **Deploy from the manifest** — `plugins/clux/config/deploy-manifest.txt`. Never write a script list into this skill or into a shell block
 - **Option naming rule**: hyphens for configuration inputs (`@clux-dir-resolver`, `@clux-editor`, every `@clux-bar-*`, every `@clux-agent-*`); underscores for the two runtime-rendered strings only (`@clux_session_bar`, `@clux_status`). Never set the underscored two from a config file
-- **Hook index band 90–99 is clux's.** `agent-clear.sh` at `[90]`, `session-bar-refresh.sh` at `[91]`, `92`–`99` reserved. An unindexed user hook writes index 0, so neither side can drop the other
+- **Hook index band 90–99 is clux's.** `agent-clear.sh` at `[90]`, `session-bar-refresh.sh` at `[91]`, `session-follow.sh` at `client-session-changed[92]` (set only by `/clux:follow on`, never by setup), `93`–`99` reserved. An unindexed user hook writes index 0, so neither side can drop the other
 - **Idempotent** — a second run must leave the user's tmux.conf byte-identical
 - **Always ask before modifying files** — use AskUserQuestion for confirmation
 
