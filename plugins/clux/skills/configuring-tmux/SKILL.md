@@ -997,7 +997,8 @@ Show the user:
   prefix + N / P   next / previous session, in bar order
   prefix + { / }   move this session left / right in the bar
   prefix + g       session picker with pane preview
-  prefix + A       new Claude workspace (name, then folder)
+  prefix + A       saved workspaces (1-9 / j k ⏎ open, ␣ folder, x delete,
+                   a open all, n new Claude workspace: name, then folder)
   prefix + m       jump to the notifying agent
   prefix + M       notification picker
   prefix + ` /DC   dismiss notification
