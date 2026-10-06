@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { BgSession, BgStatus } from '../types'
 import {
@@ -14,6 +14,8 @@ import {
 const PANE = 'control-room'
 const TITLE = 'Background sessions'
 const POLL_MS = 5000
+// Read the worktree list again after this many polls (one minute).
+const ROOTS_EVERY = 12
 const SOUND = 'sounds/needs-input.wav'
 // afplay on macOS; on Linux Claude Code has no player, so try clux's.
 const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
@@ -23,12 +25,13 @@ const sessions = atom({ plugin: 'clux-control-room', key: 'sessions' } as const,
 const COLOR: Record<BgStatus, string> = {
   'needs-input': 'warning',
   working: 'suggestion',
+  unknown: 'inactive',
   done: 'success',
   failed: 'error',
   stopped: 'inactive',
 }
 
-// What a poll needs that does not change during a session.
+// What a poll needs. Only `roots` changes, when a worktree is added.
 type Scope = { dir: string; roots: string[]; selfId: string }
 
 async function jobsDir($: EngineInterface): Promise<string> {
@@ -38,15 +41,23 @@ async function jobsDir($: EngineInterface): Promise<string> {
 }
 
 // The main working tree and every worktree of the repository, also a
-// worktree outside the main tree; the session's folder outside git.
+// worktree outside the main tree; the session's folder outside git. Each
+// root also as the path it lands on, for a root behind a symbolic link.
 async function repoRoots($: EngineInterface): Promise<string[]> {
   const repo = await $.session.repo().catch(() => null)
-  if (!repo) return [await $.session.cwd()]
-  const listed = await $.process
-    .run(['git', '-C', repo.root, 'worktree', 'list', '--porcelain'])
-    .catch(() => undefined)
-  const paths = listed?.exitCode === 0 ? worktreePaths(listed.stdout) : []
-  return [...new Set([repo.root, ...paths])]
+  let paths = [await $.session.cwd()]
+  if (repo) {
+    const listed = await $.process
+      .run(['git', '-C', repo.root, 'worktree', 'list', '--porcelain'])
+      .catch(() => undefined)
+    paths = [repo.root, ...(listed?.exitCode === 0 ? worktreePaths(listed.stdout) : [])]
+  }
+  const real = await Promise.all(
+    paths.map(path =>
+      $.fs.stat(path, { resolve: true }).then(stat => stat.realPath, () => undefined),
+    ),
+  )
+  return [...new Set([...paths, ...real.filter((path): path is string => !!path)])]
 }
 
 async function readSessions($: EngineInterface, scope: Scope) {
@@ -62,7 +73,7 @@ async function readSessions($: EngineInterface, scope: Scope) {
   const now = await $.clock.now()
   const found = texts.flatMap(({ id, text }) => {
     if (typeof text !== 'string' || text === '') return []
-    const session = toSession(id, text, scope.roots, scope.selfId)
+    const session = toSession(id, text, scope.roots, scope.selfId, now)
     return session && isFresh(session, now) ? [session] : []
   })
 
@@ -83,7 +94,8 @@ async function playAlert($: EngineInterface) {
 }
 
 // `isQuiet` takes a baseline: no sound for questions asked before the start.
-async function poll($: EngineInterface, scope: Scope, isQuiet = false) {
+// One sound for each poll, however many questions it finds.
+async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
   const list = await readSessions($, scope)
   const before = await read($, sessions)
   if (JSON.stringify(list) !== JSON.stringify(before)) {
@@ -92,7 +104,7 @@ async function poll($: EngineInterface, scope: Scope, isQuiet = false) {
   const fresh = newlyBlocked(list, before)
   if (isQuiet || fresh.length === 0) return
   for (const session of fresh) {
-    $.ui.toast(`${session.name} needs input: ${session.line}`)
+    $.ui.toast(session.line ? `${session.name} needs input: ${session.line}` : `${session.name} needs input`)
   }
   void playAlert($)
 }
@@ -106,9 +118,16 @@ function openPane($: EngineInterface, focus = false) {
 // the attach command on the clipboard outside tmux.
 async function attach($: EngineInterface, session: BgSession) {
   const argv = ['claude', 'attach', session.id]
-  if (await $.env.get('TMUX')) {
+  const pane = await $.env.get('TMUX_PANE')
+  if (pane && (await $.env.get('TMUX'))) {
+    // The new window goes in the tmux session of this pane, not in the
+    // session that tmux used last.
+    const own = await $.process
+      .run(['tmux', 'display-message', '-p', '-t', pane, '#{session_id}'])
+      .catch(() => undefined)
+    const target = own?.exitCode === 0 ? ['-t', `${own.stdout.trim()}:`] : []
     const ran = await $.process
-      .run(['tmux', 'new-window', '-n', session.name, ...argv])
+      .run(['tmux', 'new-window', ...target, '-n', session.name, ...argv])
       .catch(() => undefined)
     if (ran?.exitCode === 0) return
   }
@@ -122,23 +141,48 @@ function counts(list: readonly BgSession[]) {
   return { needs: of('needs-input'), working: of('working') }
 }
 
-export const register: Register = on => {
-  let scope: Scope | undefined
+// The poll loop of this session: set at the start, read by each tick.
+const loop: { scope?: Scope; timer?: Timer; isPolling: boolean; polls: number } = {
+  isPolling: false,
+  polls: 0,
+}
 
+// One poll at a time, so a slow poll and the next tick never both alert.
+async function tick($: EngineInterface, isQuiet = false) {
+  const scope = loop.scope
+  if (!scope || loop.isPolling) return
+  loop.isPolling = true
+  try {
+    loop.polls += 1
+    if (loop.polls % ROOTS_EVERY === 0) scope.roots = await repoRoots($)
+    await poll($, scope, isQuiet)
+  } catch (error) {
+    $.ui.log(`clux-control-room: poll failed: ${String(error)}`, { to: 'debug' })
+  } finally {
+    loop.isPolling = false
+  }
+}
+
+export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'control-room',
-      description: 'Show the background sessions of this repository in a pane',
-      argumentHint: '[off]',
-    })
-    const ready: Scope = {
-      dir: await jobsDir($),
-      roots: await repoRoots($),
-      selfId: await $.session.id(),
+    try {
+      await $.command.register({
+        name: 'control-room',
+        description: 'Show the background sessions of this repository in a pane',
+        argumentHint: '[off]',
+      })
+      loop.scope = {
+        dir: await jobsDir($),
+        roots: await repoRoots($),
+        selfId: await $.session.id(),
+      }
+      // Only the first poll after the start is quiet.
+      await tick($, true)
+      loop.timer?.cancel()
+      loop.timer = $.clock.every(POLL_MS, () => void tick($))
+    } catch (error) {
+      $.ui.log(`clux-control-room: start failed: ${String(error)}`, { to: 'debug' })
     }
-    scope = ready
-    await poll($, ready, true)
-    $.clock.every(POLL_MS, () => poll($, ready))
 
     return next(e)
   })
@@ -149,7 +193,7 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: 'Background sessions pane closed.' }
     }
-    if (scope) await poll($, scope, true)
+    await tick($)
     await openPane($, true)
 
     return { text: 'Background sessions pane opened. Press a number to open a session.' }
@@ -179,7 +223,7 @@ export const register: Register = on => {
               />
               <Text color={COLOR[s.status]}> ● {LABEL[s.status].padEnd(12)}</Text>
               {s.prs.map(pr => (
-                <Link href={pr.href} label={`#${pr.id} `} />
+                <Link key={`pr-${s.id}-${pr.id}`} href={pr.href} label={`#${pr.id} `} />
               ))}
             </Box>
             <Box flexShrink={1} minWidth={0}>

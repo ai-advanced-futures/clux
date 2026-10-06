@@ -18,9 +18,13 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
   on('session.cwd', () => ({ value: `${ROOT}/.claude/worktrees/mine` }))
   on('session.id', () => ({ value: 'self' }))
   on('command.register', () => ({ value: { command: 'control-room' } }))
-  on('fs.list', () => ({
-    value: Object.keys(jobs).map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })),
-  }))
+  const lists = { count: 0 }
+  on('fs.list', () => {
+    lists.count += 1
+    return {
+      value: Object.keys(jobs).map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })),
+    }
+  })
   on('fs.read', ($, e) => {
     const id = e.path.slice(JOBS.length + 1).split('/')[0] ?? ''
     const text = jobs[id]
@@ -28,11 +32,18 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
   })
   on('process.run', ($, e) => {
     ran.push([...e.argv])
-    const stdout = e.argv[0] === 'git' ? `worktree ${ROOT}\nHEAD abc\n\nworktree /code/clux-wt\nHEAD def\n` : ''
+    const stdout =
+      e.argv[0] === 'git' ? `worktree ${ROOT}\nHEAD abc\n\nworktree /code/clux-wt\nHEAD def\n`
+      : e.argv[1] === 'display-message' ? '$3\n'
+      : ''
     // A Linux machine: no afplay.
     const exitCode = e.argv[0] === 'afplay' ? 127 : 0
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  on('fs.stat', ($, e) => ({
+    value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, realPath: e.path },
+  }))
+  on('ui.log', () => ({ value: undefined }))
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -44,7 +55,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     return <Box key="engine-band" />
   })
 
-  return { clock, ran, toasts }
+  return { clock, ran, toasts, lists }
 }
 
 const PANE_PROPS = {
@@ -98,7 +109,7 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
   const { ran } = world(
     on,
     { ask1: state({ name: 'tenant-registry-p1', state: 'blocked', detail: 'q' }) },
-    { TMUX: '/tmp/tmux-1000/default,1,0' },
+    { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%5' },
   )
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({
@@ -109,7 +120,8 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
     props: PANE_PROPS,
   })
   await ui.press({ key: 'open-ask1' })
-  expect(ran).toContainEqual(['tmux', 'new-window', '-n', 'tenant-registry-p1', 'claude', 'attach', 'ask1'])
+  expect(ran).toContainEqual(['tmux', 'display-message', '-p', '-t', '%5', '#{session_id}'])
+  expect(ran).toContainEqual(['tmux', 'new-window', '-t', '$3:', '-n', 'tenant-registry-p1', 'claude', 'attach', 'ask1'])
   await ui.unmount()
 })
 
@@ -132,6 +144,45 @@ test('a new question plays the sound once and raises a toast', async ($, on) => 
   await clock.advance(5000)
   await clock.settle()
   expect(plays()).toBe(1)
+
+  // A second question from the same session alerts again.
+  jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: C or D?' })
+  await clock.advance(5000)
+  await clock.settle()
+  expect(plays()).toBe(2)
+  expect(toasts.at(-1)).toBe('fabric-giants needs input: choose: C or D?')
+})
+
+test('a question found when /control-room opens still alerts', async ($, on) => {
+  const jobs: Record<string, string> = {
+    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
+  }
+  const { ran, toasts } = world(on, jobs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: '' })
+  await $.command.run({
+    command: 'control-room',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 },
+  })
+  expect(ran.filter(argv => argv[0] === 'paplay').length).toBe(1)
+  expect(toasts).toEqual(['fabric-giants needs input'])
+})
+
+test('a start that runs twice keeps one timer', async ($, on) => {
+  const jobs: Record<string, string> = {
+    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
+  }
+  const { clock, lists } = world(on, jobs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  const before = lists.count
+  await clock.advance(5000)
+  await clock.settle()
+  expect(lists.count - before).toBe(1)
 })
 
 test('the band counts the sessions and hides when none is live', async ($, on) => {

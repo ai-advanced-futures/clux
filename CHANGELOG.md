@@ -6,10 +6,10 @@ All notable changes to clux are documented here.
 
 ### Added
 
-- **A new plugin, `clux-control-room`: the first clux mod.** It is a Claude Code plugin of function hooks (`hooks/register.tsx`), not of shell hooks. `/control-room` opens one pane for the background sessions of the current repository. Each row shows the name, the status (needs input, working, done, failed, stopped), the PRs as links, and the description: the question of a session that needs input, else what the session does now or the result it gave. `/control-room off` closes the pane
-- The mod reads `~/.claude/jobs/*/state.json` every 5 seconds. A session counts when its folder or its worktree is under the root of the main working tree, so all worktrees of the repository count. The session that runs the mod is not in the list
-- When a session writes `needs input:`, a toast shows its question and a sound plays (on Linux with `pw-play`, `paplay` or `aplay`). The band above the prompt shows the counts while a session works or needs you
-- Select a row (its number `1` to `9`, or Tab and Enter) to open that session: `claude attach <id>` in a new tmux window, or the command on the clipboard outside tmux
+- **A new plugin, `clux-control-room`: the first clux mod.** It is a Claude Code plugin of function hooks (`hooks/register.tsx`), not of shell hooks. `/control-room` opens one pane for the background sessions of the current repository. Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description: the question of a session that needs input, else what the session does now or the result it gave. `/control-room off` closes the pane
+- The mod reads `~/.claude/jobs/*/state.json` every 5 seconds. A session counts when its folder or its worktree is under the root of the main working tree, so all worktrees of the repository count, and also a worktree outside the root that `git worktree list` names. The session that runs the mod is not in the list. A working session with no write for 30 minutes, or a state the mod does not know, shows as unknown
+- When a session writes `needs input:`, a toast shows its question and a sound plays (`afplay`, `paplay`, `pw-play`, `aplay` or `play`). Each new question alerts one time, also a second question from the same session. The band above the prompt shows the counts while a session works or needs you
+- Select a row (its number `1` to `9`, or Tab and Enter) to open that session: `claude attach <id>` in a new window of the current tmux session, or the command on the clipboard outside tmux
 
 ## [4.2.0]
 

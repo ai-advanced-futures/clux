@@ -5,6 +5,9 @@ import type { BgPr, BgSession, BgStatus } from '../types'
 
 // Finished sessions older than this drop off the list.
 const KEEP_FINISHED_MS = 3 * 24 * 60 * 60 * 1000
+// A working session writes its state every few seconds. With no write for
+// this long it has probably stopped without a last write.
+const STALE_WORKING_MS = 30 * 60 * 1000
 
 type JobState = {
   state?: string
@@ -22,26 +25,31 @@ type JobState = {
 const ORDER: Record<BgStatus, number> = {
   'needs-input': 0,
   working: 1,
-  done: 2,
-  failed: 3,
-  stopped: 4,
+  unknown: 2,
+  done: 3,
+  failed: 4,
+  stopped: 5,
 }
 
 export const LABEL: Record<BgStatus, string> = {
   'needs-input': 'needs input',
   working: 'working',
+  unknown: 'unknown',
   done: 'done',
   failed: 'failed',
   stopped: 'stopped',
 }
 
-function statusOf(job: JobState): BgStatus | undefined {
+// A state this mod does not know shows as unknown, so the row stays visible.
+function statusOf(job: JobState, updatedAt: number, now: number): BgStatus {
   if (job.state === 'blocked' || job.tempo === 'blocked') return 'needs-input'
-  if (job.state === 'working' || job.state === 'running') return 'working'
+  if (job.state === 'working' || job.state === 'running') {
+    return now - updatedAt > STALE_WORKING_MS ? 'unknown' : 'working'
+  }
   if (job.state === 'done') return 'done'
   if (job.state === 'failed') return 'failed'
   if (job.state === 'stopped') return 'stopped'
-  return undefined
+  return 'unknown'
 }
 
 function prsOf(job: JobState): BgPr[] {
@@ -66,6 +74,7 @@ export function toSession(
   text: string,
   roots: readonly string[],
   selfId: string,
+  now: number,
 ): BgSession | undefined {
   let job: JobState
   try {
@@ -78,8 +87,8 @@ export function toSession(
     root => isUnder(job.cwd, root) || isUnder(job.worktreePath, root),
   )
   if (!isOurs) return undefined
-  const status = statusOf(job)
-  if (!status) return undefined
+  const updatedAt = Date.parse(job.updatedAt ?? '') || 0
+  const status = statusOf(job, updatedAt, now)
   // The description: what the session does now, or the result it gave.
   const line = status === 'stopped' ? '' : (job.detail || job.output?.result || '')
 
@@ -89,7 +98,7 @@ export function toSession(
     status,
     prs: prsOf(job),
     line: line.replace(/\s+/g, ' ').trim(),
-    updatedAt: Date.parse(job.updatedAt ?? '') || 0,
+    updatedAt,
   }
 }
 
@@ -104,15 +113,18 @@ export function sortSessions(list: readonly BgSession[]): BgSession[] {
   )
 }
 
-// The sessions that need input now and did not need input at the last check.
+// The sessions with a question that was not there at the last check: a new
+// session that needs input, or a new question from the same session.
+const question = (s: BgSession) => `${s.id}\n${s.line}`
+
 export function newlyBlocked(
   list: readonly BgSession[],
   before: readonly BgSession[],
 ): BgSession[] {
   const asked = new Set(
-    before.filter(s => s.status === 'needs-input').map(s => s.id),
+    before.filter(s => s.status === 'needs-input').map(question),
   )
-  return list.filter(s => s.status === 'needs-input' && !asked.has(s.id))
+  return list.filter(s => s.status === 'needs-input' && !asked.has(question(s)))
 }
 
 // The worktree paths that `git worktree list --porcelain` prints.

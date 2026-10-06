@@ -11,21 +11,21 @@ Background sessions · 3
 
 ## What it does
 
-- **The pane** (`/control-room`) shows one row for each background session: its name, its status (needs input, working, done, failed, stopped), its PRs, and its description. The description is the question of a session that needs input, else what the session does now or the result it gave. A PR number is a link: click it to open the PR.
+- **The pane** (`/control-room`) shows one row for each background session: its name, its status (needs input, working, unknown, done, failed, stopped), its PRs, and its description. The description is the question of a session that needs input, else what the session does now or the result it gave. A PR number is a link: click it to open the PR. A session is **unknown** when its state is one the mod does not know, or when it works but has not written its state for 30 minutes (it probably stopped without a last write).
 - **Select a session** to open it. `/control-room` gives the pane the keyboard, so press the number of a row (`1` to `9`), or move with Tab and press Enter. In tmux, the mod opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
 - **`/control-room off`** closes the pane.
 - **The band** above the prompt shows the counts (`1 needs input · 2 working`) while a session works or needs you. **Show** opens the pane.
-- **The alert.** When a session writes `needs input:`, the mod shows a toast and plays a sound. It alerts one time for each new question. The first check after start does not alert.
+- **The alert.** When a session writes `needs input:`, the mod shows a toast and plays a sound. It alerts one time for each new question, also for a second question from the same session. The first check after start does not alert.
 
 ## Which sessions it shows
 
-The mod reads the job folders that Claude Code keeps for background sessions (`~/.claude/jobs/*/state.json`, or `$CLAUDE_CONFIG_DIR/jobs`). It shows a session when its folder or its worktree is in the current repository. It finds the root of the main working tree, so a session in any worktree under that root counts, and a session in a subfolder counts too. The session that runs the mod is not in the list.
+The mod reads the job folders that Claude Code keeps for background sessions (`~/.claude/jobs/*/state.json`, or `$CLAUDE_CONFIG_DIR/jobs`). It shows a session when its folder or its worktree is in the current repository. It finds the root of the main working tree, so a session in any worktree under that root counts, and a session in a subfolder counts too. A worktree outside the root counts when `git worktree list` names it. The mod reads that list again each minute. The session that runs the mod is not in the list.
 
-Finished sessions (result, failed, stopped) stay in the list for 3 days. The mod reads the folders every 5 seconds.
+Finished and unknown sessions stay in the list for 3 days after their last write. The mod reads the folders every 5 seconds.
 
 ## Sound
 
-On macOS the mod plays `sounds/needs-input.wav` with Claude Code's own player. On Linux Claude Code has no player, so the mod runs the first of `pw-play`, `paplay` or `aplay` that works.
+The mod plays `sounds/needs-input.wav` with the first of `afplay` (macOS), `paplay`, `pw-play`, `aplay` or `play` that works. It plays one time for each check, also when the check finds more than one new question.
 
 ## Install
 

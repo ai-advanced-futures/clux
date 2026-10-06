@@ -1,4 +1,4 @@
-export type BgStatus = 'needs-input' | 'working' | 'done' | 'failed' | 'stopped'
+export type BgStatus = 'needs-input' | 'working' | 'unknown' | 'done' | 'failed' | 'stopped'
 
 export type BgPr = { id: string; href: string }
 
