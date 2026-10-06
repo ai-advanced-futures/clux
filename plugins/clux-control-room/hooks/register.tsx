@@ -4,7 +4,6 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { BgSession, BgStatus } from '../types'
 import {
   LABEL,
-  age,
   isFresh,
   newlyBlocked,
   sortSessions,
@@ -20,12 +19,11 @@ const SOUND = 'sounds/needs-input.wav'
 const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
 
 const sessions = atom({ plugin: 'clux-control-room', key: 'sessions' } as const, [])
-const expanded = atom({ plugin: 'clux-control-room', key: 'expanded' } as const, '')
 
 const COLOR: Record<BgStatus, string> = {
   'needs-input': 'warning',
   working: 'suggestion',
-  result: 'success',
+  done: 'success',
   failed: 'error',
   stopped: 'inactive',
 }
@@ -99,10 +97,13 @@ async function poll($: EngineInterface, scope: Scope, isQuiet = false) {
   void playAlert($)
 }
 
-function openPane($: EngineInterface) {
-  return $.ui.open({ id: PANE, title: TITLE })
+// Asked (a command, a press) it seats at any width; `focus` hands it the keys.
+function openPane($: EngineInterface, focus = false) {
+  return $.ui.open({ id: PANE, title: TITLE, ...(focus ? { focus: true } : {}) })
 }
 
+// Selecting a session opens it: a new tmux window that attaches to it, or
+// the attach command on the clipboard outside tmux.
 async function attach($: EngineInterface, session: BgSession) {
   const argv = ['claude', 'attach', session.id]
   if (await $.env.get('TMUX')) {
@@ -118,7 +119,7 @@ async function attach($: EngineInterface, session: BgSession) {
 
 function counts(list: readonly BgSession[]) {
   const of = (status: BgStatus) => list.filter(s => s.status === status).length
-  return { needs: of('needs-input'), working: of('working'), results: of('result') }
+  return { needs: of('needs-input'), working: of('working') }
 }
 
 export const register: Register = on => {
@@ -128,6 +129,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'control-room',
       description: 'Show the background sessions of this repository in a pane',
+      argumentHint: '[off]',
     })
     const ready: Scope = {
       dir: await jobsDir($),
@@ -141,19 +143,22 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'control-room' }, async $ => {
+  on('command.run', { command: 'control-room' }, async ($, e) => {
+    const arg = e.args.trim()
+    if (arg === 'off' || arg === 'close') {
+      await $.ui.close({ id: PANE })
+      return { text: 'Background sessions pane closed.' }
+    }
     if (scope) await poll($, scope, true)
-    await openPane($)
+    await openPane($, true)
 
-    return { text: 'Background sessions pane opened.' }
+    return { text: 'Background sessions pane opened. Press a number to open a session.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const list = await read($, sessions)
-    const open = await read($, expanded)
-    const now = await $.clock.now()
-    const nameWidth = Math.min(24, Math.max(8, ...list.map(s => s.name.length)))
+    const nameWidth = Math.min(28, Math.max(8, ...list.map(s => s.name.length)))
 
     return (
       <Box flexDirection="column">
@@ -161,30 +166,25 @@ export const register: Register = on => {
         {list.length === 0 && (
           <Text dimColor>No background sessions for this repository.</Text>
         )}
-        {list.map(s => (
-          <Box key={`row-${s.id}`} flexDirection="column">
-            <Box>
-              <Text color={COLOR[s.status]}>● {LABEL[s.status].padEnd(12)}</Text>
-              <Text wrap="truncate-end">
-                {s.name.slice(0, nameWidth).padEnd(nameWidth)}{' '}
-                {(s.status === 'result' ? 'done' : age(now - s.since)).padStart(6)}{' '}
-              </Text>
-              {s.status === 'needs-input' && (
-                <Button key={`open-${s.id}`} label="Open" onPress={() => attach($, s)} />
-              )}
-              {s.status === 'result' && (
-                <Button
-                  key={`read-${s.id}`}
-                  label={open === s.id ? 'Hide' : 'Read'}
-                  onPress={() => update($, expanded, id => (id === s.id ? '' : s.id))}
-                />
-              )}
+        {list.map((s, i) => (
+          // Name, status and PRs keep their width; the description is cut.
+          <Box key={`row-${s.id}`}>
+            <Box flexShrink={0}>
+              <Button
+                key={`open-${s.id}`}
+                plain
+                hotkey={i < 9 ? String(i + 1) : undefined}
+                label={s.name.slice(0, nameWidth).padEnd(nameWidth)}
+                onPress={() => attach($, s)}
+              />
+              <Text color={COLOR[s.status]}> ● {LABEL[s.status].padEnd(12)}</Text>
+              {s.prs.map(pr => (
+                <Link href={pr.href} label={`#${pr.id} `} />
+              ))}
             </Box>
-            {s.line !== '' && (
-              <Text dimColor wrap={open === s.id ? 'wrap' : 'truncate-end'}>
-                {'   '}"{s.line}"
-              </Text>
-            )}
+            <Box flexShrink={1} minWidth={0}>
+              <Text dimColor wrap="truncate-end">{s.line}</Text>
+            </Box>
           </Box>
         ))}
       </Box>
@@ -193,14 +193,13 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, sessions)
-    const { needs, working, results } = counts(list)
+    const { needs, working } = counts(list)
     if (e.props.hasSurvey || needs + working === 0) return next(e)
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const parts = [
       needs > 0 ? `${needs} needs input` : '',
       working > 0 ? `${working} working` : '',
-      results > 0 ? `${results} result` : '',
     ].filter(Boolean)
 
     return (
@@ -208,7 +207,7 @@ export const register: Register = on => {
         <Text color={needs > 0 ? 'warning' : 'subtle'}>
           {TITLE}: {parts.join(' · ')}{' '}
         </Text>
-        <Button key="open-room" label="Show" onPress={() => openPane($)} />
+        <Button key="open-room" label="Show" onPress={() => openPane($, true)} />
       </Box>
     )
   })

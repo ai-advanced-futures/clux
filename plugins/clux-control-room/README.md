@@ -4,21 +4,18 @@ A Claude Code mod. It gives one pane for all the background sessions of the curr
 
 ```
 Background sessions · 3
-● needs input  tenant-registry-p1   12 min [ Open ]
-   "choose: YAML crosswalk or SQL table?"
-● working      ce-db-roster         38 min
-   "turn 41"
-● result       mods-research          done [ Read ]
-   "10 daily uses + gh-account mod, 8/8 tests"
+1: tenant-registry-p1   ● needs input  choose: YAML crosswalk or SQL table?
+2: ce-db-roster         ● working      #41 Running the migration tests
+3: mods-research        ● done         #28 #29 10 daily uses + gh-account mod
 ```
 
 ## What it does
 
-- **The pane** (`/control-room`) shows each background session: its status, its name, its age, and its last line. The age of a working session is the time since it started. The age of each other session is the time since its last change. A session that needs input shows its question. A session that is done shows its `result:` line.
+- **The pane** (`/control-room`) shows one row for each background session: its name, its status (needs input, working, done, failed, stopped), its PRs, and its description. The description is the question of a session that needs input, else what the session does now or the result it gave. A PR number is a link: click it to open the PR.
+- **Select a session** to open it. `/control-room` gives the pane the keyboard, so press the number of a row (`1` to `9`), or move with Tab and press Enter. In tmux, the mod opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
+- **`/control-room off`** closes the pane.
 - **The band** above the prompt shows the counts (`1 needs input · 2 working`) while a session works or needs you. **Show** opens the pane.
 - **The alert.** When a session writes `needs input:`, the mod shows a toast and plays a sound. It alerts one time for each new question. The first check after start does not alert.
-- **Open** opens the session. In tmux, it opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command.
-- **Read** shows the full result line. **Hide** makes it short again.
 
 ## Which sessions it shows
 

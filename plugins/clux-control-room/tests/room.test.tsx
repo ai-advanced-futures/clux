@@ -9,11 +9,11 @@ const state = (fields: Record<string, unknown>) =>
   JSON.stringify({ cwd: ROOT, updatedAt: '2026-10-06T10:48:00.000Z', ...fields })
 
 // The world beneath the mod: job folders, a repository, a host.
-function world(on: On, jobs: Record<string, string>) {
+function world(on: On, jobs: Record<string, string>, env: Record<string, string> = {}) {
   const ran: string[][] = []
   const toasts: string[] = []
   const clock = mock.clock(on, { now: NOW })
-  mock.env(on, { HOME: '/home/me' })
+  mock.env(on, { HOME: '/home/me', ...env })
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: `${ROOT}/.claude/worktrees/mine` }))
   on('session.id', () => ({ value: 'self' }))
@@ -56,11 +56,16 @@ const PANE_PROPS = {
   view: {},
 }
 
-test('the pane lists the sessions of this repository only', async ($, on) => {
+test('the pane lists name, status, PRs and description for this repository only', async ($, on) => {
   world(on, {
     ask1: state({ name: 'tenant-registry-p1', state: 'blocked', detail: 'choose: YAML or SQL?' }),
     run1: state({ name: 'ce-db-roster', state: 'working', detail: 'turn 41' }),
-    res1: state({ name: 'mods-research', state: 'done', output: { result: '8/8 tests' } }),
+    res1: state({
+      name: 'mods-research',
+      state: 'done',
+      output: { result: '8/8 tests' },
+      children: [{ id: '28', href: 'https://github.com/o/r/pull/28', kind: 'pr' }],
+    }),
     away: state({ name: 'other-repo', state: 'working', cwd: '/code/other' }),
     wt1: state({ name: 'outside-wt', state: 'working', cwd: '/code/clux-wt' }),
     self: state({ name: 'me', state: 'working', sessionId: 'self' }),
@@ -75,15 +80,36 @@ test('the pane lists the sessions of this repository only', async ($, on) => {
     props: PANE_PROPS,
   })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+  const names = (await ui.findAll({ type: 'Button' })).map(b => String(b.props.label).trim())
   expect(texts).toContain('Background sessions · 4')
-  expect(texts).toContain('outside-wt')
-  expect(texts).toContain('tenant-registry-p1')
+  expect(names).toEqual(['tenant-registry-p1', 'ce-db-roster', 'outside-wt', 'mods-research'])
+  expect(texts).toContain('needs input')
+  expect(texts).toContain('done')
+  expect(texts.includes('result')).toBe(false)
   expect(texts).toContain('choose: YAML or SQL?')
   expect(texts).toContain('8/8 tests')
-  expect(texts.includes('other-repo')).toBe(false)
-  expect(texts.includes(' me ')).toBe(false)
-  expect(await ui.find({ key: 'open-ask1' })).toBeDefined()
-  expect(await ui.find({ key: 'read-res1' })).toBeDefined()
+  const link = await ui.find({ type: 'Link' })
+  expect(link?.props.href).toBe('https://github.com/o/r/pull/28')
+  expect((await ui.find({ key: 'open-ask1' }))?.props.hotkey).toBe('1')
+  await ui.unmount()
+})
+
+test('selecting a row opens that session in a new tmux window', async ($, on) => {
+  const { ran } = world(
+    on,
+    { ask1: state({ name: 'tenant-registry-p1', state: 'blocked', detail: 'q' }) },
+    { TMUX: '/tmp/tmux-1000/default,1,0' },
+  )
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({
+    plugin: 'clux-control-room',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'control-room',
+    props: PANE_PROPS,
+  })
+  await ui.press({ key: 'open-ask1' })
+  expect(ran).toContainEqual(['tmux', 'new-window', '-n', 'tenant-registry-p1', 'claude', 'attach', 'ask1'])
   await ui.unmount()
 })
 

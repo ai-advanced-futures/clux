@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { age, isUnder, newlyBlocked, sortSessions, toSession, worktreePaths } from '../hooks/jobs'
+import { isUnder, newlyBlocked, sortSessions, toSession, worktreePaths } from '../hooks/jobs'
+import type { BgSession } from '../types'
 
 const ROOT = '/code/clux'
 const job = (fields: Record<string, unknown>) =>
@@ -11,6 +12,8 @@ const job = (fields: Record<string, unknown>) =>
     sessionId: 'other',
     ...fields,
   })
+const row = (id: string, status: BgSession['status'], updatedAt = 0): BgSession =>
+  ({ id, name: id, status, prs: [], line: '', updatedAt })
 
 describe('toSession', () => {
   test('a blocked job needs input and shows its question', () => {
@@ -24,17 +27,26 @@ describe('toSession', () => {
     expect(s?.status).toBe('needs-input')
   })
 
-  test('a done job shows its result line', () => {
-    const text = job({ state: 'done', detail: 'old', output: { result: '8/8 tests' } })
-    expect(toSession('a3', text, [ROOT], 'self')?.line).toBe('8/8 tests')
+  test('a done job is done, described by its detail or else its result', () => {
+    const withDetail = job({ state: 'done', detail: 'PR merged', output: { result: '8/8 tests' } })
+    expect(toSession('a3', withDetail, [ROOT], 'self')).toEqual(
+      expect.objectContaining({ status: 'done', line: 'PR merged' }),
+    )
+    const withResult = job({ state: 'done', output: { result: '8/8 tests' } })
+    expect(toSession('a3', withResult, [ROOT], 'self')?.line).toBe('8/8 tests')
   })
 
-  test('a working job counts its age from its start, a blocked job from its last change', () => {
-    const created = '2026-10-06T09:00:00.000Z'
-    const working = toSession('b1', job({ state: 'working', createdAt: created }), [ROOT], 'self')
-    expect(working?.since).toBe(Date.parse(created))
-    const blocked = toSession('b2', job({ state: 'blocked', createdAt: created }), [ROOT], 'self')
-    expect(blocked?.since).toBe(Date.parse('2026-10-06T10:00:00.000Z'))
+  test('the PRs come from the pr children', () => {
+    const text = job({
+      state: 'working',
+      children: [
+        { id: '28', href: 'https://github.com/o/r/pull/28', kind: 'pr' },
+        { id: 'x', href: 'https://example.com', kind: 'issue' },
+      ],
+    })
+    expect(toSession('p1', text, [ROOT], 'self')?.prs).toEqual([
+      { id: '28', href: 'https://github.com/o/r/pull/28' },
+    ])
   })
 
   test('a job in a worktree of the repository counts', () => {
@@ -71,33 +83,19 @@ describe('helpers', () => {
   })
 
   test('sessions that need input come first, then the newest', () => {
-    const at = (id: string, status: 'working' | 'needs-input' | 'result', updatedAt: number) =>
-      ({ id, name: id, status, line: '', updatedAt, since: updatedAt })
     const order = sortSessions([
-      at('r', 'result', 9),
-      at('w1', 'working', 1),
-      at('w2', 'working', 5),
-      at('n', 'needs-input', 0),
+      row('r', 'done', 9),
+      row('w1', 'working', 1),
+      row('w2', 'working', 5),
+      row('n', 'needs-input', 0),
     ]).map(s => s.id)
     expect(order).toEqual(['n', 'w2', 'w1', 'r'])
   })
 
-  test('age reads as minutes, hours, days', () => {
-    expect(age(30_000)).toBe('now')
-    expect(age(12 * 60_000)).toBe('12 min')
-    expect(age(2 * 3_600_000)).toBe('2 h')
-    expect(age(72 * 3_600_000)).toBe('3 d')
-  })
-
   test('newlyBlocked names only the new questions', () => {
-    const s = { name: 'x', line: '', updatedAt: 0, since: 0 }
-    const old = { ...s, id: 'old', status: 'needs-input' as const }
-    const list = [
-      old,
-      { ...s, id: 'new', status: 'needs-input' as const },
-      { ...s, id: 'busy', status: 'working' as const },
-    ]
-    const before = [old, { ...s, id: 'new', status: 'working' as const }]
+    const old = row('old', 'needs-input')
+    const list = [old, row('new', 'needs-input'), row('busy', 'working')]
+    const before = [old, row('new', 'working')]
     expect(newlyBlocked(list, before).map(x => x.id)).toEqual(['new'])
   })
 

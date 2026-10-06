@@ -1,7 +1,7 @@
 // Pure helpers: turn a background job's state.json into one row of the
 // control room. No `$` here, so the tests can call these directly.
 
-import type { BgSession, BgStatus } from '../types'
+import type { BgPr, BgSession, BgStatus } from '../types'
 
 // Finished sessions older than this drop off the list.
 const KEEP_FINISHED_MS = 3 * 24 * 60 * 60 * 1000
@@ -12,17 +12,17 @@ type JobState = {
   name?: string
   detail?: string
   output?: { result?: string } | null
+  children?: { id?: string; href?: string; kind?: string }[]
   cwd?: string
   worktreePath?: string
   sessionId?: string
   updatedAt?: string
-  createdAt?: string
 }
 
 const ORDER: Record<BgStatus, number> = {
   'needs-input': 0,
   working: 1,
-  result: 2,
+  done: 2,
   failed: 3,
   stopped: 4,
 }
@@ -30,7 +30,7 @@ const ORDER: Record<BgStatus, number> = {
 export const LABEL: Record<BgStatus, string> = {
   'needs-input': 'needs input',
   working: 'working',
-  result: 'result',
+  done: 'done',
   failed: 'failed',
   stopped: 'stopped',
 }
@@ -38,10 +38,18 @@ export const LABEL: Record<BgStatus, string> = {
 function statusOf(job: JobState): BgStatus | undefined {
   if (job.state === 'blocked' || job.tempo === 'blocked') return 'needs-input'
   if (job.state === 'working' || job.state === 'running') return 'working'
-  if (job.state === 'done') return 'result'
+  if (job.state === 'done') return 'done'
   if (job.state === 'failed') return 'failed'
   if (job.state === 'stopped') return 'stopped'
   return undefined
+}
+
+function prsOf(job: JobState): BgPr[] {
+  return (job.children ?? []).flatMap(child =>
+    child.kind === 'pr' && child.id && child.href
+      ? [{ id: child.id, href: child.href }]
+      : [],
+  )
 }
 
 // True when `path` is `root` or a folder below it.
@@ -72,22 +80,16 @@ export function toSession(
   if (!isOurs) return undefined
   const status = statusOf(job)
   if (!status) return undefined
-  const result = job.output?.result
-  const line =
-    status === 'result' ? (result ?? job.detail ?? '')
-    : status === 'stopped' ? ''
-    : (job.detail ?? '')
-  const updatedAt = Date.parse(job.updatedAt ?? '') || 0
-  // A working session updates on each step, so its age counts from its start.
-  const since = status === 'working' ? Date.parse(job.createdAt ?? '') || updatedAt : updatedAt
+  // The description: what the session does now, or the result it gave.
+  const line = status === 'stopped' ? '' : (job.detail || job.output?.result || '')
 
   return {
     id,
     name: job.name || id,
     status,
+    prs: prsOf(job),
     line: line.replace(/\s+/g, ' ').trim(),
-    updatedAt,
-    since,
+    updatedAt: Date.parse(job.updatedAt ?? '') || 0,
   }
 }
 
@@ -100,15 +102,6 @@ export function sortSessions(list: readonly BgSession[]): BgSession[] {
   return [...list].sort(
     (a, b) => ORDER[a.status] - ORDER[b.status] || b.updatedAt - a.updatedAt,
   )
-}
-
-export function age(ms: number): string {
-  const minutes = Math.max(0, Math.floor(ms / 60000))
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes} min`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return `${hours} h`
-  return `${Math.floor(hours / 24)} d`
 }
 
 // The sessions that need input now and did not need input at the last check.
