@@ -1,4 +1,4 @@
-# clux-control-room
+# clux-sessions
 
 A Claude Code mod. It gives one pane for all the background sessions of the current repository.
 
@@ -31,21 +31,21 @@ The mod plays `sounds/needs-input.wav` with the first of `afplay` (macOS), `papl
 ## Install
 
 ```
-/plugin install clux-control-room --marketplace ai-advanced-futures/clux
+/plugin install clux-sessions --marketplace ai-advanced-futures/clux
 ```
 
 To run it from a working copy:
 
 ```
-$ claude --plugin-dir plugins/clux-control-room
+$ claude --plugin-dir plugins/clux-sessions
 ```
 
 ## Development
 
 ```
-$ claude plugin validate plugins/clux-control-room
-$ claude plugin test plugins/clux-control-room
-$ tsc -p plugins/clux-control-room
+$ claude plugin validate plugins/clux-sessions
+$ claude plugin test plugins/clux-sessions
+$ tsc -p plugins/clux-sessions
 ```
 
 `tsc` needs the types that Claude Code writes to `.claude-plugin/types/` when it loads the mod one time (for example with `--plugin-dir`).

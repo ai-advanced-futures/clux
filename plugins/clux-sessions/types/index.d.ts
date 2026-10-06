@@ -13,7 +13,7 @@ export type BgSession = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'clux-control-room': {
+    'clux-sessions': {
       sessions: BgSession[]
     }
   }

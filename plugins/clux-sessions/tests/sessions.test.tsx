@@ -60,7 +60,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     return { value: undefined }
   })
   on('ui.panes', () => ({
-    value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux-control-room' })),
+    value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux-sessions' })),
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -97,10 +97,10 @@ test('the pane lists name, status, PRs and description for this repository only'
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({
-    plugin: 'clux-control-room',
+    plugin: 'clux-sessions',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'control-room',
+    requestId: 'sessions',
     props: PANE_PROPS,
   })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
@@ -128,10 +128,10 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
   )
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({
-    plugin: 'clux-control-room',
+    plugin: 'clux-sessions',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'control-room',
+    requestId: 'sessions',
     props: PANE_PROPS,
   })
   await ui.press({ key: 'open-ask1' })
@@ -181,15 +181,15 @@ test('/sessions opens the pane, and /sessions again closes it', async ($, on) =>
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   expect((await runSessions($)).text).toContain('opened')
-  expect(panes.has('control-room')).toBe(true)
+  expect(panes.has('sessions')).toBe(true)
   expect((await runSessions($)).text).toContain('closed')
-  expect(panes.has('control-room')).toBe(false)
+  expect(panes.has('sessions')).toBe(false)
 
   await runSessions($, 'on')
   await runSessions($, 'on')
-  expect(panes.has('control-room')).toBe(true)
+  expect(panes.has('sessions')).toBe(true)
   await runSessions($, 'off')
-  expect(panes.has('control-room')).toBe(false)
+  expect(panes.has('sessions')).toBe(false)
 })
 
 test('a question found when /sessions opens still alerts', async ($, on) => {
@@ -228,7 +228,7 @@ test('the band counts the sessions and stays when none is live', async ($, on) =
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   const band = {
-    plugin: 'clux-control-room',
+    plugin: 'clux-sessions',
     surface: 'terminal' as const,
     component: 'AbovePrompt' as const,
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
@@ -236,7 +236,7 @@ test('the band counts the sessions and stays when none is live', async ($, on) =
   const ui = await $.ui.mount(band)
   const line = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' ')
   expect(line).toContain('1 needs input · 1 working')
-  expect((await ui.find({ key: 'open-room' }))?.props.action).toBe('app:cycleDiffBase')
+  expect((await ui.find({ key: 'open-sessions' }))?.props.action).toBe('app:cycleDiffBase')
   await ui.unmount()
 
   jobs.ask1 = state({ name: 'a', state: 'done', output: { result: 'ok' } })
@@ -246,11 +246,11 @@ test('the band counts the sessions and stays when none is live', async ($, on) =
   const quiet = await $.ui.mount(band)
   const quietLine = (await quiet.findAll({ type: 'Text' })).map(t => t.text).join(' ')
   expect(quietLine).toContain('none live')
-  expect(await quiet.find({ key: 'open-room' })).toBeDefined()
+  expect(await quiet.find({ key: 'open-sessions' })).toBeDefined()
   await quiet.unmount()
 
   const survey = await $.ui.mount({ ...band, props: { ...band.props, hasSurvey: true } })
-  expect(await survey.find({ key: 'open-room' })).toBeUndefined()
+  expect(await survey.find({ key: 'open-sessions' })).toBeUndefined()
   expect(await survey.find({ key: 'engine-band' })).toBeDefined()
   await survey.unmount()
 })
@@ -260,14 +260,14 @@ test('the chord closes an open pane through its Hide button', async ($, on) => {
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await runSessions($)
   const ui = await $.ui.mount({
-    plugin: 'clux-control-room',
+    plugin: 'clux-sessions',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'control-room',
+    requestId: 'sessions',
     props: PANE_PROPS,
   })
-  expect((await ui.find({ key: 'close-room' }))?.props.action).toBe('app:cycleDiffBase')
-  await ui.press({ key: 'close-room' })
-  expect(panes.has('control-room')).toBe(false)
+  expect((await ui.find({ key: 'close-sessions' }))?.props.action).toBe('app:cycleDiffBase')
+  await ui.press({ key: 'close-sessions' })
+  expect(panes.has('sessions')).toBe(false)
   await ui.unmount()
 })

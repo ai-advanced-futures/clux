@@ -1,5 +1,5 @@
 // Pure helpers: turn a background job's state.json into one row of the
-// control room. No `$` here, so the tests can call these directly.
+// sessions pane. No `$` here, so the tests can call these directly.
 
 import type { BgPr, BgSession, BgStatus } from '../types'
 

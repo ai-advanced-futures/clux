@@ -16,9 +16,9 @@
       "strict": false
     },
     {
-      "name": "clux-control-room",
-      "description": "Background session control room — one pane that shows which session works, which needs you, and the last result",
-      "source": "./plugins/clux-control-room"
+      "name": "clux-sessions",
+      "description": "Background sessions: one pane that shows the name, status, PRs and description of each background session of this repository. /sessions or ctrl+x b toggles it; select a row to open that session. Plays a sound when a session needs input.",
+      "source": "./plugins/clux-sessions"
     }
   ]
 }

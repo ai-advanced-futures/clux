@@ -11,7 +11,7 @@ import {
   worktreePaths,
 } from './jobs'
 
-const PANE = 'control-room'
+const PANE = 'sessions'
 const COMMAND = 'sessions'
 // The chord that toggles the pane, also with a draft in the composer. No
 // engine action runs a plugin command, so the mod borrows this one: its
@@ -25,7 +25,7 @@ const SOUND = 'sounds/needs-input.wav'
 // afplay on macOS; on Linux Claude Code has no player, so try clux's.
 const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
 
-const sessions = atom({ plugin: 'clux-control-room', key: 'sessions' } as const, [])
+const sessions = atom({ plugin: 'clux-sessions', key: 'sessions' } as const, [])
 
 const COLOR: Record<BgStatus, string> = {
   'needs-input': 'warning',
@@ -162,7 +162,7 @@ async function tick($: EngineInterface, isQuiet = false) {
     if (loop.polls % ROOTS_EVERY === 0) scope.roots = await repoRoots($)
     await poll($, scope, isQuiet)
   } catch (error) {
-    $.ui.log(`clux-control-room: poll failed: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`clux-sessions: poll failed: ${String(error)}`, { to: 'debug' })
   } finally {
     loop.isPolling = false
   }
@@ -178,7 +178,7 @@ export const register: Register = on => {
         argumentHint: '[on|off]',
       })
       .catch(error => {
-        $.ui.log(`clux-control-room: /${COMMAND} not registered: ${String(error)}`, { to: 'debug' })
+        $.ui.log(`clux-sessions: /${COMMAND} not registered: ${String(error)}`, { to: 'debug' })
       })
     try {
       loop.scope = {
@@ -191,7 +191,7 @@ export const register: Register = on => {
       loop.timer?.cancel()
       loop.timer = $.clock.every(POLL_MS, () => void tick($))
     } catch (error) {
-      $.ui.log(`clux-control-room: start failed: ${String(error)}`, { to: 'debug' })
+      $.ui.log(`clux-sessions: start failed: ${String(error)}`, { to: 'debug' })
     }
 
     return next(e)
@@ -223,7 +223,7 @@ export const register: Register = on => {
           <Text bold>{TITLE} · {list.length} </Text>
           {/* Over the band's Show: the chord closes an open pane. */}
           <Button
-            key="close-room"
+            key="close-sessions"
             label="Hide"
             action={TOGGLE_ACTION}
             onPress={() => $.ui.close({ id: PANE })}
@@ -277,7 +277,7 @@ export const register: Register = on => {
           {TITLE}: {parts.join(' · ')}{' '}
         </Text>
         <Button
-          key="open-room"
+          key="open-sessions"
           label="Show"
           action={TOGGLE_ACTION}
           onPress={() => openPane($, true)}
