@@ -104,7 +104,9 @@ test('the pane lists name, status, PRs and description for this repository only'
     props: PANE_PROPS,
   })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
-  const names = (await ui.findAll({ type: 'Button' })).map(b => String(b.props.label).trim())
+  const names = (await ui.findAll({ type: 'Button' }))
+    .filter(b => b.props.plain)
+    .map(b => String(b.props.label).trim())
   expect(texts).toContain('Background sessions · 4')
   expect(names).toEqual(['tenant-registry-p1', 'ce-db-roster', 'outside-wt', 'mods-research'])
   expect(texts).toContain('needs input')
@@ -217,7 +219,7 @@ test('a start that runs twice keeps one timer', async ($, on) => {
   expect(lists.count - before).toBe(1)
 })
 
-test('the band counts the sessions and hides when none is live', async ($, on) => {
+test('the band counts the sessions and stays when none is live', async ($, on) => {
   const jobs: Record<string, string> = {
     ask1: state({ name: 'a', state: 'blocked', detail: 'q' }),
     run1: state({ name: 'b', state: 'working' }),
@@ -234,6 +236,7 @@ test('the band counts the sessions and hides when none is live', async ($, on) =
   const ui = await $.ui.mount(band)
   const line = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' ')
   expect(line).toContain('1 needs input · 1 working')
+  expect((await ui.find({ key: 'open-room' }))?.props.action).toBe('app:cycleDiffBase')
   await ui.unmount()
 
   jobs.ask1 = state({ name: 'a', state: 'done', output: { result: 'ok' } })
@@ -241,7 +244,30 @@ test('the band counts the sessions and hides when none is live', async ($, on) =
   await clock.advance(5000)
   await clock.settle()
   const quiet = await $.ui.mount(band)
-  expect(await quiet.find({ key: 'open-room' })).toBeUndefined()
-  expect(await quiet.find({ key: 'engine-band' })).toBeDefined()
+  const quietLine = (await quiet.findAll({ type: 'Text' })).map(t => t.text).join(' ')
+  expect(quietLine).toContain('none live')
+  expect(await quiet.find({ key: 'open-room' })).toBeDefined()
   await quiet.unmount()
+
+  const survey = await $.ui.mount({ ...band, props: { ...band.props, hasSurvey: true } })
+  expect(await survey.find({ key: 'open-room' })).toBeUndefined()
+  expect(await survey.find({ key: 'engine-band' })).toBeDefined()
+  await survey.unmount()
+})
+
+test('the chord closes an open pane through its Hide button', async ($, on) => {
+  const { panes } = world(on, {})
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await runSessions($)
+  const ui = await $.ui.mount({
+    plugin: 'clux-control-room',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'control-room',
+    props: PANE_PROPS,
+  })
+  expect((await ui.find({ key: 'close-room' }))?.props.action).toBe('app:cycleDiffBase')
+  await ui.press({ key: 'close-room' })
+  expect(panes.has('control-room')).toBe(false)
+  await ui.unmount()
 })

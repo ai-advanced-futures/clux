@@ -13,6 +13,10 @@ import {
 
 const PANE = 'control-room'
 const COMMAND = 'sessions'
+// The chord that toggles the pane, also with a draft in the composer. No
+// engine action runs a plugin command, so the mod borrows this one: its
+// engine handler is mounted only in the diff panel, where it keeps its job.
+const TOGGLE_ACTION = 'app:cycleDiffBase'
 const TITLE = 'Background sessions'
 const POLL_MS = 5000
 // Read the worktree list again after this many polls (one minute).
@@ -215,7 +219,16 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Text bold>{TITLE} · {list.length}</Text>
+        <Box>
+          <Text bold>{TITLE} · {list.length} </Text>
+          {/* Over the band's Show: the chord closes an open pane. */}
+          <Button
+            key="close-room"
+            label="Hide"
+            action={TOGGLE_ACTION}
+            onPress={() => $.ui.close({ id: PANE })}
+          />
+        </Box>
         {list.length === 0 && (
           <Text dimColor>No background sessions for this repository.</Text>
         )}
@@ -244,23 +257,31 @@ export const register: Register = on => {
     )
   })
 
+  // The band shows also when nothing is live, so the chord always has its
+  // Show button to press.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
     const list = await read($, sessions)
     const { needs, working } = counts(list)
-    if (e.props.hasSurvey || needs + working === 0) return next(e)
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const parts = [
       needs > 0 ? `${needs} needs input` : '',
       working > 0 ? `${working} working` : '',
     ].filter(Boolean)
+    if (parts.length === 0) parts.push('none live')
 
     return (
       <Box>
         <Text color={needs > 0 ? 'warning' : 'subtle'}>
           {TITLE}: {parts.join(' · ')}{' '}
         </Text>
-        <Button key="open-room" label="Show" onPress={() => openPane($, true)} />
+        <Button
+          key="open-room"
+          label="Show"
+          action={TOGGLE_ACTION}
+          onPress={() => openPane($, true)}
+        />
       </Box>
     )
   })
