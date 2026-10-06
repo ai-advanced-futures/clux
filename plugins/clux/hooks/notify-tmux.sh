@@ -176,10 +176,18 @@ _agent_handle_event() {
         failure|quota|teammate) TEXT="$LABEL — $MSG" ;;
         *)                      TEXT="$LABEL" ;;
     esac
+    # "|||" splits the bar text from the routing data, so the text must
+    # never hold it. A window name or a message can, so squeeze each run of
+    # "|" to one.
+    TEXT=$(printf '%s' "$TEXT" | tr -s '|')
 
     # Desktop ping — osascript first, terminal-notifier fallback, else skip silently
     if command -v osascript &>/dev/null; then
-        osascript -e "display notification \"$MSG\" with title \"$LABEL\"" >/dev/null 2>&1 || true
+        # The text goes in as argv, never into the script source: a window
+        # name with a quote must not end the AppleScript string.
+        osascript -e 'on run argv' \
+                  -e 'display notification (item 1 of argv) with title (item 2 of argv)' \
+                  -e 'end run' "$MSG" "$LABEL" >/dev/null 2>&1 || true
     elif command -v terminal-notifier &>/dev/null; then
         terminal-notifier -message "$MSG" -title "$LABEL" >/dev/null 2>&1 || true
     fi
@@ -200,7 +208,11 @@ _agent_handle_event() {
     # Emit terminalSequence JSON on stdout (ONLY stdout output for agent path)
     # Escape sequences are in the FORMAT STRING; the label is the %s arg.
     # Decoded value: BEL ESC ]9;<label> BEL
-    printf '{"terminalSequence":"\\u0007\\u001b]9;%s\\u0007"}\n' "$LABEL"
+    # The label is JSON-escaped: _sanitize already removed control
+    # characters, so only backslash and double quote are left to escape.
+    local JLABEL="${LABEL//\\/\\\\}"
+    JLABEL="${JLABEL//\"/\\\"}"
+    printf '{"terminalSequence":"\\u0007\\u001b]9;%s\\u0007"}\n' "$JLABEL"
     return 0
 }
 
