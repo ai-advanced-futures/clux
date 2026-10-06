@@ -35,10 +35,18 @@ _stage() {
     # path.sh. Both resolve through $CURRENT_DIR, so both belong beside the
     # staged copy — without them the styles come out empty and every run
     # prints "get_tmux_option: command not found" into the popup.
-    cp "$SCRIPTS_DIR/helpers.sh" "$SCRIPTS_DIR/path.sh" "$STAGE/"
+    cp "$SCRIPTS_DIR/helpers.sh" "$SCRIPTS_DIR/path.sh" "$SCRIPTS_DIR/workspace-history.sh" "$STAGE/"
     cat > "$STAGE/new-workspace.sh" <<'STUB'
 #!/usr/bin/env bash
 # Records what the prompt handed over, then exits so the popup would close.
+# --resolve answers with a fixed form, so a test can see the answer was used.
+case "$1" in
+    --resolve) printf '/resolved/%s\n' "$2"; exit 0 ;;
+    --restore)
+        printf 'RESTORE=%s %s\n' "$(tmux show-option -gqv @clux-new-workspace-name)" "$2" >> "$RECORD"
+        exit 0
+        ;;
+esac
 printf 'FOLDER=%s\n' "$1" >> "$RECORD"
 printf 'NAME=%s\n' "$(tmux show-option -gqv @clux-new-workspace-name)" >> "$RECORD"
 STUB
@@ -49,6 +57,10 @@ STUB
     # by the script stopping rather than guessed at from what is on screen.
     DONE="$BATS_TEST_TMPDIR/done"
     rm -f "$DONE"
+    # The saved list of this test only. The throwaway tmux server starts from
+    # this environment, so its panes read this list and never the user's.
+    export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+    rm -rf "$XDG_STATE_HOME"
 }
 
 # Run the staged prompt in a real pane on a throwaway server, type $@ as
@@ -329,4 +341,218 @@ _assert_cancelled() {
         || { echo "the reject path never finished drawing:"; echo "$screen"; false; }
     [[ "$screen" == *"New workspace"* ]] \
         || { echo "the reason scrolled the header off the popup:"; echo "$screen"; false; }
+}
+
+# --- The saved workspaces list ---------------------------------------------
+#
+# The popup opens on the list when workspace-history.sh holds a workspace.
+# Each test saves its rows, starts the popup in a pane the size of the popup
+# inside its border (60x13), and types single keys into it.
+
+HIST="$SCRIPTS_DIR/workspace-history.sh"
+
+# _start_list — start the staged popup in a session named "live1", so a row
+# named live1 is a live session.
+_start_list() {
+    LSOCK="clux-list-$$-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$LSOCK" -f /dev/null new-session -d -s live1 -x 60 -y 13 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
+    _wait_for_screen "$LSOCK" "Workspaces" >/dev/null \
+        || { echo "the list never drew:"; "$REAL_TMUX" -L "$LSOCK" capture-pane -p; return 1; }
+}
+
+# _keys K... — send each tmux key name, one at a time, with time to redraw.
+_keys() {
+    local k
+    for k in "$@"; do
+        "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' "$k"
+        sleep 0.3
+    done
+}
+
+# _end_list — wait for the popup script to end (or 2 s), keep the last
+# screen in SCREEN, and stop the server.
+_end_list() {
+    local tries=20
+    while [ "$tries" -gt 0 ] && [ ! -e "$DONE" ]; do sleep 0.1; tries=$((tries - 1)); done
+    SCREEN="$("$REAL_TMUX" -L "$LSOCK" capture-pane -p 2>/dev/null)"
+    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
+}
+
+@test "workspace list: draws each saved row, newest first, and marks a live session" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add gone "$BATS_TEST_TMPDIR/b"
+    "$HIST" add live1 "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _end_list
+    [[ "$SCREEN" == *"1 live1"* ]] || { echo "$SCREEN"; false; }
+    [[ "$SCREEN" == *"2 gone"* ]] || { echo "$SCREEN"; false; }
+    local live_line; live_line="$(printf '%s\n' "$SCREEN" | grep 'live1')"
+    [[ "$live_line" == *"●"* ]] || { echo "no live mark: $live_line"; false; }
+    local gone_line; gone_line="$(printf '%s\n' "$SCREEN" | grep 'gone')"
+    [[ "$gone_line" != *"●"* ]] || { echo "a gone session is marked live: $gone_line"; false; }
+}
+
+@test "workspace list: a number opens that row at once" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys 2
+    _end_list
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/b" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "workspace list: j moves down, k moves up, and Enter opens the selected row" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b" "$BATS_TEST_TMPDIR/c"
+    "$HIST" add three "$BATS_TEST_TMPDIR/c"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys j j k Enter
+    _end_list
+    grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+}
+
+@test "workspace list: Space sets the folder of the row and opens nothing" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys Space
+    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "elsewhere"
+    _keys Enter
+    _wait_for_screen "$LSOCK" "folder set" >/dev/null || { "$REAL_TMUX" -L "$LSOCK" capture-pane -p; false; }
+    _keys q
+    _end_list
+    [ ! -s "$RECORD" ] || { echo "Space opened the row: $(cat "$RECORD")"; false; }
+    run "$HIST" list
+    [ "$output" = $'one\t/resolved/elsewhere' ] || { echo "list: $output"; false; }
+}
+
+@test "workspace list: x deletes the selected row" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys x q
+    _end_list
+    [ ! -s "$RECORD" ] || { echo "x opened a row: $(cat "$RECORD")"; false; }
+    run "$HIST" list
+    [ "$output" = "two"$'\t'"$BATS_TEST_TMPDIR/b" ] || { echo "list: $output"; false; }
+}
+
+@test "workspace list: a then y opens each saved workspace that is not live and has its folder" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b" "$BATS_TEST_TMPDIR/c"
+    "$HIST" add g2 "$BATS_TEST_TMPDIR/c"
+    "$HIST" add missing "$BATS_TEST_TMPDIR/no-such-folder"
+    "$HIST" add g1 "$BATS_TEST_TMPDIR/b"
+    "$HIST" add live1 "$BATS_TEST_TMPDIR/a"
+    local before; before="$("$HIST" list)"
+    _start_list || false
+    _keys a
+    _wait_for_screen "$LSOCK" "open 2 workspaces? y/n" >/dev/null || { "$REAL_TMUX" -L "$LSOCK" capture-pane -p; false; }
+    _keys y
+    _end_list
+    [ "$(grep -c '^RESTORE=' "$RECORD")" -eq 2 ] || { echo "record: $(cat "$RECORD")"; false; }
+    grep -qxF "RESTORE=g1 $BATS_TEST_TMPDIR/b" "$RECORD" || { cat "$RECORD"; false; }
+    grep -qxF "RESTORE=g2 $BATS_TEST_TMPDIR/c" "$RECORD" || { cat "$RECORD"; false; }
+    [ "$("$HIST" list)" = "$before" ] || { echo "open all changed the list"; false; }
+}
+
+@test "workspace list: a then n opens nothing" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/b"
+    "$HIST" add g1 "$BATS_TEST_TMPDIR/b"
+    _start_list || false
+    _keys a
+    _wait_for_screen "$LSOCK" "y/n" >/dev/null || false
+    _keys n q
+    _end_list
+    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "workspace list: n goes to the name prompt" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys n
+    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "fresh"
+    _keys Enter Enter
+    _end_list
+    grep -qxF 'NAME=fresh' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'FOLDER=fresh' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "workspace list: a letter that is not a key starts the name with that letter" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys w
+    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "ork"
+    _keys Enter Enter
+    _end_list
+    grep -qxF 'NAME=work' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+}
+
+@test "workspace list: a row whose folder is gone says so and opens nothing" {
+    _stage
+    "$HIST" add old "$BATS_TEST_TMPDIR/no-such-folder"
+    _start_list || false
+    _keys 1
+    local screen; screen="$(_wait_for_screen "$LSOCK" "folder is gone")" || true
+    _keys q
+    _end_list
+    [[ "$screen" == *"folder is gone"* ]] || { echo "$screen"; false; }
+    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "workspace list: a renamed workspace switches to the live session and the row takes its name" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/r"
+    "$HIST" add old "$BATS_TEST_TMPDIR/r"
+    _start_list || false
+    "$REAL_TMUX" -L "$LSOCK" new-session -d -s renamed -c "$BATS_TEST_TMPDIR/r"
+    _keys 1
+    _end_list
+    [ ! -s "$RECORD" ] || { echo "it built a new workspace: $(cat "$RECORD")"; false; }
+    run "$HIST" list
+    [ "$output" = "renamed"$'\t'"$BATS_TEST_TMPDIR/r" ] || { echo "list: $output"; echo "$SCREEN"; false; }
+}
+
+@test "workspace list: Esc cancels the list" {
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_list || false
+    _keys Escape
+    local cancelled=0
+    _assert_cancelled "$LSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "workspace list: a popup from an old config (60x5) keeps the header and the selected row" {
+    _stage
+    local i
+    for i in 1 2 3 4 5; do mkdir -p "$BATS_TEST_TMPDIR/d$i"; "$HIST" add "w$i" "$BATS_TEST_TMPDIR/d$i"; done
+    LSOCK="clux-list-$$-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$LSOCK" -f /dev/null new-session -d -s live1 -x 60 -y 5 \
+        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
+    _wait_for_screen "$LSOCK" "Workspaces" >/dev/null || false
+    _keys j j j
+    _end_list
+    [[ "$SCREEN" == *"Workspaces"* ]] || { echo "the header scrolled away:"; echo "$SCREEN"; false; }
+    [[ "$SCREEN" == *"▸ 4 w2"* ]] || { echo "the selected row is not on the screen:"; echo "$SCREEN"; false; }
 }

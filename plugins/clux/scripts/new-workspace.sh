@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Builds the clux workspace: window "---" at index 0 running the editor,
-# window named like the session at index 1 running the agents dashboard, both names pinned
+# window "<session>-claude" at index 1 running the agents dashboard, both names pinned
 # with automatic-rename off. That layout is the one default shape and does
 # not change (see docs/superpowers/specs/2026-08-16-clux-session-surface-design.md).
 #
@@ -20,7 +20,15 @@
 #   - the script derives its own socket from $TMUX so it also runs detached —
 #     from a plain shell, or under bats.
 #
-# Usage: new-workspace.sh <folder-name>
+# Usage: new-workspace.sh [--restore | --resolve] <folder-name>
+#   (no flag)  build or switch to the workspace, switch the client to it, and
+#              save it on top of the prefix + A list (workspace-history.sh)
+#   --restore  build the workspace, but do not switch the client and do not
+#              change the list. "Open all" in the prefix + A list uses it, so
+#              the list keeps its order after a restore
+#   --resolve  print the absolute folder <folder-name> resolves to, and build
+#              nothing. Space in the prefix + A list uses it to set a folder
+#              with the same rules a new workspace uses
 # The workspace (session) name is NOT an argument here — it is read back from
 # the transient @clux-new-workspace-name option (written by
 # new-workspace-prompt.sh) and unset immediately, before any other work, so a
@@ -31,7 +39,13 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/helpers.sh"
 
-FOLDER_NAME="$1"
+MODE=open
+case "${1:-}" in
+    --restore) MODE=restore; shift ;;
+    --resolve) MODE=resolve; shift ;;
+esac
+FOLDER_NAME="${1:-}"
+HISTORY="$CURRENT_DIR/workspace-history.sh"
 
 # Socket derivation: -S "${TMUX%%,*}" when $TMUX is set, plain "tmux"
 # (default socket) otherwise. Every tmux call below goes through this one
@@ -43,28 +57,44 @@ else
     _tmux() { tmux "$@"; }
 fi
 
-SESSION_NAME=$(_tmux show-option -gqv "@clux-new-workspace-name" 2>/dev/null)
-_tmux set-option -gu "@clux-new-workspace-name" 2>/dev/null
+# A plain path, with no "." or ".." parts, so the list shows one form of a
+# folder and the same folder never gets two lines.
+_clux_abs_dir() {
+    (cd "$1" 2>/dev/null && pwd)
+}
 
-if [ -z "$SESSION_NAME" ]; then
-    exit 0
-fi
+if [ "$MODE" = resolve ]; then
+    [ -n "$FOLDER_NAME" ] || exit 1
+    SESSION_NAME=""
+else
+    SESSION_NAME=$(_tmux show-option -gqv "@clux-new-workspace-name" 2>/dev/null)
+    _tmux set-option -gu "@clux-new-workspace-name" 2>/dev/null
 
-# Default folder name to the session name.
-if [ -z "$FOLDER_NAME" ]; then
-    FOLDER_NAME="$SESSION_NAME"
-fi
-
-# Exact match ("=name") — "has-session -t foo" without the "=" also matches
-# "foobar", a live bug in the original. On a hit, land on the existing
-# session instead of failing.
-if _tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
-    if [ -n "${TMUX:-}" ]; then
-        _tmux switch-client -t "$SESSION_NAME"
-    else
-        printf '%s\n' "$SESSION_NAME"
+    if [ -z "$SESSION_NAME" ]; then
+        exit 0
     fi
-    exit 0
+
+    # Default folder name to the session name.
+    if [ -z "$FOLDER_NAME" ]; then
+        FOLDER_NAME="$SESSION_NAME"
+    fi
+
+    # Exact match ("=name") — "has-session -t foo" without the "=" also matches
+    # "foobar", a live bug in the original. On a hit, land on the existing
+    # session instead of failing.
+    if _tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
+        [ "$MODE" = restore ] && exit 0
+        # Save it too: the user asked for this workspace again, so it goes on
+        # top of the list. Its folder is the one the session started in.
+        live_dir=$(_tmux display-message -p -t "=$SESSION_NAME:" '#{session_path}' 2>/dev/null)
+        [ -n "$live_dir" ] && "$HISTORY" add "$SESSION_NAME" "$live_dir" 2>/dev/null
+        if [ -n "${TMUX:-}" ]; then
+            _tmux switch-client -t "=$SESSION_NAME"
+        else
+            printf '%s\n' "$SESSION_NAME"
+        fi
+        exit 0
+    fi
 fi
 
 _clux_expand_tilde() {
@@ -140,6 +170,12 @@ if [ -z "$PROJECT_DIR" ]; then
     _tmux display-message "clux: no directory for '$FOLDER_NAME'" 2>/dev/null
     exit 1
 fi
+PROJECT_DIR=$(_clux_abs_dir "$PROJECT_DIR") || exit 1
+
+if [ "$MODE" = resolve ]; then
+    printf '%s\n' "$PROJECT_DIR"
+    exit 0
+fi
 
 # @clux-editor: value as configured; when unset entirely, the run-time ladder
 # is nvim, then vim, then the "none" sentinel. $EDITOR is a SETUP-time-only
@@ -206,8 +242,9 @@ if [ "$BASE_INDEX" -gt 0 ] 2>/dev/null; then
     _tmux move-window -s "$WIN_ID_EDITOR" -t "${SESSION_NAME}:0"
 fi
 
-# Create the agents window, named like the session (next available index after the editor window).
-WIN_ID_CLAUDE=$(_tmux new-window -t "$SESSION_NAME" -n "$SESSION_NAME" -c "$PROJECT_DIR" \
+# Create the agents window, named "<session>-claude" (next available index
+# after the editor window), so the bar tells it from the "---" editor window.
+WIN_ID_CLAUDE=$(_tmux new-window -t "$SESSION_NAME" -n "${SESSION_NAME}-claude" -c "$PROJECT_DIR" \
     -P -F '#{window_id}')
 # Same empty-target trap as above, and this one is reachable even on a session
 # tmux DID create: a name holding a ":" makes "-t <name>" parse as
@@ -224,6 +261,10 @@ fi
 
 # Select the editor window.
 _tmux select-window -t "$WIN_ID_EDITOR"
+
+[ "$MODE" = restore ] && exit 0
+
+"$HISTORY" add "$SESSION_NAME" "$PROJECT_DIR" 2>/dev/null
 
 # Switch to the new session when there is a client to switch; otherwise print
 # the name and let the caller (a plain shell, or bats) decide what to do.

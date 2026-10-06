@@ -117,13 +117,267 @@ _clux_cancelled_line() {
     esac
 }
 
+# --- The saved workspaces ------------------------------------------------
+#
+# When workspace-history.sh holds a workspace, the popup opens on that list,
+# newest first, before it asks for a name:
+#
+#   1-9      open that row now          j / k    move down / up
+#   Enter    open the selected row      Space    set the folder of the row
+#   x        delete the row             a        open all saved workspaces
+#   n        type a new workspace       q        cancel (Esc and Ctrl-C too)
+#
+# Any other letter or digit starts a new workspace with that character as the
+# first character of the name, so a user who types a name at once still can.
+# Backspace cannot remove that character (bash 3.2 has no `read -i`); Esc and
+# a new start can.
+#
+# To open a row is to hand its name and folder to new-workspace.sh, the same
+# path a typed name takes: a live session gets a switch, a gone one is built
+# again in its saved folder. A row whose session is gone, while a live session
+# that is NOT in the list has the same folder, is a renamed workspace (prefix +
+# $): the client switches to that session, and the row takes its name.
+#
+# Keys are read one at a time with `IFS= read -rsn1 -d ''`. Each part counts:
+# without IFS= and -d '', Enter AND Space both read as an empty string, so
+# Space would open the row. Esc stays the interrupt character set above, so
+# Esc and every arrow key (which starts with Esc) cancel here as well.
+
+HISTORY="$CURRENT_DIR/workspace-history.sh"
+NL=$'\n'
+PRESET=""
+WS_MSG=""
+WS_SEL=0
+WS_TOP=0
+
+_ws_load() {
+    WS_NAMES=()
+    WS_DIRS=()
+    local n d
+    while IFS=$'\t' read -r n d; do
+        [ -n "$n" ] || continue
+        WS_NAMES+=("$n")
+        WS_DIRS+=("$d")
+    done < <("$HISTORY" list 2>/dev/null)
+    WS_COUNT=${#WS_NAMES[@]}
+    [ "$WS_SEL" -lt "$WS_COUNT" ] || WS_SEL=$((WS_COUNT - 1))
+    [ "$WS_SEL" -ge 0 ] || WS_SEL=0
+    _ws_read_live
+}
+
+# Name and folder of each live session. Read at each load and again when a
+# row opens, so a session made or closed while the popup is open counts.
+_ws_read_live() {
+    WS_LIVE="$NL$(tmux list-sessions -F '#{session_name}' 2>/dev/null)$NL"
+    WS_LIVE_PATHS="$(tmux list-sessions -F "#{session_path}"$'\t'"#{session_name}" 2>/dev/null)"
+}
+
+_ws_is_live() {
+    case "$WS_LIVE" in *"$NL$1$NL"*) return 0 ;; esac
+    return 1
+}
+
+_ws_in_list() {
+    local n
+    for n in "${WS_NAMES[@]}"; do [ "$n" = "$1" ] && return 0; done
+    return 1
+}
+
+# _ws_short PATH WIDTH — ~ for the home folder, cut from the left to WIDTH.
+_ws_short() {
+    local p="$1" w="$2"
+    case "$p" in
+        "$HOME") p="~" ;;
+        "$HOME"/*) p="~/${p#"$HOME"/}" ;;
+    esac
+    if [ "${#p}" -gt "$w" ]; then
+        p="…${p:$((${#p} - w + 1))}"
+    fi
+    printf '%s' "$p"
+}
+
+# _ws_pad TEXT WIDTH — cut or pad TEXT to WIDTH characters (not bytes, so a
+# name with a non-ASCII letter keeps the columns straight).
+_ws_pad() {
+    local t="$1" w="$2"
+    if [ "${#t}" -gt "$w" ]; then
+        t="${t:0:$((w - 1))}…"
+    fi
+    while [ "${#t}" -lt "$w" ]; do t="$t "; done
+    printf '%s' "$t"
+}
+
+_ws_draw() {
+    local rows cols vis i n d mark state path_w size
+    size="$(stty size 2>/dev/null)"
+    rows="${size% *}"
+    cols="${size#* }"
+    case "$rows" in ''|*[!0-9]*) rows=13 ;; esac
+    case "$cols" in ''|*[!0-9]*) cols=60 ;; esac
+    # Header, blank, message, keys: the rows that stay are for the list. A
+    # popup from a clux.tmux.conf before 4.3.0 is 5 rows high, so this can be
+    # 1, and the list scrolls to keep the selected row on the screen.
+    vis=$((rows - 4))
+    [ "$vis" -ge 1 ] || vis=1
+    [ "$WS_SEL" -ge "$WS_TOP" ] || WS_TOP=$WS_SEL
+    [ "$WS_SEL" -lt $((WS_TOP + vis)) ] || WS_TOP=$((WS_SEL - vis + 1))
+    path_w=$((cols - 24))
+    [ "$path_w" -ge 10 ] || path_w=10
+
+    printf '\033[H\033[2J'
+    printf '%s Workspaces %s %s%s%s %srecent%s %s%s%s   %s1-9 · j/k · esc%s\n' \
+        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
+        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
+    printf '\n'
+    i=$WS_TOP
+    while [ "$i" -lt "$WS_COUNT" ] && [ "$i" -lt $((WS_TOP + vis)) ]; do
+        n="${WS_NAMES[$i]}"
+        d="${WS_DIRS[$i]}"
+        mark=" "
+        [ "$i" -eq "$WS_SEL" ] && mark="${MARK}▸${RESET}"
+        if _ws_is_live "$n"; then
+            state="${MARK}●${RESET}"
+        elif [ ! -d "$d" ]; then
+            state="${BAD}✗${RESET}"
+        else
+            state=" "
+        fi
+        printf '%s %s%d%s %s %s%s%s %s\n' "$mark" "$DIM" $((i + 1)) "$RESET" \
+            "$(_ws_pad "$n" 16)" "$DIM" "$(_ws_pad "$(_ws_short "$d" "$path_w")" "$path_w")" "$RESET" "$state"
+        i=$((i + 1))
+    done
+    printf '%s\n' "$WS_MSG"
+    printf '%s⏎ open · ␣ folder · x delete · a open all · n new%s' "$DIM" "$RESET"
+}
+
+# _ws_open — open the selected row. Returns only when the row cannot open.
+_ws_open() {
+    local n="${WS_NAMES[$WS_SEL]}" d="${WS_DIRS[$WS_SEL]}" p other
+    _ws_read_live
+    if ! _ws_is_live "$n"; then
+        # A renamed workspace: a live session that the list does not know,
+        # with the folder of this row.
+        while IFS=$'\t' read -r p other; do
+            if [ "$p" = "$d" ] && [ -n "$other" ] && ! _ws_in_list "$other"; then
+                "$HISTORY" remove "$n"
+                "$HISTORY" add "$other" "$d"
+                tmux switch-client -t "=$other"
+                exit 0
+            fi
+        done <<EOF
+$WS_LIVE_PATHS
+EOF
+        if [ ! -d "$d" ]; then
+            WS_MSG="  ${BAD}!${RESET} the folder is gone: press space to set one"
+            return 1
+        fi
+    fi
+    tmux set-option -g "@clux-new-workspace-name" "$n"
+    _clux_term_restore
+    exec "$CURRENT_DIR/new-workspace.sh" "$d"
+}
+
+# _ws_set_folder — Space: ask for a folder, resolve it the way a new
+# workspace does (new-workspace.sh --resolve), and save it on the row.
+_ws_set_folder() {
+    local n="${WS_NAMES[$WS_SEL]}" answer dir
+    printf '\033[H\033[2J'
+    printf '%s Folder %s %s%s%s %s%s%s %s%s%s   %s⏎ save · esc cancel%s\n\n' \
+        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$n" "$RESET" \
+        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
+    printf '  %snow%s     %s\n' "$DIM" "$RESET" "$(_ws_short "${WS_DIRS[$WS_SEL]}" 48)"
+    printf '  %s▸%s folder  ' "$MARK" "$RESET"
+    IFS= read -r answer || exit 0
+    if [ -z "$answer" ] || _clux_cancelled_line "$answer"; then
+        return 0
+    fi
+    if dir="$("$CURRENT_DIR/new-workspace.sh" --resolve "$answer" 2>/dev/null)" && [ -n "$dir" ]; then
+        "$HISTORY" set-dir "$n" "$dir"
+        WS_MSG="  folder set"
+        _ws_is_live "$n" && WS_MSG="  folder set: the live session keeps its folder"
+    else
+        WS_MSG="  ${BAD}!${RESET} no folder for $(_ws_short "$answer" 36)"
+    fi
+}
+
+# _ws_open_all — a: build each saved workspace that is not live, in the
+# background (new-workspace.sh --restore: no switch, the list keeps its order).
+# It asks first: each workspace starts its own agents command.
+_ws_open_all() {
+    local i todo=0 key done_n=0
+    for ((i = 0; i < WS_COUNT; i++)); do
+        _ws_is_live "${WS_NAMES[$i]}" && continue
+        [ -d "${WS_DIRS[$i]}" ] && todo=$((todo + 1))
+    done
+    if [ "$todo" -eq 0 ]; then
+        WS_MSG="  all saved workspaces are open"
+        return 0
+    fi
+    WS_MSG="  open $todo workspaces? y/n"
+    _ws_draw
+    IFS= read -rsn1 -d '' key || exit 0
+    case "$key" in
+        y|Y) ;;
+        *) WS_MSG=""; return 0 ;;
+    esac
+    for ((i = 0; i < WS_COUNT; i++)); do
+        _ws_is_live "${WS_NAMES[$i]}" && continue
+        [ -d "${WS_DIRS[$i]}" ] || continue
+        tmux set-option -g "@clux-new-workspace-name" "${WS_NAMES[$i]}"
+        "$CURRENT_DIR/new-workspace.sh" --restore "${WS_DIRS[$i]}" >/dev/null 2>&1 \
+            && done_n=$((done_n + 1))
+    done
+    tmux display-message "clux: opened $done_n of $todo workspaces"
+    exit 0
+}
+
+# _ws_list — the key loop. Returns 0 to go on to the name prompt.
+_ws_list() {
+    local key
+    _ws_load
+    [ "$WS_COUNT" -gt 0 ] || return 0
+    while :; do
+        _ws_draw
+        IFS= read -rsn1 -d '' key || exit 0
+        WS_MSG=""
+        case "$key" in
+            [1-9])
+                if [ "$key" -le "$WS_COUNT" ]; then
+                    WS_SEL=$((key - 1))
+                    _ws_open
+                fi
+                ;;
+            j) [ "$WS_SEL" -lt $((WS_COUNT - 1)) ] && WS_SEL=$((WS_SEL + 1)) ;;
+            k) [ "$WS_SEL" -gt 0 ] && WS_SEL=$((WS_SEL - 1)) ;;
+            "$NL"|$'\r') _ws_open ;;
+            ' ') _ws_set_folder; _ws_load ;;
+            x)
+                "$HISTORY" remove "${WS_NAMES[$WS_SEL]}"
+                _ws_load
+                [ "$WS_COUNT" -gt 0 ] || { printf '\033[H\033[2J'; return 0; }
+                ;;
+            a) _ws_open_all; _ws_load ;;
+            n) printf '\033[H\033[2J'; return 0 ;;
+            q) exit 0 ;;
+            [[:alnum:]]|-|_|.)
+                PRESET="$key"
+                printf '\033[H\033[2J'
+                return 0
+                ;;
+        esac
+    done
+}
+
+_ws_list
+
 # Header: the same chip and brackets the bar draws, then the key hints.
 printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · esc cancel%s\n\n' \
     "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
     "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
 
-printf '  %s▸%s name    ' "$MARK" "$RESET"
+printf '  %s▸%s name    %s' "$MARK" "$RESET" "$PRESET"
 IFS= read -r SESSION_NAME || exit 0
+SESSION_NAME="$PRESET$SESSION_NAME"
 
 # Empty means the prompt was cancelled — not an error. So does a control
 # character: on a terminal that took the stty above, that is the Ctrl-C the

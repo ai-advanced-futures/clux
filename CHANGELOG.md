@@ -2,6 +2,22 @@
 
 All notable changes to clux are documented here.
 
+## [4.3.0]
+
+### Added
+
+- **prefix + A shows the saved workspaces.** Each time prefix + A opens a workspace, clux saves its name and its absolute folder on top of a list (`workspace-history.sh`, in `${XDG_STATE_HOME:-~/.local/state}/clux/workspaces`, mode 0600). The list keeps 9 workspaces, newest first. When the list is not empty, the popup shows it before it asks for a name. A `●` mark shows a live session, and a `✗` mark shows a folder that is gone
+- The keys of the list: `1`-`9` open that row at once. `j` and `k` move the selection, and Enter opens the selected row. Space sets the folder of the row (with the same rules as a new workspace). `x` deletes the row. `n` goes to the name prompt. `q`, Esc and Ctrl-C cancel. Another letter or digit starts a new name with that character
+- To open a row: a live session gets a switch, and a gone session is made again in its saved folder. When the session of a row is gone and a live session that is not in the list has the same folder (a session that prefix + $ renamed), the client switches to that session and the row takes its name
+- **`a` opens all saved workspaces** that are not live and have their folder, after a `y/n` question. They open in the background (`new-workspace.sh --restore`), and the list keeps its order. After a restart of the tmux server, this makes the workspaces again
+- `new-workspace.sh --resolve <folder>` prints the absolute folder of a name and makes nothing
+
+### Changed
+
+- **The agents window of a workspace has the name `<workspace>-claude`** (it was the name of the workspace). For a workspace `olly`, the windows are `---` and `olly-claude`
+- The prefix + A popup is 15 rows high (it was 7), so that the 9 rows of the list fit. Run `/clux:setup` again to write the new binding. With an old binding, the list shows the rows that fit and moves with the selection
+- `new-workspace.sh` switches to an existing session with an exact target (`=name`)
+
 ## [4.2.0]
 
 ### Added
