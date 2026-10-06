@@ -27,6 +27,7 @@ plugins/clux/
 ├── commands/                    # Claude Code slash commands
 │   ├── setup.md                 # /clux:setup — an entry point; states no rules
 │   ├── validate.md              # /clux:validate
+│   ├── upgrade.md               # /clux:upgrade — setup again with the old answers
 │   └── follow.md                # /clux:follow — mirror mode on and off
 ├── skills/
 │   └── configuring-tmux/        # The whole setup procedure and every rule
@@ -68,6 +69,8 @@ plugins/clux/
 │   │                            # Setup time only — never deployed
 │   ├── render-clux-conf.sh      # Writes ~/.config/clux/clux.tmux.conf whole
 │   ├── verify-tmux-conf.sh      # Parses a candidate config on a throwaway server
+│   ├── upgrade-clux.sh          # /clux:upgrade: reads the old answers, renders again
+│   ├── plugin-version.sh        # Loaded, installed and latest clux versions
 │   ├── terminal.sh              # Companion pane lifecycle and command transport
 │   └── laya_client.py           # The only code that speaks to Laya
 ├── config/

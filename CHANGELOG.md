@@ -2,6 +2,17 @@
 
 All notable changes to clux are documented here.
 
+## [4.4.0]
+
+### Added
+
+- **`/clux:upgrade`** installs the installed plugin version into tmux with the answers of the last `/clux:setup`, and asks no questions. Run it after each plugin update, in place of `/clux:setup`
+- First it compares the installed version with the latest version of the marketplace (`plugin-version.sh`). When a newer version is available, it gives the `claude plugin marketplace update` and `claude plugin update` commands and stops. When the update ran and Claude Code did not restart, it upgrades and tells you to restart
+- `render-clux-conf.sh --from FILE` reads the answers back out of a `clux.tmux.conf` that it wrote before, with the same option table that writes them. A flag after `--from` overrides the value it read. A setting that this version does not write is reported as `dropped:`, and a new setting gets its default. When a required answer is missing, it prints one `missing: --<flag>` line for each
+- `upgrade-clux.sh` renders with `--from` first, so a render failure changes nothing. Then it backs up the file, deploys the scripts from the manifest, puts the new file in place, verifies it on a throwaway server and reloads it. When a later step fails, the backup goes back in place
+- `plugin-version.sh` reads the installed version from `claude plugin list --json` (the plugin cache when there is no CLI), and the latest version from the clux entry of the marketplace
+- It asks a question only when the old file has no value for a required answer. It does not change the tmux.conf or `~/.claude/settings.json`. When the tmux.conf has no clux line or no token, it reports this and offers `/clux:setup`
+
 ## [4.3.0]
 
 ### Added

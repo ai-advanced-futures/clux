@@ -24,7 +24,7 @@ _manifest_entries() {
 
 # Never deployed: each runs from the plugin tree only.
 # — the manifest header explains why. Keep this list in step with that note.
-NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh terminal.sh laya_client.py"
+NOT_DEPLOYED="render-clux-conf.sh verify-tmux-conf.sh upgrade-clux.sh plugin-version.sh terminal.sh laya_client.py"
 
 # Sourced, never executed. They must be readable; the executable bit on them
 # means nothing. path.sh does not carry it and helpers.sh does, which is
