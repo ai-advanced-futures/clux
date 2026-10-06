@@ -7,6 +7,7 @@ All notable changes to clux are documented here.
 ### Changed
 
 - A notification from a `claude agents` session now starts with the name of the tmux window that holds the agents view, for example `plugins / pr-flow-implementation`. Before, it always started with `agents /`. When clux cannot find the window, the prefix stays `agents`
+- The status bar shows a `#` in a window or session name as plain text. Before, tmux read `#[...]` in a name as a style and `#{...}` as a format
 
 ## [4.4.0]
 

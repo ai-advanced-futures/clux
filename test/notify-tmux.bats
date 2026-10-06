@@ -614,3 +614,24 @@ STUBEOF
     grep -qF '⚡ w"in\d|x / proj|||agent:s-win-001@@$1:@7:%9@@' "$QUEUE_FILE" || false
     [ "$(grep -o '|||' "$QUEUE_FILE" | wc -l | tr -d ' ')" -eq 1 ]
 }
+
+# A message that starts with "-" must reach osascript as an argument, not as
+# an option: "--" goes before the arguments.
+@test "agent path: osascript gets -- before a message that starts with -" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/osascript" <<'STUBEOF'
+#!/usr/bin/env bash
+for a in "$@"; do printf '%s\n' "$a" >> "$STUB_LOG"; done
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/osascript"
+    local JSON='{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s-dash-001","message":"-e oops"}'
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    [ "$(grep -n -x -e '--' "$stub_log" | cut -d: -f1)" -eq "$(( $(grep -n -x -e '-e oops' "$stub_log" | cut -d: -f1) - 1 ))" ]
+}

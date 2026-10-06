@@ -184,10 +184,11 @@ _agent_handle_event() {
     # Desktop ping — osascript first, terminal-notifier fallback, else skip silently
     if command -v osascript &>/dev/null; then
         # The text goes in as argv, never into the script source: a window
-        # name with a quote must not end the AppleScript string.
+        # name with a quote must not end the AppleScript string. The "--"
+        # stops a message that starts with "-" from being read as an option.
         osascript -e 'on run argv' \
                   -e 'display notification (item 1 of argv) with title (item 2 of argv)' \
-                  -e 'end run' "$MSG" "$LABEL" >/dev/null 2>&1 || true
+                  -e 'end run' -- "$MSG" "$LABEL" >/dev/null 2>&1 || true
     elif command -v terminal-notifier &>/dev/null; then
         terminal-notifier -message "$MSG" -title "$LABEL" >/dev/null 2>&1 || true
     fi
