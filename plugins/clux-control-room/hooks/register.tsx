@@ -12,6 +12,7 @@ import {
 } from './jobs'
 
 const PANE = 'control-room'
+const COMMAND = 'sessions'
 const TITLE = 'Background sessions'
 const POLL_MS = 5000
 // Read the worktree list again after this many polls (one minute).
@@ -165,12 +166,17 @@ async function tick($: EngineInterface, isQuiet = false) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    try {
-      await $.command.register({
-        name: 'control-room',
-        description: 'Show the background sessions of this repository in a pane',
-        argumentHint: '[off]',
+    // A refused name leaves the band and the alerts running.
+    await $.command
+      .register({
+        name: COMMAND,
+        description: 'Show or hide the background sessions of this repository',
+        argumentHint: '[on|off]',
       })
+      .catch(error => {
+        $.ui.log(`clux-control-room: /${COMMAND} not registered: ${String(error)}`, { to: 'debug' })
+      })
+    try {
       loop.scope = {
         dir: await jobsDir($),
         roots: await repoRoots($),
@@ -187,9 +193,12 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'control-room' }, async ($, e) => {
+  // `/sessions` alone toggles the pane: it closes a pane that shows, and
+  // opens one that is closed or a tab behind another. `on` and `off` set it.
+  on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim()
-    if (arg === 'off' || arg === 'close') {
+    const isShown = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
+    if (arg === 'off' || (arg !== 'on' && isShown)) {
       await $.ui.close({ id: PANE })
       return { text: 'Background sessions pane closed.' }
     }

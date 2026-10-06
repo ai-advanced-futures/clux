@@ -11,9 +11,9 @@ Background sessions · 3
 
 ## What it does
 
-- **The pane** (`/control-room`) shows one row for each background session: its name, its status (needs input, working, unknown, done, failed, stopped), its PRs, and its description. The description is the question of a session that needs input, else what the session does now or the result it gave. A PR number is a link: click it to open the PR. A session is **unknown** when its state is one the mod does not know, or when it works but has not written its state for 30 minutes (it probably stopped without a last write).
-- **Select a session** to open it. `/control-room` gives the pane the keyboard, so press the number of a row (`1` to `9`), or move with Tab and press Enter. In tmux, the mod opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
-- **`/control-room off`** closes the pane.
+- **The pane** (`/sessions`) shows one row for each background session: its name, its status (needs input, working, unknown, done, failed, stopped), its PRs, and its description. The description is the question of a session that needs input, else what the session does now or the result it gave. A PR number is a link: click it to open the PR. A session is **unknown** when its state is one the mod does not know, or when it works but has not written its state for 30 minutes (it probably stopped without a last write).
+- **Select a session** to open it. `/sessions` gives the pane the keyboard, so press the number of a row (`1` to `9`), or move with Tab and press Enter. In tmux, the mod opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
+- **`/sessions`** toggles the pane: it opens a closed pane and closes an open one. A pane that is a tab behind another pane comes to the front. `/sessions on` and `/sessions off` open and close it without the toggle.
 - **The band** above the prompt shows the counts (`1 needs input · 2 working`) while a session works or needs you. **Show** opens the pane.
 - **The alert.** When a session writes `needs input:`, the mod shows a toast and plays a sound. It alerts one time for each new question, also for a second question from the same session. The first check after start does not alert.
 

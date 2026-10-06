@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const ROOT = '/code/clux'
@@ -17,7 +18,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: `${ROOT}/.claude/worktrees/mine` }))
   on('session.id', () => ({ value: 'self' }))
-  on('command.register', () => ({ value: { command: 'control-room' } }))
+  on('command.register', () => ({ value: { command: 'sessions' } }))
   const lists = { count: 0 }
   on('fs.list', () => {
     lists.count += 1
@@ -48,14 +49,26 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  // The panes this plugin has open, as the engine would keep them.
+  const panes = new Set<string>()
+  on('ui.open', ($, e) => {
+    panes.add(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', ($, e) => {
+    panes.delete(e.id)
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({
+    value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux-control-room' })),
+  }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Box } = $.ui.resolve(e)
     return <Box key="engine-band" />
   })
 
-  return { clock, ran, toasts, lists }
+  return { clock, ran, toasts, lists, panes }
 }
 
 const PANE_PROPS = {
@@ -153,7 +166,31 @@ test('a new question plays the sound once and raises a toast', async ($, on) => 
   expect(toasts.at(-1)).toBe('fabric-giants needs input: choose: C or D?')
 })
 
-test('a question found when /control-room opens still alerts', async ($, on) => {
+const runSessions = ($: Engine, args = '') =>
+  $.command.run({
+    command: 'sessions',
+    args,
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 },
+  })
+
+test('/sessions opens the pane, and /sessions again closes it', async ($, on) => {
+  const { panes } = world(on, {})
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+
+  expect((await runSessions($)).text).toContain('opened')
+  expect(panes.has('control-room')).toBe(true)
+  expect((await runSessions($)).text).toContain('closed')
+  expect(panes.has('control-room')).toBe(false)
+
+  await runSessions($, 'on')
+  await runSessions($, 'on')
+  expect(panes.has('control-room')).toBe(true)
+  await runSessions($, 'off')
+  expect(panes.has('control-room')).toBe(false)
+})
+
+test('a question found when /sessions opens still alerts', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
@@ -161,12 +198,7 @@ test('a question found when /control-room opens still alerts', async ($, on) => 
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: '' })
-  await $.command.run({
-    command: 'control-room',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 100 },
-  })
+  await runSessions($)
   expect(ran.filter(argv => argv[0] === 'paplay').length).toBe(1)
   expect(toasts).toEqual(['fabric-giants needs input'])
 })
