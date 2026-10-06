@@ -213,6 +213,22 @@ clux uses tmux's `automatic-rename` with `#{pane_title}` — Claude Code sets th
 **Solution:** Jump to notification first using `N` (or configured key) before dismissing.
 
 
+## Upgrade (/clux:upgrade)
+
+Run `/clux:upgrade` after a plugin update. It does these steps:
+
+1. It compares the installed version with the latest version of the marketplace. When a newer version is available, it gives the update commands and stops:
+   ```
+   claude plugin marketplace update <marketplace>
+   claude plugin update clux@<marketplace>
+   ```
+   Restart Claude Code, then run `/clux:upgrade` again.
+2. It reads the answers of the last `/clux:setup` from `~/.config/clux/clux.tmux.conf`.
+3. It backs up that file, deploys the scripts, and writes the file again with the new version.
+4. It verifies the file on a throwaway tmux server and reloads tmux. When a step fails, the backup goes back in place.
+
+It asks a question only when the old file has no value for a required answer. It does not change your tmux.conf or `~/.claude/settings.json`. For those changes, run `/clux:setup`.
+
 ## Mirror mode (/clux:follow)
 
 Mirror mode is for two or more terminals that are attached to the same tmux server, for example two computers that connect to one remote machine with SSH. tmux moves only the terminal in which you change session. With mirror mode on, the other terminals go to the same session, so all of them show the same screen.

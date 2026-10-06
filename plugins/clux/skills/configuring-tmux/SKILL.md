@@ -1004,3 +1004,4 @@ Show the user:
   prefix + ` /DC   dismiss notification
   ```
 - Suggest running `/clux:validate` for the full health check
+- After a plugin update, `/clux:upgrade` installs the new version with these answers and asks no questions
