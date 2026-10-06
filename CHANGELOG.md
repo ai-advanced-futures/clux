@@ -2,6 +2,15 @@
 
 All notable changes to clux are documented here.
 
+## clux-control-room [0.1.0]
+
+### Added
+
+- **A new plugin, `clux-control-room`: the first clux mod.** It is a Claude Code plugin of function hooks (`hooks/register.tsx`), not of shell hooks. `/control-room` opens one pane for the background sessions of the current repository. Each row shows the status (needs input, working, result, failed, stopped), the name, the time since the last change, and the last line: the question of a session that needs input, the `result:` line of a session that is done
+- The mod reads `~/.claude/jobs/*/state.json` every 5 seconds. A session counts when its folder or its worktree is under the root of the main working tree, so all worktrees of the repository count. The session that runs the mod is not in the list
+- When a session writes `needs input:`, a toast shows its question and a sound plays (on Linux with `pw-play`, `paplay` or `aplay`). The band above the prompt shows the counts while a session works or needs you
+- **Open** runs `claude attach <id>` in a new tmux window, or copies that command outside tmux. **Read** shows the full result line
+
 ## [4.2.0]
 
 ### Added
