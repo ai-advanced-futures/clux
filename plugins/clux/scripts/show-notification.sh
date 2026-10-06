@@ -82,6 +82,12 @@ else
     DISPLAY="$FIRST"
 fi
 
+# tmux reads this output as a format: "#[...]" sets a style and "#{...}" or
+# "#S" expands. The text holds window and session names, which a program can
+# set, so double each "#" to show it as plain text. Escape here, where the
+# text is drawn, and not in the queue: the picker shows the queue text as is.
+DISPLAY="${DISPLAY//#/##}"
+
 TOTAL=$(wc -l < "$NOTIFY_FILE" | tr -d ' ')
 
 if [ "$TOTAL" -gt 1 ]; then

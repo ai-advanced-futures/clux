@@ -303,3 +303,22 @@ STUBEOF
     run grep -F "switch-client" "$stub_log"
     [ "$status" -ne 0 ]
 }
+
+# tmux reads the status text as a format. A window or session name with
+# "#[...]", "#{...}" or "#S" must show as plain text, not as a style or an
+# expansion: show-notification doubles each "#".
+@test "e2e lifecycle: show-notification shows tmux format text in a name as plain text" {
+    printf '%s|||agent:s-e2e-hash@@@@/c\n' '⚡ #[bg=red]w#{session_name}#S / proj' > "$QUEUE_FILE"
+    _write_tmux_stub ""
+
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        bash '$SCRIPTS_DIR/show-notification.sh'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'⚡ ##[bg=red]w##{session_name}##S / proj'* ]] || false
+    # The only styles left are the two that clux draws itself.
+    [ "$(printf '%s' "$output" | sed 's/##//g' | grep -o '#\[' | wc -l | tr -d ' ')" -eq 2 ]
+}

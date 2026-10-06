@@ -137,10 +137,10 @@ _agent_handle_event() {
     NOTIFY_FILE=$(resolve_notify_file)
     recompute_lock_target
 
-    # Display label = "agents / <session name>", where <session name> is
+    # Display label = "<window name> / <session name>", where <session name> is
     # the name shown in the `claude agents` view (the transcript's
-    # custom-title). The "agents /" prefix marks it as coming from the
-    # agents view and distinguishes multiple waiting sessions; the human
+    # custom-title). The window name marks where the agents view lives and
+    # distinguishes multiple waiting sessions; the human
     # message (e.g. "Claude needs your permission") goes to the desktop
     # banner instead. resolve_agent_name falls back to the cwd basename.
     #
@@ -148,23 +148,7 @@ _agent_handle_event() {
     # the one fact the marker cannot (WHICH error, WHICH teammate), so it is
     # appended to the bar text too. needs-you and finished keep the short
     # 3.7.0 form — their marker already says everything.
-    local NAME LABEL MSG TEXT
-    NAME=$(_sanitize "$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")")
-    [ -z "$NAME" ] && NAME="agent"
-    LABEL="agents / $NAME"
-    MSG=$(_sanitize "${MESSAGE:-needs input}")
-    case "$TYPE" in
-        failure|quota|teammate) TEXT="$LABEL — $MSG" ;;
-        *)                      TEXT="$LABEL" ;;
-    esac
-
-    # Desktop ping — osascript first, terminal-notifier fallback, else skip silently
-    if command -v osascript &>/dev/null; then
-        osascript -e "display notification \"$MSG\" with title \"$LABEL\"" >/dev/null 2>&1 || true
-    elif command -v terminal-notifier &>/dev/null; then
-        terminal-notifier -message "$MSG" -title "$LABEL" >/dev/null 2>&1 || true
-    fi
-
+    local NAME LABEL MSG TEXT PREFIX
     # Resolve the owning dashboard pane by longest-prefix cwd match so the
     # jump can fast-path straight to it. Runs detached (TMUX unset) over the
     # default socket (prototype P1). When no dashboard / no tmux server is
@@ -178,6 +162,37 @@ _agent_handle_event() {
     else
         seg2=""
     fi
+    # The prefix is the name of the window that holds the agents view, so
+    # the label reads "plugins / pr-flow" and not "agents / pr-flow". When
+    # no window is found, the prefix stays "agents".
+    PREFIX=""
+    [ -n "${wid:-}" ] && PREFIX=$(_sanitize "$(tmux display-message -p -t "$wid" '#{window_name}' 2>/dev/null)")
+    [ -z "$PREFIX" ] && PREFIX="agents"
+    NAME=$(_sanitize "$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")")
+    [ -z "$NAME" ] && NAME="agent"
+    LABEL="$PREFIX / $NAME"
+    MSG=$(_sanitize "${MESSAGE:-needs input}")
+    case "$TYPE" in
+        failure|quota|teammate) TEXT="$LABEL — $MSG" ;;
+        *)                      TEXT="$LABEL" ;;
+    esac
+    # "|||" splits the bar text from the routing data, so the text must
+    # never hold it. A window name or a message can, so squeeze each run of
+    # "|" to one.
+    TEXT=$(printf '%s' "$TEXT" | tr -s '|')
+
+    # Desktop ping — osascript first, terminal-notifier fallback, else skip silently
+    if command -v osascript &>/dev/null; then
+        # The text goes in as argv, never into the script source: a window
+        # name with a quote must not end the AppleScript string. The "--"
+        # stops a message that starts with "-" from being read as an option.
+        osascript -e 'on run argv' \
+                  -e 'display notification (item 1 of argv) with title (item 2 of argv)' \
+                  -e 'end run' -- "$MSG" "$LABEL" >/dev/null 2>&1 || true
+    elif command -v terminal-notifier &>/dev/null; then
+        terminal-notifier -message "$MSG" -title "$LABEL" >/dev/null 2>&1 || true
+    fi
+
     # Routing data lives AFTER the ||| (three @@-segments: SID, tmux coords,
     # CWD) so the status-bar display text (before |||) is unchanged.
     entry_id="agent:${SESSION_ID}@@${seg2}@@${CWD}"
@@ -194,7 +209,11 @@ _agent_handle_event() {
     # Emit terminalSequence JSON on stdout (ONLY stdout output for agent path)
     # Escape sequences are in the FORMAT STRING; the label is the %s arg.
     # Decoded value: BEL ESC ]9;<label> BEL
-    printf '{"terminalSequence":"\\u0007\\u001b]9;%s\\u0007"}\n' "$LABEL"
+    # The label is JSON-escaped: _sanitize already removed control
+    # characters, so only backslash and double quote are left to escape.
+    local JLABEL="${LABEL//\\/\\\\}"
+    JLABEL="${JLABEL//\"/\\\"}"
+    printf '{"terminalSequence":"\\u0007\\u001b]9;%s\\u0007"}\n' "$JLABEL"
     return 0
 }
 
