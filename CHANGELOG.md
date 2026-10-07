@@ -2,14 +2,39 @@
 
 All notable changes to clux are documented here.
 
-## clux-sessions [0.1.0]
+## [4.4.1]
+
+### Changed
+
+- A notification from a `claude agents` session now starts with the name of the tmux window that holds the agents view, for example `plugins / pr-flow-implementation`. Before, it always started with `agents /`. When clux cannot find the window, the prefix stays `agents`
+- The status bar shows a `#` in a window or session name as plain text. Before, tmux read `#[...]` in a name as a style and `#{...}` as a format
+
+## [4.4.0]
 
 ### Added
 
-- **A new plugin, `clux-sessions`: the first clux mod.** It is a Claude Code plugin of function hooks (`hooks/register.tsx`), not of shell hooks. `/sessions` opens one pane for the background sessions of the current repository, and `/sessions` again closes it (`/sessions on` and `/sessions off` set it). Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description: the question of a session that needs input, else what the session does now or the result it gave.
-- The mod reads `~/.claude/jobs/*/state.json` every 5 seconds. A session counts when its folder or its worktree is under the root of the main working tree, so all worktrees of the repository count, and also a worktree outside the root that `git worktree list` names. The session that runs the mod is not in the list. A working session with no write for 30 minutes, or a state the mod does not know, shows as unknown
-- When a session writes `needs input:`, a toast shows its question and a sound plays (`afplay`, `paplay`, `pw-play`, `aplay` or `play`). Each new question alerts one time, also a second question from the same session. The band above the prompt is always one line: the counts, or `none live`. `ctrl+x b` toggles the pane from anywhere, also with a draft in the composer (the mod borrows the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel)
-- Select a row (its number `1` to `9`, or Tab and Enter) to open that session: `claude attach <id>` in a new window of the current tmux session, or the command on the clipboard outside tmux
+- **`/clux:upgrade`** installs the installed plugin version into tmux with the answers of the last `/clux:setup`, and asks no questions. Run it after each plugin update, in place of `/clux:setup`
+- First it compares the installed version with the latest version of the marketplace (`plugin-version.sh`). When a newer version is available, it gives the `claude plugin marketplace update` and `claude plugin update` commands and stops. When the update ran and Claude Code did not restart, it upgrades and tells you to restart
+- `render-clux-conf.sh --from FILE` reads the answers back out of a `clux.tmux.conf` that it wrote before, with the same option table that writes them. A flag after `--from` overrides the value it read. A setting that this version does not write is reported as `dropped:`, and a new setting gets its default. When a required answer is missing, it prints one `missing: --<flag>` line for each
+- `upgrade-clux.sh` renders with `--from` first, so a render failure changes nothing. Then it backs up the file, deploys the scripts from the manifest, puts the new file in place, verifies it on a throwaway server and reloads it. When a later step fails, the backup goes back in place
+- `plugin-version.sh` reads the installed version from `claude plugin list --json` (the plugin cache when there is no CLI), and the latest version from the clux entry of the marketplace
+- It asks a question only when the old file has no value for a required answer. It does not change the tmux.conf or `~/.claude/settings.json`. When the tmux.conf has no clux line or no token, it reports this and offers `/clux:setup`
+
+## [4.3.0]
+
+### Added
+
+- **prefix + A shows the saved workspaces.** Each time prefix + A opens a workspace, clux saves its name and its absolute folder on top of a list (`workspace-history.sh`, in `${XDG_STATE_HOME:-~/.local/state}/clux/workspaces`, mode 0600). The list keeps 9 workspaces, newest first. When the list is not empty, the popup shows it before it asks for a name. A `●` mark shows a live session, and a `✗` mark shows a folder that is gone
+- The keys of the list: `1`-`9` open that row at once. `j` and `k` move the selection, and Enter opens the selected row. Space sets the folder of the row (with the same rules as a new workspace). `x` deletes the row. `n` goes to the name prompt. `q`, Esc and Ctrl-C cancel. Another letter or digit starts a new name with that character
+- To open a row: a live session gets a switch, and a gone session is made again in its saved folder. When the session of a row is gone and a live session that is not in the list has the same folder (a session that prefix + $ renamed), the client switches to that session and the row takes its name
+- **`a` opens all saved workspaces** that are not live and have their folder, after a `y/n` question. They open in the background (`new-workspace.sh --restore`), and the list keeps its order. After a restart of the tmux server, this makes the workspaces again
+- `new-workspace.sh --resolve <folder>` prints the absolute folder of a name and makes nothing
+
+### Changed
+
+- **The agents window of a workspace has the name `<workspace>-claude`** (it was the name of the workspace). For a workspace `olly`, the windows are `---` and `olly-claude`
+- The prefix + A popup is 15 rows high (it was 7), so that the 9 rows of the list fit. Run `/clux:setup` again to write the new binding. With an old binding, the list shows the rows that fit and moves with the selection
+- `new-workspace.sh` switches to an existing session with an exact target (`=name`)
 
 ## [4.2.0]
 

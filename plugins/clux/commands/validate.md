@@ -707,6 +707,7 @@ clux validate — health check results
     ✓ truncate-title.sh       ✓ new-workspace-prompt.sh
     ✓ agent-query.sh          ✓ agent-bar.sh
     ✓ agent-clear.sh          ✓ session-follow.sh
+    ✓ workspace-history.sh
     ✓ all scripts in sync with plugin source
     ✓ render-clux-conf.sh, verify-tmux-conf.sh (plugin source, never deployed)
 

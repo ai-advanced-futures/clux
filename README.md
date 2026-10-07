@@ -19,6 +19,8 @@ Restart Claude Code. Run:
 
 `/clux:setup` asks a few short questions and shows each change before it writes it. To check the result, run `/clux:validate`. It changes nothing.
 
+After a plugin update, run `/clux:upgrade`. It keeps your setup answers and asks no questions. When a newer clux is available, it gives the commands to update the plugin.
+
 ## Requirements
 
 tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 and perl are only for the companion terminal (macOS and most Linux systems have perl). Without perl, `terminal.sh` gives exit code 2 and `clux terminal needs perl`.

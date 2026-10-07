@@ -570,3 +570,68 @@ EOF
     grep -qF "main:editor" "$QUEUE_FILE" || false
     grep -qF "billing_error" "$QUEUE_FILE" || false
 }
+
+# The prefix is the name of the window that holds the agents view. A window
+# name is not trusted text: a program can set it with an escape sequence. A
+# quote or a backslash must not break the osascript call or the JSON line,
+# and "|||" must not split the bar text before the routing data.
+@test "agent path: a window name with a quote, a backslash and ||| is safe" {
+    local proj="$BATS_TEST_TMPDIR/proj"
+    mkdir -p "$proj"
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$*" in
+    "list-panes -a"*) printf '4242\t$1\t@7\t%%9\t%s\n' "$PROJ" ;;
+    "display-message -p -t @7"*) printf '%s\n' 'w"in\d|||x' ;;
+esac
+exit 0
+STUBEOF
+    cat > "$BATS_TEST_TMPDIR/stubs/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "4242 1 claude agents"
+STUBEOF
+    cat > "$BATS_TEST_TMPDIR/stubs/osascript" <<'STUBEOF'
+#!/usr/bin/env bash
+for a in "$@"; do printf '%s\n' "$a" >> "$STUB_LOG"; done
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux" "$BATS_TEST_TMPDIR/stubs/ps" "$BATS_TEST_TMPDIR/stubs/osascript"
+    local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"s-win-001\",\"cwd\":\"$proj\",\"message\":\"needs you\"}"
+
+    run bash -c "
+        export STUB_LOG='$stub_log' PROJ='$proj'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    # The label goes to osascript as one argument, outside the script source.
+    grep -qxF 'w"in\d|||x / proj' "$stub_log" || false
+    ! grep -F 'display notification' "$stub_log" | grep -qF 'w"in'
+    # The JSON line parses and gives the label back unchanged.
+    [ "$(printf '%s' "$output" | jq -r .terminalSequence | tr -d '\007\033')" = ']9;w"in\d|||x / proj' ]
+    # The bar text keeps one "|||": the one before the routing data.
+    grep -qF '⚡ w"in\d|x / proj|||agent:s-win-001@@$1:@7:%9@@' "$QUEUE_FILE" || false
+    [ "$(grep -o '|||' "$QUEUE_FILE" | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+# A message that starts with "-" must reach osascript as an argument, not as
+# an option: "--" goes before the arguments.
+@test "agent path: osascript gets -- before a message that starts with -" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/osascript" <<'STUBEOF'
+#!/usr/bin/env bash
+for a in "$@"; do printf '%s\n' "$a" >> "$STUB_LOG"; done
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/osascript"
+    local JSON='{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s-dash-001","message":"-e oops"}'
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    [ "$(grep -n -x -e '--' "$stub_log" | cut -d: -f1)" -eq "$(( $(grep -n -x -e '-e oops' "$stub_log" | cut -d: -f1) - 1 ))" ]
+}

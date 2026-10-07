@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # new-workspace.bats — new-workspace.sh: builds the clux workspace ("---" at
-# index 0 running the editor, the session name at index 1 running the agents
+# index 0 running the editor, "<session>-claude" at index 1 running the agents
 # dashboard). Run with TMUX unset so the script uses the plain "tmux" socket
 # and prints the session name to stdout instead of switching a client — the
 # documented detached-run path this script exists to support (also how bats
@@ -20,6 +20,8 @@ _write_workspace_tmux_stub() {
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+# With TMUX set, new-workspace.sh names the socket first: "tmux -S <socket> ...".
+[ "$1" = "-S" ] && shift 2
 case "$1" in
     show-option)
         case "$*" in
@@ -38,6 +40,7 @@ case "$1" in
     display-message)
         case "$*" in
             *pane_current_path*) printf '%s\n' "${FAKE_PANE_PATH:-}" ;;
+            *session_path*) printf '%s\n' "${FAKE_SESSION_PATH:-}" ;;
         esac
         ;;
     new-session)
@@ -52,7 +55,7 @@ STUBEOF
     chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
 }
 
-@test "new-workspace: creates '---' at index 0 and the session name at index 1, addressed by window id, with base-index move-window" {
+@test "new-workspace: creates '---' at index 0 and <session>-claude at index 1, addressed by window id, with base-index move-window" {
     local log="$BATS_TEST_TMPDIR/stub.log"
     local project_dir="$BATS_TEST_TMPDIR/project"
     mkdir -p "$project_dir"
@@ -70,7 +73,7 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ "$output" = "work1" ]
     grep -qF -- "-n --- " "$log" || grep -qF -- "-n ---" "$log" || false
-    grep -qF -- "-n work1 " "$log" || false
+    grep -qF -- "-n work1-claude " "$log" || false
     grep -qF 'set-option -w -t @10 automatic-rename off' "$log" || false
     grep -qF 'set-option -w -t @11 automatic-rename off' "$log" || false
     # base-index > 0 -> the editor window is moved to index 0.
@@ -177,4 +180,90 @@ STUBEOF
     [ -z "$output" ]
     run grep -qF 'new-session' "$log"
     [ "$status" -ne 0 ]
+}
+
+# --- The prefix + A list (workspace-history.sh) ----------------------------
+
+@test "new-workspace: a new workspace goes on top of the saved list, with its absolute folder" {
+    local project_dir="$BATS_TEST_TMPDIR/project"
+    mkdir -p "$project_dir/sub"
+    _write_workspace_tmux_stub
+    export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+    run bash -c "
+        unset TMUX
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export FAKE_WORKSPACE_NAME='olly'
+        '$NEW_WORKSPACE' '$project_dir/sub/..'
+    "
+    [ "$status" -eq 0 ]
+    run "$SCRIPTS_DIR/workspace-history.sh" list
+    [ "$output" = "olly"$'\t'"$project_dir" ]
+}
+
+@test "new-workspace: a live session goes on top of the list with the folder it started in" {
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    _write_workspace_tmux_stub
+    export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+    "$SCRIPTS_DIR/workspace-history.sh" add other /o
+    run bash -c "
+        unset TMUX
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export STUB_LOG='$log'
+        export FAKE_WORKSPACE_NAME='olly'
+        export FAKE_SESSION_EXISTS='1'
+        export FAKE_SESSION_PATH='/live/olly'
+        '$NEW_WORKSPACE' 'whatever'
+    "
+    [ "$status" -eq 0 ]
+    run "$SCRIPTS_DIR/workspace-history.sh" list
+    [ "${lines[0]}" = $'olly\t/live/olly' ]
+    [ "${lines[1]}" = $'other\t/o' ]
+}
+
+@test "new-workspace: --restore builds the workspace but does not switch and does not change the list" {
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    local project_dir="$BATS_TEST_TMPDIR/project"
+    mkdir -p "$project_dir"
+    _write_workspace_tmux_stub
+    export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+    run bash -c "
+        export TMUX='/tmp/fake-socket,1,0'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export STUB_LOG='$log'
+        export FAKE_WORKSPACE_NAME='olly'
+        '$NEW_WORKSPACE' --restore '$project_dir'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'new-session' "$log" || { echo "nothing was built"; cat "$log"; false; }
+    grep -qF -- '-n olly-claude' "$log" || false
+    run grep -qF 'switch-client' "$log"
+    [ "$status" -ne 0 ]
+    run "$SCRIPTS_DIR/workspace-history.sh" list
+    [ -z "$output" ]
+}
+
+@test "new-workspace: --resolve prints the absolute folder and builds nothing" {
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    local project_dir="$BATS_TEST_TMPDIR/project"
+    mkdir -p "$project_dir"
+    _write_workspace_tmux_stub
+    run bash -c "
+        unset TMUX
+        cd '$BATS_TEST_TMPDIR'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export STUB_LOG='$log'
+        '$NEW_WORKSPACE' --resolve project
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = "$project_dir" ]
+    run grep -qE 'new-session|new-window|set-option -gu' "$log"
+    [ "$status" -ne 0 ]
+
+    run bash -c "
+        unset TMUX
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        '$NEW_WORKSPACE' --resolve '$BATS_TEST_TMPDIR/no-such-folder'
+    "
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
 }

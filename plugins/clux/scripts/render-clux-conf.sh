@@ -84,6 +84,89 @@ NOTIFY_PREFS=""
 # family. Must match map_event_to_type() in helpers.sh.
 NOTIFY_TYPES="notification stop failure quota prompt teammate sessionend"
 
+# Part 4: "BASH_VARNAME:@clux-option-name", one per line. render() writes one
+# line for each pair whose variable is set, and --from reads them back.
+THEME_PAIRS="BAR_NAME_ATTACHED_STYLE:@clux-bar-name-attached-style
+BAR_NAME_DETACHED_STYLE:@clux-bar-name-detached-style
+BAR_WINDOW_ACTIVE_STYLE:@clux-bar-window-active-style
+BAR_WINDOW_INACTIVE_STYLE:@clux-bar-window-inactive-style
+BAR_BRACKET_STYLE:@clux-bar-bracket-style
+BAR_SEPARATOR_STYLE:@clux-bar-separator-style
+BAR_WINDOW_OPEN:@clux-bar-window-open
+BAR_WINDOW_CLOSE:@clux-bar-window-close
+BAR_SEPARATOR:@clux-bar-separator
+BAR_NAME_LENGTH:@clux-bar-name-length
+AGENT_BUSY_COLOR:@clux-agent-busy-color
+AGENT_NEEDS_COLOR:@clux-agent-needs-color
+AGENT_DONE_COLOR:@clux-agent-done-color
+AGENT_FAIL_COLOR:@clux-agent-fail-color
+AGENT_GLYPH_BUSY:@clux-agent-glyph-busy
+AGENT_GLYPH_NEEDS:@clux-agent-glyph-needs
+AGENT_GLYPH_DONE:@clux-agent-glyph-done
+AGENT_GLYPH_FAIL:@clux-agent-glyph-fail
+NOTIFY_BG:@claude-notify-bg
+NOTIFY_FG:@claude-notify-fg"
+
+# add_notify_pref KIND TYPE VALUE — one §3.6 answer, checked, as a finished line.
+add_notify_pref() {
+    case " $NOTIFY_TYPES " in
+        *" $2 "*) ;;
+        *)
+            echo "render-clux-conf.sh: --notify-$1: unknown notification type '$2' (one of: $NOTIFY_TYPES)" >&2
+            return 1
+            ;;
+    esac
+    case "$3" in
+        on|off) ;;
+        *)
+            echo "render-clux-conf.sh: --notify-$1 $2: value must be on or off, got '$3'" >&2
+            return 1
+            ;;
+    esac
+    NOTIFY_PREFS="${NOTIFY_PREFS}set -g \"@claude-notify-$2-$1\" \"$3\"
+"
+}
+
+# load_from FILE — the answers of a clux.tmux.conf that this script wrote
+# before, for /clux:upgrade. Each "set -g NAME VALUE" line sets the variable
+# that writes NAME. The value is in double quotes, or in single quotes
+# (@clux-agents-command). A flag after --from overrides the value it read. A
+# NAME this version does not write is reported as "dropped:" on stderr.
+load_from() {
+    [ -f "$1" ] || { echo "render-clux-conf.sh: --from: no file $1" >&2; return 1; }
+    local line rest name val var kind type
+    while IFS= read -r line; do
+        case "$line" in 'set -g '*) ;; *) continue ;; esac
+        rest="${line#set -g }"
+        case "$rest" in
+            '"'*) name="${rest#\"}"; name="${name%%\"*}"; val="${rest#\""$name"\" }" ;;
+            *) name="${rest%% *}"; val="${rest#* }" ;;
+        esac
+        case "$val" in
+            \"*\") val="${val#\"}"; val="${val%\"}" ;;
+            \'*\') val="${val#\'}"; val="${val%\'}" ;;
+        esac
+        case "$name" in
+            @clux-dir-resolver) var=DIR_RESOLVER ;;
+            @clux-editor) var=EDITOR_CMD ;;
+            @clux-agents-command) var=AGENTS_COMMAND ;;
+            @clux-picker) var=PICKER ;;
+            @clux-agent-refresh-command) var=AGENT_REFRESH_COMMAND ;;
+            @claude-notify-*-visual|@claude-notify-*-sound)
+                kind="${name##*-}"; type="${name#@claude-notify-}"; type="${type%-*}"
+                add_notify_pref "$kind" "$type" "$val" || echo "render-clux-conf.sh: dropped: $name" >&2
+                continue
+                ;;
+            *) var=$(printf '%s\n' "$THEME_PAIRS" | sed -n "s/^\([A-Z_]*\):$name\$/\1/p") ;;
+        esac
+        if [ -n "$var" ]; then
+            printf -v "$var" '%s' "$val"
+        else
+            echo "render-clux-conf.sh: dropped: $name" >&2
+        fi
+    done < "$1"
+}
+
 usage() {
     cat <<'USAGE'
 Usage: render-clux-conf.sh --dir-resolver V --editor V --agents-command V --picker V [options]
@@ -128,6 +211,11 @@ Optional:
                                    default only makes the file longer
   --notify-bg VALUE               @claude-notify-bg / -fg, the colours of the
   --notify-fg VALUE                notification token (only when detected)
+  --from FILE                   read the answers of a clux.tmux.conf this
+                                 script wrote before (/clux:upgrade); a flag
+                                 after it overrides the value it read, and a
+                                 setting this version does not write is
+                                 reported as "dropped:" on stderr
   --scripts-dir PATH            default: ~/.config/clux/scripts (the deployed
                                  location bind-key/hook lines point at)
   --out PATH                    default: ~/.config/clux/clux.tmux.conf
@@ -164,26 +252,10 @@ while [ $# -gt 0 ]; do
         --notify-bg) NOTIFY_BG="${2:-}"; shift 2 ;;
         --notify-fg) NOTIFY_FG="${2:-}"; shift 2 ;;
         --notify-visual|--notify-sound)
-            _kind="${1#--notify-}"
-            _type="${2:-}"; _val="${3:-}"
-            case " $NOTIFY_TYPES " in
-                *" $_type "*) ;;
-                *)
-                    echo "render-clux-conf.sh: $1: unknown notification type '$_type' (one of: $NOTIFY_TYPES)" >&2
-                    exit 1
-                    ;;
-            esac
-            case "$_val" in
-                on|off) ;;
-                *)
-                    echo "render-clux-conf.sh: $1 $_type: value must be on or off, got '$_val'" >&2
-                    exit 1
-                    ;;
-            esac
-            NOTIFY_PREFS="${NOTIFY_PREFS}set -g \"@claude-notify-${_type}-${_kind}\" \"${_val}\"
-"
+            add_notify_pref "${1#--notify-}" "${2:-}" "${3:-}" || exit 1
             shift 3
             ;;
+        --from) load_from "${2:-}" || exit 1; shift 2 ;;
         --scripts-dir) SCRIPTS_DIR="${2:-}"; shift 2 ;;
         --out) OUT="${2:-}"; shift 2 ;;
         --version) VERSION="${2:-}"; shift 2 ;;
@@ -198,6 +270,11 @@ done
 
 if [ -z "$DIR_RESOLVER" ] || [ -z "$EDITOR_CMD" ] || [ -z "$AGENTS_COMMAND" ] || [ -z "$PICKER" ]; then
     echo "render-clux-conf.sh: --dir-resolver, --editor, --agents-command, and --picker are all required" >&2
+    # One line per missing answer, for /clux:upgrade to ask.
+    [ -n "$DIR_RESOLVER" ] || echo "missing: --dir-resolver" >&2
+    [ -n "$EDITOR_CMD" ] || echo "missing: --editor" >&2
+    [ -n "$AGENTS_COMMAND" ] || echo "missing: --agents-command" >&2
+    [ -n "$PICKER" ] || echo "missing: --picker" >&2
     usage >&2
     exit 1
 fi
@@ -277,27 +354,6 @@ HEADER
     # passed that flag, per the design: detection writes a line only for a
     # value it found, and everything else is left to the reader's own
     # default so this file stays honest about what it inferred.
-    local bar_pairs="BAR_NAME_ATTACHED_STYLE:@clux-bar-name-attached-style
-BAR_NAME_DETACHED_STYLE:@clux-bar-name-detached-style
-BAR_WINDOW_ACTIVE_STYLE:@clux-bar-window-active-style
-BAR_WINDOW_INACTIVE_STYLE:@clux-bar-window-inactive-style
-BAR_BRACKET_STYLE:@clux-bar-bracket-style
-BAR_SEPARATOR_STYLE:@clux-bar-separator-style
-BAR_WINDOW_OPEN:@clux-bar-window-open
-BAR_WINDOW_CLOSE:@clux-bar-window-close
-BAR_SEPARATOR:@clux-bar-separator
-BAR_NAME_LENGTH:@clux-bar-name-length
-AGENT_BUSY_COLOR:@clux-agent-busy-color
-AGENT_NEEDS_COLOR:@clux-agent-needs-color
-AGENT_DONE_COLOR:@clux-agent-done-color
-AGENT_FAIL_COLOR:@clux-agent-fail-color
-AGENT_GLYPH_BUSY:@clux-agent-glyph-busy
-AGENT_GLYPH_NEEDS:@clux-agent-glyph-needs
-AGENT_GLYPH_DONE:@clux-agent-glyph-done
-AGENT_GLYPH_FAIL:@clux-agent-glyph-fail
-NOTIFY_BG:@claude-notify-bg
-NOTIFY_FG:@claude-notify-fg"
-
     local any_theme=0 varname optname val
     while IFS=: read -r varname optname; do
         [ -n "$varname" ] || continue
@@ -311,7 +367,7 @@ NOTIFY_FG:@claude-notify-fg"
             printf 'set -g "%s" "%s"\n' "$optname" "$val"
         fi
     done <<PAIRS
-$bar_pairs
+$THEME_PAIRS
 PAIRS
 
     # §3.6 answers. Only what the caller passed, which the skill limits to
@@ -338,13 +394,15 @@ PAIRS
     # commands typed at the "Session name:" prompt. new-workspace-prompt.sh
     # reads both answers itself instead; see its header. No user-supplied value
     # reaches a tmux command string on this path any more.
-    # Fixed rows, not a percentage: the popup holds four lines whatever the
-    # terminal is, and `-h 30%%` grew it to fifteen on a tall one. `-x 0 -y S`
+    # Fixed rows, not a percentage, so the popup has the same size on each
+    # terminal (`-h 30%%` grew it on a tall one). 15 rows less the border give
+    # 13: the header, a blank line, the 9 saved workspaces, a message line and
+    # the key line (see new-workspace-prompt.sh). `-x 0 -y S`
     # pins it to the top-left corner, just clear of the status line — S
     # resolves to the line below the bar when status-position is top and the
     # line above it when it is bottom, so the popup follows the bar rather
     # than needing a second setting.
-    printf 'bind-key A display-popup -w 62 -h 7 -x 0 -y S -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
+    printf 'bind-key A display-popup -w 62 -h 15 -x 0 -y S -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key m run-shell "%s/jump-to-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key ` run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key DC run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
