@@ -2,6 +2,17 @@
 
 All notable changes to clux are documented here.
 
+## [4.5.0]
+
+### Added
+
+- **The background sessions pane: `/clux:sessions`.** One pane for the background sessions of the current repository. Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description: the question of a session that needs input, else what the session does now or the result it gave. `/clux:sessions` toggles the pane; `/clux:sessions on` and `/clux:sessions off` set it
+- `ctrl+x b` toggles the pane from anywhere, also with a draft in the composer. No Claude Code action runs a plugin command, so the band's **Show** and the pane's **Hide** buttons take the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel
+- Select a row (its number `1` to `9`, or Tab and Enter) to open that session: `claude attach <id>` in a new window of the current tmux session, or the command on the clipboard outside tmux
+- The band above the prompt is always one line: the counts, or `none live`. When a session writes `needs input:`, a toast shows its question and a sound plays (`afplay`, `paplay`, `pw-play`, `aplay` or `play`), one time for each new question, also a second question from the same session
+- clux reads `~/.claude/jobs/*/state.json` every 5 seconds, one poll at a time. A session counts when its folder or its worktree is under the main working tree, or under a worktree that `git worktree list` names. A working session with no write for 30 minutes, or a state clux does not know, shows as unknown
+- The pane is the first function-hooks module of clux (`hooks/sessions/register.tsx`, listed under `modules` in `hooks/hooks.json`). It needs Claude Code 2.1.291 or later. On an older Claude Code, `/clux:sessions` says that the pane did not load
+
 ## [4.4.1]
 
 ### Changed

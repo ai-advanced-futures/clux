@@ -14,11 +14,6 @@
       "description": "Claude Code ↔ tmux notifications — status bar alerts when tasks finish or need input",
       "source": "./plugins/clux",
       "strict": false
-    },
-    {
-      "name": "clux-sessions",
-      "description": "Background sessions: one pane that shows the name, status, PRs and description of each background session of this repository. /sessions or ctrl+x b toggles it; select a row to open that session. Plays a sound when a session needs input.",
-      "source": "./plugins/clux-sessions"
     }
   ]
 }

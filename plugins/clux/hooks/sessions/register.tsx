@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { BgSession, BgStatus } from '../types'
+import type { BgSession, BgStatus } from '../../types'
 import {
   LABEL,
   isFresh,
@@ -12,7 +12,8 @@ import {
 } from './jobs'
 
 const PANE = 'sessions'
-const COMMAND = 'sessions'
+// commands/sessions.md declares it; the hook below answers it.
+const COMMAND = 'clux:sessions'
 // The chord that toggles the pane, also with a draft in the composer. No
 // engine action runs a plugin command, so the mod borrows this one: its
 // engine handler is mounted only in the diff panel, where it keeps its job.
@@ -25,7 +26,7 @@ const SOUND = 'sounds/needs-input.wav'
 // afplay on macOS; on Linux Claude Code has no player, so try clux's.
 const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
 
-const sessions = atom({ plugin: 'clux-sessions', key: 'sessions' } as const, [])
+const sessions = atom({ plugin: 'clux', key: 'sessions' } as const, [])
 
 const COLOR: Record<BgStatus, string> = {
   'needs-input': 'warning',
@@ -162,7 +163,7 @@ async function tick($: EngineInterface, isQuiet = false) {
     if (loop.polls % ROOTS_EVERY === 0) scope.roots = await repoRoots($)
     await poll($, scope, isQuiet)
   } catch (error) {
-    $.ui.log(`clux-sessions: poll failed: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`clux sessions: poll failed: ${String(error)}`, { to: 'debug' })
   } finally {
     loop.isPolling = false
   }
@@ -170,16 +171,6 @@ async function tick($: EngineInterface, isQuiet = false) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // A refused name leaves the band and the alerts running.
-    await $.command
-      .register({
-        name: COMMAND,
-        description: 'Show or hide the background sessions of this repository',
-        argumentHint: '[on|off]',
-      })
-      .catch(error => {
-        $.ui.log(`clux-sessions: /${COMMAND} not registered: ${String(error)}`, { to: 'debug' })
-      })
     try {
       loop.scope = {
         dir: await jobsDir($),
@@ -191,13 +182,13 @@ export const register: Register = on => {
       loop.timer?.cancel()
       loop.timer = $.clock.every(POLL_MS, () => void tick($))
     } catch (error) {
-      $.ui.log(`clux-sessions: start failed: ${String(error)}`, { to: 'debug' })
+      $.ui.log(`clux sessions: start failed: ${String(error)}`, { to: 'debug' })
     }
 
     return next(e)
   })
 
-  // `/sessions` alone toggles the pane: it closes a pane that shows, and
+  // `/clux:sessions` alone toggles the pane: it closes a pane that shows, and
   // opens one that is closed or a tab behind another. `on` and `off` set it.
   on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim()

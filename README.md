@@ -29,6 +29,25 @@ tmux and bash ≥ 4.0. jq and flock are recommended. Python ≥ 3.10 and perl ar
 
 `/clux:follow on` makes all terminals that are attached to tmux show the same session. When you change session in one terminal, the others go with it. `/clux:follow off` stops it.
 
+## Background sessions pane
+
+`/clux:sessions` opens one pane for the background sessions of the current repository. `/clux:sessions` again closes it. `ctrl+x b` does the same from anywhere, also while you write a message. Your draft stays in the composer.
+
+```
+Background sessions · 3                      [ Hide ]
+1: tenant-registry-p1   ● needs input  choose: YAML crosswalk or SQL table?
+2: ce-db-roster         ● working      #41 Running the migration tests
+3: mods-research        ● done         #28 #29 10 daily uses + gh-account mod
+```
+
+- Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description. The description is the question of a session that needs input, else what the session does now or the result it gave.
+- Press the number of a row (`1` to `9`), or Tab and then Enter, to open that session. In tmux, clux opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
+- The band above the prompt is one line: the counts (`1 needs input · 2 working`), or `none live`. **Show** opens the pane.
+- When a session writes `needs input:`, clux shows a toast and plays a sound, one time for each new question.
+- A session counts when its folder or its worktree is in the repository, also a worktree that `git worktree list` names. The session that shows the pane is not in the list. A working session that has not written its state for 30 minutes shows as unknown.
+
+The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.291 or later. `ctrl+x b` is the chord of the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel. To use a different chord, bind it to `app:cycleDiffBase` in `~/.claude/keybindings.json` (context `Global`).
+
 ## Companion terminal
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A local model, Laya, examines each command before it runs. A dangerous command waits for your `y`. Install Laya one time. Claude asks you before it runs the install:

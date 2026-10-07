@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { isUnder, newlyBlocked, sortSessions, toSession, worktreePaths } from '../hooks/jobs'
+import { isUnder, newlyBlocked, sortSessions, toSession, worktreePaths } from '../hooks/sessions/jobs'
 import type { BgSession } from '../types'
 
 const ROOT = '/code/clux'

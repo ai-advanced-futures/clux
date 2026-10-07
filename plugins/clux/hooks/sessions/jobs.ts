@@ -1,7 +1,7 @@
 // Pure helpers: turn a background job's state.json into one row of the
 // sessions pane. No `$` here, so the tests can call these directly.
 
-import type { BgPr, BgSession, BgStatus } from '../types'
+import type { BgPr, BgSession, BgStatus } from '../../types'
 
 // Finished sessions older than this drop off the list.
 const KEEP_FINISHED_MS = 3 * 24 * 60 * 60 * 1000

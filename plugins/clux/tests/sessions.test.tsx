@@ -18,7 +18,6 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: `${ROOT}/.claude/worktrees/mine` }))
   on('session.id', () => ({ value: 'self' }))
-  on('command.register', () => ({ value: { command: 'sessions' } }))
   const lists = { count: 0 }
   on('fs.list', () => {
     lists.count += 1
@@ -60,7 +59,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     return { value: undefined }
   })
   on('ui.panes', () => ({
-    value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux-sessions' })),
+    value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux' })),
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
@@ -97,7 +96,7 @@ test('the pane lists name, status, PRs and description for this repository only'
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({
-    plugin: 'clux-sessions',
+    plugin: 'clux',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'sessions',
@@ -128,7 +127,7 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
   )
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({
-    plugin: 'clux-sessions',
+    plugin: 'clux',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'sessions',
@@ -170,13 +169,13 @@ test('a new question plays the sound once and raises a toast', async ($, on) => 
 
 const runSessions = ($: Engine, args = '') =>
   $.command.run({
-    command: 'sessions',
+    command: 'clux:sessions',
     args,
     origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 100 },
   })
 
-test('/sessions opens the pane, and /sessions again closes it', async ($, on) => {
+test('/clux:sessions opens the pane, and /clux:sessions again closes it', async ($, on) => {
   const { panes } = world(on, {})
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
@@ -192,7 +191,7 @@ test('/sessions opens the pane, and /sessions again closes it', async ($, on) =>
   expect(panes.has('sessions')).toBe(false)
 })
 
-test('a question found when /sessions opens still alerts', async ($, on) => {
+test('a question found when /clux:sessions opens still alerts', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
@@ -228,7 +227,7 @@ test('the band counts the sessions and stays when none is live', async ($, on) =
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   const band = {
-    plugin: 'clux-sessions',
+    plugin: 'clux',
     surface: 'terminal' as const,
     component: 'AbovePrompt' as const,
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
@@ -260,7 +259,7 @@ test('the chord closes an open pane through its Hide button', async ($, on) => {
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await runSessions($)
   const ui = await $.ui.mount({
-    plugin: 'clux-sessions',
+    plugin: 'clux',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'sessions',
