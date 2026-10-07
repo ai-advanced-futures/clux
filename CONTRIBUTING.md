@@ -40,7 +40,7 @@ plugins/clux/
 │   ├── notify-tmux.sh           # Writes the notification queue
 │   ├── agent-state.sh           # Writes the per-pane agent-state file
 │   └── sessions/                # The background sessions pane (function hooks)
-│       ├── register.tsx         #   Pane, band, /clux:sessions, ctrl+x b, alerts
+│       ├── register.tsx         #   Pane, footer label, /clux:sessions, ctrl+x b, alerts
 │       └── jobs.ts              #   Pure helpers: a job's state.json as one row
 ├── sounds/needs-input.wav       # The alert of the sessions pane
 ├── tests/                       # claude plugin test: the sessions pane

@@ -155,10 +155,8 @@ async function attach($: EngineInterface, session: BgSession) {
   $.ui.toast(copied?.isCopied ? `Copied: ${command}` : `Run: ${command}`)
 }
 
-function counts(list: readonly BgSession[]) {
-  const of = (status: BgStatus) => list.filter(s => s.status === status).length
-  return { needs: of('needs-input'), working: of('working') }
-}
+const countNeeds = (list: readonly BgSession[]) =>
+  list.filter(s => s.status === 'needs-input').length
 
 // The poll loop of this session: set at the start, read by each tick.
 const loop: { scope?: Scope; timer?: Timer; isPolling: boolean; polls: number } = {
@@ -230,7 +228,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box>
           <Text bold>{TITLE} · {list.length} </Text>
-          {/* Over the band's Show: the chord closes an open pane. */}
+          {/* Over the footer's label: the chord closes an open pane. */}
           <Button
             key="close-sessions"
             label="Hide"
@@ -266,35 +264,25 @@ export const register: Register = on => {
     )
   })
 
-  // The band shows also when nothing is live, so the chord always has its
-  // Show button to press.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const list = await read($, sessions)
-    const { needs, working } = counts(list)
-
+  // No band: one label at the end of the prompt footer, so the chord has a
+  // Button to press while the pane is closed. It is dim until a question waits.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const needs = countNeeds(await read($, sessions))
     const { Box, Text, Button } = $.ui.resolve(e)
-    const parts = [
-      needs > 0 ? `${needs} needs input` : '',
-      working > 0 ? `${working} working` : '',
-    ].filter(Boolean)
-    if (parts.length === 0) parts.push('none live')
 
-    // The band is one instance: draw what the hooks below draw, then this row.
+    // The footer is one instance: draw what the hooks below draw, then this.
     return (
-      <Box flexDirection="column">
+      <Box>
         {await next(e)}
-        <Box>
-          <Text color={needs > 0 ? 'warning' : 'subtle'}>
-            {TITLE}: {parts.join(' · ')}{' '}
-          </Text>
-          <Button
-            key="open-sessions"
-            label="Show"
-            action={TOGGLE_ACTION}
-            onPress={() => openPane($)}
-          />
-        </Box>
+        {e.props.modes.length > 0 && <Text dimColor> & </Text>}
+        <Button
+          key="open-sessions"
+          plain
+          dimColor={needs === 0}
+          label={needs > 0 ? `${needs} needs input` : 'sessions'}
+          action={TOGGLE_ACTION}
+          onPress={() => openPane($)}
+        />
       </Box>
     )
   })

@@ -66,6 +66,14 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     const { Box } = $.ui.resolve(e)
     return <Box key="engine-band" />
   })
+  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box key="engine-modes">
+        <Text dimColor>{e.props.modes.join(' & ')}</Text>
+      </Box>
+    )
+  })
 
   return { clock, ran, toasts, lists, panes }
 }
@@ -250,7 +258,7 @@ test('a start that runs twice keeps one timer', async ($, on) => {
   expect(lists.count - before).toBe(1)
 })
 
-test('the band counts the sessions and stays when none is live', async ($, on) => {
+test('the footer label holds the chord, and the band stays empty', async ($, on) => {
   const jobs: Record<string, string> = {
     ask1: state({ name: 'a', state: 'blocked', detail: 'q' }),
     run1: state({ name: 'b', state: 'working' }),
@@ -258,32 +266,38 @@ test('the band counts the sessions and stays when none is live', async ($, on) =
   const { clock } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
-  const band = {
+  const footer = {
     plugin: 'clux',
     surface: 'terminal' as const,
-    component: 'AbovePrompt' as const,
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    component: 'SessionMode' as const,
+    props: { modes: ['focus'] },
   }
-  const ui = await $.ui.mount(band)
-  const line = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' ')
-  expect(line).toContain('1 needs input · 1 working')
-  expect((await ui.find({ key: 'open-sessions' }))?.props.action).toBe('app:cycleDiffBase')
+  const ui = await $.ui.mount(footer)
+  const label = await ui.find({ key: 'open-sessions' })
+  expect(label?.props.label).toBe('1 needs input')
+  expect(label?.props.dimColor).toBe(false)
+  expect(label?.props.action).toBe('app:cycleDiffBase')
+  expect(await ui.find({ key: 'engine-modes' })).toBeDefined()
   await ui.unmount()
 
   jobs.ask1 = state({ name: 'a', state: 'done', output: { result: 'ok' } })
-  jobs.run1 = state({ name: 'b', state: 'stopped' })
   await clock.advance(5000)
   await clock.settle()
-  const quiet = await $.ui.mount(band)
-  const quietLine = (await quiet.findAll({ type: 'Text' })).map(t => t.text).join(' ')
-  expect(quietLine).toContain('none live')
-  expect(await quiet.find({ key: 'open-sessions' })).toBeDefined()
+  const quiet = await $.ui.mount({ ...footer, props: { modes: [] } })
+  const quietLabel = await quiet.find({ key: 'open-sessions' })
+  expect(quietLabel?.props.label).toBe('sessions')
+  expect(quietLabel?.props.dimColor).toBe(true)
   await quiet.unmount()
 
-  const survey = await $.ui.mount({ ...band, props: { ...band.props, hasSurvey: true } })
-  expect(await survey.find({ key: 'open-sessions' })).toBeUndefined()
-  expect(await survey.find({ key: 'engine-band' })).toBeDefined()
-  await survey.unmount()
+  const band = await $.ui.mount({
+    plugin: 'clux',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  })
+  expect(await band.find({ key: 'open-sessions' })).toBeUndefined()
+  expect(await band.find({ key: 'engine-band' })).toBeDefined()
+  await band.unmount()
 })
 
 test('the chord closes an open pane through its Hide button', async ($, on) => {
