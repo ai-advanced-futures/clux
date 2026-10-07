@@ -6,6 +6,7 @@ import {
   LABEL,
   isFresh,
   newlyBlocked,
+  question,
   sortSessions,
   toSession,
   worktreePaths,
@@ -22,6 +23,9 @@ const TITLE = 'Background sessions'
 const POLL_MS = 5000
 // Read the worktree list again after this many polls (one minute).
 const ROOTS_EVERY = 12
+// How long a question stays known after its last poll. Longer than a roots
+// refresh, so a row that drops out for some polls does not alert again.
+const ALERT_MEMORY_MS = 5 * 60 * 1000
 const SOUND = 'sounds/needs-input.wav'
 // afplay on macOS; on Linux Claude Code has no player, so try clux's.
 const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
@@ -66,7 +70,7 @@ async function repoRoots($: EngineInterface): Promise<string[]> {
   return [...new Set([...paths, ...real.filter((path): path is string => !!path)])]
 }
 
-async function readSessions($: EngineInterface, scope: Scope) {
+async function readSessions($: EngineInterface, scope: Scope, now: number) {
   const entries = await $.fs.list(scope.dir).catch(() => [])
   const texts = await Promise.all(
     entries
@@ -76,7 +80,6 @@ async function readSessions($: EngineInterface, scope: Scope) {
         text: await $.fs.read(`${scope.dir}/${entry.name}/state.json`).catch(() => ''),
       })),
   )
-  const now = await $.clock.now()
   const found = texts.flatMap(({ id, text }) => {
     if (typeof text !== 'string' || text === '') return []
     const session = toSession(id, text, scope.roots, scope.selfId, now)
@@ -99,15 +102,25 @@ async function playAlert($: EngineInterface) {
   }
 }
 
+// The questions alerted recently, each with the last poll that saw it.
+const alerted = new Map<string, number>()
+
 // `isQuiet` takes a baseline: no sound for questions asked before the start.
 // One sound for each poll, however many questions it finds.
 async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
-  const list = await readSessions($, scope)
+  const now = await $.clock.now()
+  const list = await readSessions($, scope, now)
   const before = await read($, sessions)
   if (JSON.stringify(list) !== JSON.stringify(before)) {
     await update($, sessions, () => list)
   }
-  const fresh = newlyBlocked(list, before)
+  for (const [key, seen] of alerted) {
+    if (now - seen > ALERT_MEMORY_MS) alerted.delete(key)
+  }
+  const fresh = newlyBlocked(list, before).filter(s => !alerted.has(question(s)))
+  for (const s of list) {
+    if (s.status === 'needs-input') alerted.set(question(s), now)
+  }
   if (isQuiet || fresh.length === 0) return
   for (const session of fresh) {
     $.ui.toast(session.line ? `${session.name} needs input: ${session.line}` : `${session.name} needs input`)
@@ -116,8 +129,8 @@ async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
 }
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the keys.
-function openPane($: EngineInterface, focus = false) {
-  return $.ui.open({ id: PANE, title: TITLE, ...(focus ? { focus: true } : {}) })
+function openPane($: EngineInterface) {
+  return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
 
 // Selecting a session opens it: a new tmux window that attaches to it, or
@@ -138,8 +151,8 @@ async function attach($: EngineInterface, session: BgSession) {
     if (ran?.exitCode === 0) return
   }
   const command = argv.join(' ')
-  await $.ui.copy({ text: command }).catch(() => undefined)
-  $.ui.toast(`Copied: ${command}`)
+  const copied = await $.ui.copy({ text: command }).catch(() => undefined)
+  $.ui.toast(copied?.isCopied ? `Copied: ${command}` : `Run: ${command}`)
 }
 
 function counts(list: readonly BgSession[]) {
@@ -171,6 +184,8 @@ async function tick($: EngineInterface, isQuiet = false) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // A `-p` run or the SDK has no person to alert and no pane to show.
+    if (!e.isInteractive) return next(e)
     try {
       loop.scope = {
         dir: await jobsDir($),
@@ -198,9 +213,12 @@ export const register: Register = on => {
       return { text: 'Background sessions pane closed.' }
     }
     await tick($)
-    await openPane($, true)
+    await openPane($)
 
     return { text: 'Background sessions pane opened. Press a number to open a session.' }
+  }).catch(($, e, next) => {
+    $.ui.log(`clux sessions: command failed: ${String(next.error)}`, { to: 'debug' })
+    return { text: 'The background sessions pane did not respond. Try the command again.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -262,17 +280,21 @@ export const register: Register = on => {
     ].filter(Boolean)
     if (parts.length === 0) parts.push('none live')
 
+    // The band is one instance: draw what the hooks below draw, then this row.
     return (
-      <Box>
-        <Text color={needs > 0 ? 'warning' : 'subtle'}>
-          {TITLE}: {parts.join(' · ')}{' '}
-        </Text>
-        <Button
-          key="open-sessions"
-          label="Show"
-          action={TOGGLE_ACTION}
-          onPress={() => openPane($, true)}
-        />
+      <Box flexDirection="column">
+        {await next(e)}
+        <Box>
+          <Text color={needs > 0 ? 'warning' : 'subtle'}>
+            {TITLE}: {parts.join(' · ')}{' '}
+          </Text>
+          <Button
+            key="open-sessions"
+            label="Show"
+            action={TOGGLE_ACTION}
+            onPress={() => openPane($)}
+          />
+        </Box>
       </Box>
     )
   })

@@ -14,6 +14,7 @@ type JobState = {
   tempo?: string
   name?: string
   detail?: string
+  needs?: string
   output?: { result?: string } | null
   children?: { id?: string; href?: string; kind?: string }[]
   cwd?: string
@@ -89,8 +90,12 @@ export function toSession(
   if (!isOurs) return undefined
   const updatedAt = Date.parse(job.updatedAt ?? '') || 0
   const status = statusOf(job, updatedAt, now)
-  // The description: what the session does now, or the result it gave.
-  const line = status === 'stopped' ? '' : (job.detail || job.output?.result || '')
+  // The description: the question of a session that needs input, what the
+  // session does now, or the result it gave.
+  const line =
+    status === 'stopped' ? ''
+    : status === 'needs-input' ? (job.needs || job.detail || '')
+    : (job.detail || job.output?.result || '')
 
   return {
     id,
@@ -115,7 +120,7 @@ export function sortSessions(list: readonly BgSession[]): BgSession[] {
 
 // The sessions with a question that was not there at the last check: a new
 // session that needs input, or a new question from the same session.
-const question = (s: BgSession) => `${s.id}\n${s.line}`
+export const question = (s: BgSession) => `${s.id}\n${s.line}`
 
 export function newlyBlocked(
   list: readonly BgSession[],

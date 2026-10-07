@@ -204,6 +204,38 @@ test('a question found when /clux:sessions opens still alerts', async ($, on) =>
   expect(toasts).toEqual(['fabric-giants needs input'])
 })
 
+test('a question that drops out for one poll does not alert again', async ($, on) => {
+  const jobs: Record<string, string> = {
+    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
+  }
+  const { clock, ran } = world(on, jobs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const plays = () => ran.filter(argv => argv[0] === 'paplay').length
+
+  const asking = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
+  jobs.run1 = asking
+  await clock.advance(5000)
+  await clock.settle()
+  expect(plays()).toBe(1)
+
+  // A read during a write: the file does not parse for one poll.
+  jobs.run1 = '{not json'
+  await clock.advance(5000)
+  await clock.settle()
+  jobs.run1 = asking
+  await clock.advance(5000)
+  await clock.settle()
+  expect(plays()).toBe(1)
+})
+
+test('a run with no person at the prompt does not poll', async ($, on) => {
+  const { clock, lists } = world(on, {})
+  await $.session.start({ cwd: ROOT, surface: null, isInteractive: false })
+  await clock.advance(5000)
+  await clock.settle()
+  expect(lists.count).toBe(0)
+})
+
 test('a start that runs twice keeps one timer', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),

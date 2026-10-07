@@ -23,6 +23,11 @@ describe('toSession', () => {
     expect(s?.line).toBe('choose: A or B?')
   })
 
+  test('a blocked job shows its needs before its detail', () => {
+    const s = toSession('a10', job({ state: 'blocked', needs: 'choose: A or B?', detail: 'blocked' }), [ROOT], 'self', NOW)
+    expect(s?.line).toBe('choose: A or B?')
+  })
+
   test('a working job with a blocked tempo needs input', () => {
     const s = toSession('a2', job({ state: 'working', tempo: 'blocked' }), [ROOT], 'self', NOW)
     expect(s?.status).toBe('needs-input')
