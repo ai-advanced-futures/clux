@@ -28,16 +28,24 @@ plugins/clux/
 │   ├── setup.md                 # /clux:setup — an entry point; states no rules
 │   ├── validate.md              # /clux:validate
 │   ├── upgrade.md               # /clux:upgrade — setup again with the old answers
-│   └── follow.md                # /clux:follow — mirror mode on and off
+│   ├── follow.md                # /clux:follow — mirror mode on and off
+│   └── sessions.md              # /clux:sessions — the hooks module answers it
 ├── skills/
 │   └── configuring-tmux/        # The whole setup procedure and every rule
 │       └── SKILL.md             #   governing it. /clux:setup invokes this
 │   └── terminal/                # Persistent visible companion terminal
 │       └── SKILL.md             #   Plain, interactive, and secret command rules
 ├── hooks/
-│   ├── hooks.json               # Auto-registered hooks
+│   ├── hooks.json               # Auto-registered hooks, and the hooks module
 │   ├── notify-tmux.sh           # Writes the notification queue
-│   └── agent-state.sh           # Writes the per-pane agent-state file
+│   ├── agent-state.sh           # Writes the per-pane agent-state file
+│   └── sessions/                # The background sessions pane (function hooks)
+│       ├── register.tsx         #   Pane, footer label, /clux:sessions, ctrl+x b, alerts
+│       └── jobs.ts              #   Pure helpers: a job's state.json as one row
+├── sounds/needs-input.wav       # The alert of the sessions pane
+├── tests/                       # claude plugin test: the sessions pane
+├── types/index.d.ts             # The state of the sessions pane
+├── tsconfig.json                # tsc for the sessions pane
 ├── scripts/
 │   │                            # Libraries — sourced, never executed
 │   ├── path.sh                  # Path resolution and the agents-pane resolver
@@ -112,6 +120,14 @@ Run the test suite from the repository root:
 
 ```bash
 bats test/
+```
+
+The sessions pane has its own tests and type check. `tsc` needs the types that Claude Code writes to `plugins/clux/.claude-plugin/types/` when it loads the plugin (for example with `claude --plugin-dir plugins/clux`):
+
+```bash
+claude plugin validate plugins/clux
+claude plugin test plugins/clux
+tsc -p plugins/clux
 ```
 
 Enable debug logging by setting `CLUX_DEBUG=1` in your environment before invoking any script. Debug output goes to `/tmp/clux.log`.
