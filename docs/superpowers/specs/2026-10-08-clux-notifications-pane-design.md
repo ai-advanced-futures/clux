@@ -1,6 +1,6 @@
 # clux notifications pane — design
 
-Date: 2026-10-08. Status: approved for implementation (2026-10-08). Target version: 4.6.0, in PR #32 with the sessions pane changes (one PR, one release). The tmux keys and the fzf popup do the same as before.
+Date: 2026-10-08. Status: approved for implementation (2026-10-08). Target version: 4.6.0, in PR #32 with the sessions pane changes (one PR, one release). The tmux keys and the fzf popup keep their keys and actions. The popup now jumps to an interactive line by id, not by name (see 4.2).
 
 Base design: the background sessions pane (`hooks/sessions/register.tsx`) as PR #32 leaves it: no needs-input sound and no toast, Enter inserts `@name`, no attach, and a `ctrl+x tab` hint when the pane opens without the keys. This pane uses the same pattern.
 
@@ -57,15 +57,15 @@ These decisions come from the brainstorm of 2026-10-08.
 |---|---|
 | `plugins/clux/scripts/notification-line.sh` | New. Three verbs: `path`, `jump`, `remove`. See 4.2. |
 | `plugins/clux/scripts/jump-to-notification.sh` | Calls `notification-line.sh jump "<top line>"`. Its parse code moves into the new script. It always exits 0, as before. |
-| `plugins/clux/scripts/notification-picker.sh` | Enter calls `notification-line.sh jump "<line>"`. Ctrl-D calls `notification-line.sh remove "<line>"`. Its parse and lock code moves into the new script. |
+| `plugins/clux/scripts/notification-picker.sh` | Enter calls `notification-line.sh jump "<line>"`. Ctrl-D calls `notification-line.sh remove "<line>"`. Its parse and lock code moves into the new script. It also keeps exiting 0, as `jump-to-notification.sh` does. [inferred] |
 | `plugins/clux/config/deploy-manifest.txt` | Adds `notification-line.sh`. |
 | `plugins/clux/hooks/notifications/lines.ts` | New. Pure functions, with no `$`: `toRows(text)` and `displayText(line)`. See 4.3. |
 | `plugins/clux/hooks/notifications/register.tsx` | New. The pane, the command, the footer label, the poll and the keys. See 4.4. |
-| `plugins/clux/hooks/hooks.json` | Adds `./notifications/register.tsx` to `modules`. |
-| `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. |
-| `plugins/clux/types/index.d.ts` | Adds the `NotifRow` type and the `notifications` key to the `clux` plugin state. |
+| `plugins/clux/hooks/hooks.json` | Sets `modules` to `["./notifications/register.tsx", "./sessions/register.tsx"]`. The first module is the outermost in the chain, so the notifications label is drawn after the sessions label. |
+| `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. The front matter has `description: Show the clux notification queue in a pane` and `argument-hint: "[on|off]"`, with no chord in the description, because this pane has no chord. [inferred] |
+| `plugins/clux/types/index.d.ts` | Adds the `NotifRow` type, next to `BgSession`, and the `notifications` key to the `clux` plugin state. |
 | `plugins/clux/.claude-plugin/plugin.json` | No change: PR #32 already sets 4.6.0. |
-| `CHANGELOG.md`, `README.md`, `CONTRIBUTING.md` | An `Added` part in the existing `[4.6.0]` entry, a "Notifications pane" section, and the new files in the file tree. |
+| `CHANGELOG.md`, `README.md`, `CONTRIBUTING.md` | An `Added` part in the existing `[4.6.0]` entry, a `Changed` line for the two behavior changes of 4.2 (the popup jumps by id; the queue path has three tiers), a "Notifications pane" section, and the new files in the file tree. [inferred] |
 | `test/notification-line.bats` | New. See 6. |
 | `plugins/clux/tests/notifications-lines.test.ts`, `plugins/clux/tests/notifications.test.tsx` | New. See 6. |
 
@@ -80,7 +80,7 @@ notification-line.sh remove "<line>"
 - **`path`** prints the queue path from `resolve_notify_file`. The mod calls it one time at the session start, so the path has one source.
 - **`jump`** does the routing that `jump-to-notification.sh` does today, for any line and not only the top line:
   1. An `agent:` line: parse the three `@@` segments, call `agent_jump`, then `_agent_remove_entry`. This is the same as today.
-  2. A `|||<session_id>:<window_id>` line: `tmux select-window`, then `tmux switch-client`.
+  2. A `|||<session_id>:<window_id>` line: `tmux select-window`, then `tmux switch-client`. The picker has no such branch today and parses an interactive line by name, so the popup now jumps by id too. A session renamed since the notification arrived now jumps correctly. [inferred]
   3. A `|ID:` line: the same, with the legacy marker.
   4. Any other line: the name-based parse `<session>:<window> `.
 
@@ -89,49 +89,51 @@ notification-line.sh remove "<line>"
 
   Today the picker uses `grep -vF`, which also removes a longer line that contains the selected line. `-x` removes only an equal line. This is the correct behavior, and the current picker tests remove only equal lines.
 
-The script sources `helpers.sh` only on the `agent:` branch, as the picker does today. It keeps the fix that restores `NOTIFY_FILE` after `helpers.sh` is sourced.
+The script sources `helpers.sh` only on the `agent:` branch, as the picker does today. It keeps the fix that restores `NOTIFY_FILE` after `helpers.sh` is sourced. All three verbs resolve the queue with `resolve_notify_file` from `scripts/path.sh`, one time at the top of the script, and the agent branch restores that value after it sources `helpers.sh`. [inferred] `path.sh` is already in `deploy-manifest.txt`. [inferred] The two old callers used two tiers and no sidecar, so with only the sidecar set they now touch the sidecar file. This is a correction. [inferred] `jump-to-notification.sh` and `notification-picker.sh` also resolve their own read of the queue with `resolve_notify_file`, in place of the two-tier expression at `jump-to-notification.sh:6` and `notification-picker.sh:5`, as `show-notification.sh` does. [inferred]
 
 ### 4.3 `hooks/notifications/lines.ts`
 
 ```ts
-type NotifRow = { line: string; text: string; kind: 'agent' | 'window' }
+import type { NotifRow } from '../../types'   // { line: string; text: string; kind: 'agent' | 'window' }, declared in types/index.d.ts
 
 displayText(line: string): string   // the part before "|||" or "|ID:"
 toRows(text: string): NotifRow[]      // one row for each line that is not empty, in file order
 ```
 
-`kind` is `agent` when the line has `|||agent:`, otherwise `window`. The pane uses `kind` only to select a mark. The pane does not parse a target. The script does that.
+`kind` is `agent` when the line has `|||agent:`, otherwise `window`. The pane does not draw `kind`: the text of an agent line already starts with its marker, and the row label is the row text alone. `kind` stays in the type for the tests and for later use. [inferred] The pane does not parse a target. The script does that.
 
 ### 4.4 `hooks/notifications/register.tsx`
 
-**Start (`session.start`, interactive only).** Run `notification-line.sh path` one time and keep the path. If the run fails, use `$HOME/.config/tmux/claude_notification`. Do one poll, then poll every 2 seconds with `$.clock.every`. One poll at a time, as in the sessions pane.
+**Start (`session.start`, interactive only).** Run `notification-line.sh path` one time and keep the path. If the run fails, use `$HOME/.config/tmux/claude_notification`. The mod runs `${$.plugin.root}/scripts/notification-line.sh`, so the pane works from `--plugin-dir` with no `/clux:setup`. [inferred] Do one poll, then poll every 2 seconds with `$.clock.every`. One poll at a time, as in the sessions pane.
 
 **Poll.** Read the queue with `$.fs.read`. A missing file is an empty list. Give the text to `toRows`. Write the rows to the `notifications` atom only when they changed.
 
 **Command (`command.run`, `clux:notifications`).** No argument toggles the pane. `on` opens it and `off` closes it, the same as `/clux:sessions`. To open, do one poll, then `$.ui.open({ id: 'notifications', title: 'Notifications', focus: true })`.
 
 **Pane (`ui.render`, `Pane`, `notifications`).**
-- Header: `Notifications · N`, then three plain buttons: `j: down`, `k: up`, `x: remove`. Each one has its `hotkey`.
+- Header: `Notifications · N`, then three plain buttons with the labels `down`, `up` and `remove` and the hotkeys `j`, `k` and `x`. Claude Code draws them as `j: down`, `k: up` and `x: remove`.
 - While the pane does not have the keys (`e.props.isFocused` is false) and the list is not empty, a dim line under the header says `ctrl+x tab: move into the list`, the same as the sessions pane.
 - One row for each notification: a plain `Button` with key `row:<i>` and the row text as its label. The text is cut at the pane width. The first row has `autoFocus`. Its `onPress` is the jump (see Enter below).
 - An empty list shows `No notifications.`
 
-**Focus.** A `ui.focus` hook on this pane records the index from `row:<i>` in a module variable `focused`. Another element (a header button, the close mark) does not change `focused`.
+**Focus.** A `ui.focus` hook on this pane records the index from `row:<i>` in a module variable `focused`, and then returns `next(e)`. A `ui.focus` hook that does not call `next` keeps the ring where it was, so Tab, the arrows, `j`, `k` and `x` would move nothing (`index.d.ts:4029-4031`). `focused` starts at 0 and the `openPane` helper sets it to 0 before `$.ui.open`, so the command and the footer click share one reset, so `j`, `k` and `x` act on the first row until a `ui.focus` says otherwise. [inferred] Another element (a header button) does not change `focused`. A `ui.focus` with no `element` (the close mark) also leaves `focused` as it was, so `x` can still act after the ring moved to the close mark. [inferred]
 
 **`j` / `k`.** Compute `focused + 1` or `focused − 1`, limited to the list. Call `$.ui.focus({ requestId: 'notifications', key: 'row:<i>' })`.
 
 **Enter (row press).** Run `notification-line.sh jump "<line>"`. On exit 0: run `notification-line.sh remove "<line>"`, close the pane, and poll again. The remove is necessary because the status bar removes only the top line. For an agent line, the jump already removed the line, so the remove finds nothing and exits 0. On exit 1, or when Claude Code does not run in tmux (no `TMUX`): show the toast `Could not jump to <text>.`, keep the pane open, and keep the row.
 
-**`x`.** Take the row at `focused`. Run `notification-line.sh remove "<line>"`, then poll again. Move the focus to `row:<min(focused, count − 1)>`, so the focus stays at the same position. On exit 1, show the toast `The queue is busy. Try again.` When the list is empty, `x` does nothing.
+**`x`.** Take the row at `min(focused, count − 1)` of the list the last poll wrote, the same limit that `j` and `k` use, because a poll can make the list shorter with no key press. Run `notification-line.sh remove "<line>"`, then poll again. Move the focus to `row:<min(focused, count − 1)>`, with `count` as the row count after the poll, so the focus stays at the same position and removing the last row moves it up one. When `count` is 0 after the poll, call no `$.ui.focus`, because the pane then draws `No notifications.` and has no row key. [inferred] On exit 1, show the toast `The queue is busy. Try again.` When the list is empty, `x` does nothing.
 
-**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. A click opens the pane. It has no `action`, because there is no chord.
+**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays on the left, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. When `next(e)` returned something, draw the same ` & ` separator as the sessions hook before the button. [inferred] A click opens the pane. It has no `action`, because there is no chord.
 
-**Errors.** Each hook catches its errors and writes them with `$.ui.log(..., { to: 'debug' })`, as the sessions pane does. A failed poll keeps the last list.
+**Errors.** The `command.run` hook catches its errors and writes them with `$.ui.log(..., { to: 'debug' })`, as `sessions/register.tsx:167` does. The two `ui.render` hooks have no `.catch`, as in `sessions/register.tsx:172` and `:225`: when the footer hook fails, the engine runs `next(e)` and the sessions label stays. A failed poll keeps the last list.
 
 ## 5. Limits
 
 - The `j`, `k` and `x` keys work only while the pane has the keys: after `/clux:notifications` with an empty message box, a click in the pane, or `ctrl+x tab`. In the prompt box, `j` types the letter "j".
 - A jump calls `tmux switch-client` with no `-c`. With two tmux clients on the same session, tmux can move the other client. The live check (6.3) tests the usual case of one client. If this fails, a later change can give the client with `-c`.
+- `x` with no `ui.focus` before it removes the first row, before the person has seen a ring on it. [inferred]
+- The pane runs the plugin copy of `notification-line.sh`, and the tmux keys run the copy in `~/.config/clux/scripts/`. After a plugin update, the two can run different versions until `/clux:upgrade`. [inferred]
 - Outside tmux, the pane shows the list and `x` works, but Enter shows the toast.
 - A poll every 2 seconds is one file read. The status bar of tmux shows a new notification sooner, because tmux runs `show-notification.sh` on its own interval.
 
@@ -146,13 +148,14 @@ If `$.ui.focus` gives `{ deny }` after a hotkey press, stop and tell the person 
 ### 6.1 bats (`test/notification-line.bats`)
 
 - `path` prints `CLUX_NOTIFY_FILE` when it is set, and the sidecar value when only the sidecar exists.
+- `remove` removes the line from the sidecar queue when only the sidecar is set. The picker lists the sidecar queue and removes from it, with Ctrl-D, in the same way. [inferred]
 - `jump` on a `|||$1:@2` line calls `tmux select-window -t $1:@2` and `switch-client -t $1` (tmux stub). Exit 0.
 - `jump` on a new-format agent line fast-paths to the embedded pane and removes the line. This is the same case as the regression test in `picker.bats`.
 - `jump` on a line with no target exits 1.
 - `remove` removes an equal line and keeps a longer line that contains it.
 - `remove` deletes the queue file when the last line goes.
 - `remove` exits 1 when the lock is held by a new lock directory.
-- All tests in `picker.bats` and `jump.bats` still pass, with no change to their assertions.
+- All tests in `jump.bats` still pass, with no change to their assertions. All tests in `picker.bats` still pass, except case 3: its assertion changes from `select-window -t main:editor` to the id form, as a deliberate behavior change. [inferred]
 
 ### 6.2 `claude plugin test plugins/clux`
 
@@ -161,10 +164,12 @@ If `$.ui.focus` gives `{ deny }` after a hotkey press, stop and tell the person 
   - The pane draws one row for each line, and `No notifications.` for no file.
   - Enter runs `jump` then `remove` with the full line, and closes the pane.
   - A failed `jump` shows the toast and runs no `remove`.
-  - `x` on the focused row runs `remove` with that line.
+  - `x` on the focused row runs `remove` with that line. `x` with no prior `ui.focus` runs `remove` with the first line. [inferred]
   - `j` after the focus is on `row:0` calls `ui.focus` with `row:1`. `k` on `row:0` stays on `row:0`.
+  - The `ui.focus` hook returns `next(e)` with the `element` unchanged, for a row element, a header button and the close mark.
+  - `x` after a poll made the list shorter than `focused` removes the last row.
   - The footer shows `3 notifs` for three lines, and a dim `notifs` for none.
-  - The footer still draws the sessions label (both hooks on `SessionMode`).
+  - The footer still draws the sessions label (both hooks on `SessionMode`), with the sessions label on the left, then ` & `, then the notifications label. [inferred]
 
 ### 6.3 Live check
 
