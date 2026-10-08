@@ -135,6 +135,12 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 
 ## 6. Tests
 
+### 6.0 First task: a key spike
+
+`j` and `k` depend on one thing that a mock test cannot prove: that `$.ui.focus` called from the `onPress` of a hotkey button moves the ring. A mock records the call and moves nothing. So the first task of the plan is a short spike. Load a 3-row dummy pane with `--plugin-dir`, press `j`, `k`, `x` and Enter, and watch the ring.
+
+If `$.ui.focus` gives `{ deny }` after a hotkey press, stop and tell the person before the work continues. The fallback is `autoFocus` and the arrows only, with no `j` and `k`. The spike code is not kept.
+
 ### 6.1 bats (`test/notification-line.bats`)
 
 - `path` prints `CLUX_NOTIFY_FILE` when it is set, and the sidecar value when only the sidecar exists.
