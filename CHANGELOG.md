@@ -13,11 +13,6 @@ All notable changes to clux are documented here.
 ### Removed
 
 - The sessions pane no longer opens a session (`claude attach <id>` in a new tmux window, or the command on the clipboard outside tmux). Run `claude attach <id>` yourself
-
-## [4.5.1]
-
-### Removed
-
 - The sessions pane no longer plays a sound or shows a toast when a background session needs input. The `needs input` count in the footer stays. The file `sounds/needs-input.wav` is gone. The tmux notification sounds (`@claude-notify-*-sound`) do not change
 
 ## [4.5.0]
