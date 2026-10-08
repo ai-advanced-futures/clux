@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { isUnder, sortSessions, toSession, worktreePaths } from '../hooks/sessions/jobs'
+import { isUnder, mentionText, sortSessions, toSession, worktreePaths } from '../hooks/sessions/jobs'
 import type { BgSession } from '../types'
 
 const ROOT = '/code/clux'
@@ -109,5 +109,12 @@ describe('helpers', () => {
   test('worktreePaths reads the porcelain output', () => {
     const out = 'worktree /code/clux\nHEAD abc\nbranch refs/heads/main\n\nworktree /code/clux-wt\nHEAD def\n'
     expect(worktreePaths(out)).toEqual(['/code/clux', '/code/clux-wt'])
+  })
+
+  test('mentionText adds a space before @ only after a word', () => {
+    expect(mentionText('fabric-giants', '')).toBe('@fabric-giants ')
+    expect(mentionText('fabric-giants', 'ask ')).toBe('@fabric-giants ')
+    expect(mentionText('fabric-giants', 'ask\n')).toBe('@fabric-giants ')
+    expect(mentionText('fabric-giants', 'ask')).toBe(' @fabric-giants ')
   })
 })

@@ -41,7 +41,7 @@ Background sessions · 3                      [ Hide ]
 ```
 
 - Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description. The description is the question of a session that needs input, else what the session does now or the result it gave.
-- Press the number of a row (`1` to `9`), or Tab and then Enter, to open that session. In tmux, clux opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
+- The first row has the focus when the pane opens. The Up and Down arrows (or Tab) move the focus. Enter, or the number of a row (`1` to `9`), puts the `@name` of that session in the message box at the cursor, and closes the pane. Then you can write, for example, `ask @fabric-giants for its status`. Esc gives the keyboard back to the prompt.
 - clux draws nothing above the prompt. At the right end of the prompt footer, a dim `sessions` label opens the pane. When a session needs input, the label changes to the count, for example `1 needs input`.
 - When a session writes `needs input:`, the footer label counts it. The pane shows no toast and plays no sound.
 - A session counts when its folder or its worktree is in the repository, also a worktree that `git worktree list` names. The session that shows the pane is not in the list. A working session that has not written its state for 30 minutes shows as unknown.

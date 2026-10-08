@@ -5,6 +5,7 @@ import type { BgSession, BgStatus } from '../../types'
 import {
   LABEL,
   isFresh,
+  mentionText,
   sortSessions,
   toSession,
   worktreePaths,
@@ -95,26 +96,14 @@ function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
 
-// Selecting a session opens it: a new tmux window that attaches to it, or
-// the attach command on the clipboard outside tmux.
-async function attach($: EngineInterface, session: BgSession) {
-  const argv = ['claude', 'attach', session.id]
-  const pane = await $.env.get('TMUX_PANE')
-  if (pane && (await $.env.get('TMUX'))) {
-    // The new window goes in the tmux session of this pane, not in the
-    // session that tmux used last.
-    const own = await $.process
-      .run(['tmux', 'display-message', '-p', '-t', pane, '#{session_id}'])
-      .catch(() => undefined)
-    const target = own?.exitCode === 0 ? ['-t', `${own.stdout.trim()}:`] : []
-    const ran = await $.process
-      .run(['tmux', 'new-window', ...target, '-n', session.name, ...argv])
-      .catch(() => undefined)
-    if (ran?.exitCode === 0) return
-  }
-  const command = argv.join(' ')
-  const copied = await $.ui.copy({ text: command }).catch(() => undefined)
-  $.ui.toast(copied?.isCopied ? `Copied: ${command}` : `Run: ${command}`)
+// Selecting a session puts its @name in the message box at the cursor. The
+// pane closes first, so the keys go back to the box for the next word.
+async function mention($: EngineInterface, session: BgSession) {
+  const { text, cursor } = await $.prompt.read()
+  const handle = mentionText(session.name, text.slice(0, cursor))
+  await $.ui.close({ id: PANE })
+  const filled = await $.prompt.fill({ text: handle, mode: 'insert' }).catch(() => undefined)
+  if (!filled?.isFilled) $.ui.toast(`Could not put @${session.name} in the message box.`)
 }
 
 const countNeeds = (list: readonly BgSession[]) =>
@@ -174,7 +163,7 @@ export const register: Register = on => {
     await tick($)
     await openPane($)
 
-    return { text: 'Background sessions pane opened. Press a number to open a session.' }
+    return { text: 'Background sessions pane opened. Press Enter or a number to put a session in the message box.' }
   }).catch(($, e, next) => {
     $.ui.log(`clux sessions: command failed: ${String(next.error)}`, { to: 'debug' })
     return { text: 'The background sessions pane did not respond. Try the command again.' }
@@ -205,11 +194,12 @@ export const register: Register = on => {
           <Box key={`row-${s.id}`}>
             <Box flexShrink={0}>
               <Button
-                key={`open-${s.id}`}
+                key={`mention-${s.id}`}
+                autoFocus={i === 0 ? true : undefined}
                 plain
                 hotkey={i < 9 ? String(i + 1) : undefined}
                 label={s.name.slice(0, nameWidth).padEnd(nameWidth)}
-                onPress={() => attach($, s)}
+                onPress={() => mention($, s)}
               />
               <Text color={COLOR[s.status]}> ● {LABEL[s.status].padEnd(12)}</Text>
               {s.prs.map(pr => (

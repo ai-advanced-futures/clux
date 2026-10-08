@@ -2,6 +2,17 @@
 
 All notable changes to clux are documented here.
 
+## [4.6.0]
+
+### Changed
+
+- **The sessions pane puts a session in the message box.** Enter on a row, or its number `1` to `9`, closes the pane and puts `@<name> ` in the message box at the cursor. The draft stays. When the cursor follows a word, a space goes before the `@`. The first row has the focus when the pane opens, and the Up and Down arrows move it
+- When the message box does not take the text, a toast says so
+
+### Removed
+
+- The sessions pane no longer opens a session (`claude attach <id>` in a new tmux window, or the command on the clipboard outside tmux). Run `claude attach <id>` yourself
+
 ## [4.5.1]
 
 ### Removed

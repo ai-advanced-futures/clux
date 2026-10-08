@@ -125,3 +125,10 @@ export function worktreePaths(porcelain: string): string[] {
     .filter(line => line.startsWith('worktree '))
     .map(line => line.slice('worktree '.length))
 }
+
+// The text that names a session in the message box: its @name and a space,
+// with a space before it when the cursor follows a word.
+export function mentionText(name: string, before: string): string {
+  const gap = before === '' || /\s$/.test(before) ? '' : ' '
+  return `${gap}@${name} `
+}
