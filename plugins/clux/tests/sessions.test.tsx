@@ -165,6 +165,27 @@ test('Enter on a row inserts its @name at the cursor and closes the pane', async
   await ui.unmount()
 })
 
+test('a pane without the keys says how to move into it', async ($, on) => {
+  world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const hint = 'ctrl+x tab: move into the list'
+  const texts = async (isFocused: boolean) => {
+    const ui = await $.ui.mount({
+      plugin: 'clux',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'sessions',
+      props: { ...PANE_PROPS, isFocused },
+    })
+    const all = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    await ui.unmount()
+    return all
+  }
+  // A draft in the message box: Claude Code opens the pane without the keys.
+  expect(await texts(false)).toContain(hint)
+  expect((await texts(true)).includes(hint)).toBe(false)
+})
+
 test('a cursor right after a word gets a space before the @name', async ($, on) => {
   const { box, fills } = world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })

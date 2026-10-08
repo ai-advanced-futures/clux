@@ -8,6 +8,7 @@ All notable changes to clux are documented here.
 
 - **The sessions pane puts a session in the message box.** Enter on a row, or its number `1` to `9`, closes the pane and puts `@<name> ` in the message box at the cursor. The draft stays. When the cursor follows a word, a space goes before the `@`. The first row has the focus when the pane opens, and the Up and Down arrows move it
 - When the message box does not take the text, a toast says so
+- Claude Code opens a pane without the keyboard while the message box has a draft. The pane then shows `ctrl+x tab: move into the list`
 
 ### Removed
 

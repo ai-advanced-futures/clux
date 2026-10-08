@@ -186,6 +186,11 @@ export const register: Register = on => {
             onPress={() => $.ui.close({ id: PANE })}
           />
         </Box>
+        {/* Claude Code opens a pane without the keys while the message box
+            has a draft, and a mod cannot take them: the person moves in. */}
+        {!e.props.isFocused && list.length > 0 && (
+          <Text dimColor>ctrl+x tab: move into the list</Text>
+        )}
         {list.length === 0 && (
           <Text dimColor>No background sessions for this repository.</Text>
         )}
