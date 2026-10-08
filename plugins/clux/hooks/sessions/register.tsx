@@ -5,8 +5,6 @@ import type { BgSession, BgStatus } from '../../types'
 import {
   LABEL,
   isFresh,
-  newlyBlocked,
-  question,
   sortSessions,
   toSession,
   worktreePaths,
@@ -23,9 +21,6 @@ const TITLE = 'Background sessions'
 const POLL_MS = 5000
 // Read the worktree list again after this many polls (one minute).
 const ROOTS_EVERY = 12
-// How long a question stays known after its last poll. Longer than a roots
-// refresh, so a row that drops out for some polls does not alert again.
-const ALERT_MEMORY_MS = 5 * 60 * 1000
 
 const sessions = atom({ plugin: 'clux', key: 'sessions' } as const, [])
 
@@ -86,27 +81,12 @@ async function readSessions($: EngineInterface, scope: Scope, now: number) {
   return sortSessions(found)
 }
 
-// The questions alerted recently, each with the last poll that saw it.
-const alerted = new Map<string, number>()
-
-// `isQuiet` takes a baseline: no toast for questions asked before the start.
-async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
+async function poll($: EngineInterface, scope: Scope) {
   const now = await $.clock.now()
   const list = await readSessions($, scope, now)
   const before = await read($, sessions)
   if (JSON.stringify(list) !== JSON.stringify(before)) {
     await update($, sessions, () => list)
-  }
-  for (const [key, seen] of alerted) {
-    if (now - seen > ALERT_MEMORY_MS) alerted.delete(key)
-  }
-  const fresh = newlyBlocked(list, before).filter(s => !alerted.has(question(s)))
-  for (const s of list) {
-    if (s.status === 'needs-input') alerted.set(question(s), now)
-  }
-  if (isQuiet || fresh.length === 0) return
-  for (const session of fresh) {
-    $.ui.toast(session.line ? `${session.name} needs input: ${session.line}` : `${session.name} needs input`)
   }
 }
 
@@ -146,15 +126,15 @@ const loop: { scope?: Scope; timer?: Timer; isPolling: boolean; polls: number } 
   polls: 0,
 }
 
-// One poll at a time, so a slow poll and the next tick never both alert.
-async function tick($: EngineInterface, isQuiet = false) {
+// One poll at a time, so a slow poll and the next tick never overlap.
+async function tick($: EngineInterface) {
   const scope = loop.scope
   if (!scope || loop.isPolling) return
   loop.isPolling = true
   try {
     loop.polls += 1
     if (loop.polls % ROOTS_EVERY === 0) scope.roots = await repoRoots($)
-    await poll($, scope, isQuiet)
+    await poll($, scope)
   } catch (error) {
     $.ui.log(`clux sessions: poll failed: ${String(error)}`, { to: 'debug' })
   } finally {
@@ -164,7 +144,7 @@ async function tick($: EngineInterface, isQuiet = false) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // A `-p` run or the SDK has no person to alert and no pane to show.
+    // A `-p` run or the SDK has no person at the prompt and no pane to show.
     if (!e.isInteractive) return next(e)
     try {
       loop.scope = {
@@ -172,8 +152,7 @@ export const register: Register = on => {
         roots: await repoRoots($),
         selfId: await $.session.id(),
       }
-      // Only the first poll after the start is quiet.
-      await tick($, true)
+      await tick($)
       loop.timer?.cancel()
       loop.timer = $.clock.every(POLL_MS, () => void tick($))
     } catch (error) {

@@ -145,32 +145,31 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
   await ui.unmount()
 })
 
-test('a new question raises one toast and plays no sound', async ($, on) => {
+test('a new question raises no toast and plays no sound', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
   const { clock, ran, toasts } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  expect(toasts).toEqual([])
 
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
   await clock.advance(5000)
   await clock.settle()
-  expect(toasts).toEqual(['fabric-giants needs input: choose: A or B?'])
-
-  await clock.advance(5000)
-  await clock.settle()
-  expect(toasts.length).toBe(1)
-
-  // A second question from the same session alerts again.
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: C or D?' })
   await clock.advance(5000)
   await clock.settle()
-  expect(toasts).toEqual([
-    'fabric-giants needs input: choose: A or B?',
-    'fabric-giants needs input: choose: C or D?',
-  ])
 
+  // The poll saw the question: the footer counts it.
+  const ui = await $.ui.mount({
+    plugin: 'clux',
+    surface: 'terminal',
+    component: 'SessionMode',
+    props: { modes: [] },
+  })
+  expect((await ui.find({ key: 'open-sessions' }))?.props.label).toBe('1 needs input')
+  await ui.unmount()
+
+  expect(toasts).toEqual([])
   // Only git and tmux run: no audio player.
   expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux')).toEqual([])
 })
@@ -197,42 +196,6 @@ test('/clux:sessions opens the pane, and /clux:sessions again closes it', async 
   expect(panes.has('sessions')).toBe(true)
   await runSessions($, 'off')
   expect(panes.has('sessions')).toBe(false)
-})
-
-test('a question found when /clux:sessions opens still alerts', async ($, on) => {
-  const jobs: Record<string, string> = {
-    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
-  }
-  const { toasts } = world(on, jobs)
-  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-
-  jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: '' })
-  await runSessions($)
-  expect(toasts).toEqual(['fabric-giants needs input'])
-})
-
-test('a question that drops out for one poll does not alert again', async ($, on) => {
-  const jobs: Record<string, string> = {
-    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
-  }
-  const { clock, toasts } = world(on, jobs)
-  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  const toastCount = () => toasts.length
-
-  const asking = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
-  jobs.run1 = asking
-  await clock.advance(5000)
-  await clock.settle()
-  expect(toastCount()).toBe(1)
-
-  // A read during a write: the file does not parse for one poll.
-  jobs.run1 = '{not json'
-  await clock.advance(5000)
-  await clock.settle()
-  jobs.run1 = asking
-  await clock.advance(5000)
-  await clock.settle()
-  expect(toastCount()).toBe(1)
 })
 
 test('a run with no person at the prompt does not poll', async ($, on) => {

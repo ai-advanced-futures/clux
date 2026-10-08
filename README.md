@@ -43,7 +43,7 @@ Background sessions · 3                      [ Hide ]
 - Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description. The description is the question of a session that needs input, else what the session does now or the result it gave.
 - Press the number of a row (`1` to `9`), or Tab and then Enter, to open that session. In tmux, clux opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
 - clux draws nothing above the prompt. At the right end of the prompt footer, a dim `sessions` label opens the pane. When a session needs input, the label changes to the count, for example `1 needs input`.
-- When a session writes `needs input:`, clux shows a toast, one time for each new question. The pane plays no sound.
+- When a session writes `needs input:`, the footer label counts it. The pane shows no toast and plays no sound.
 - A session counts when its folder or its worktree is in the repository, also a worktree that `git worktree list` names. The session that shows the pane is not in the list. A working session that has not written its state for 30 minutes shows as unknown.
 
 The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.291 or later. `ctrl+x b` is the chord of the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel. To use a different chord, bind it to `app:cycleDiffBase` in `~/.claude/keybindings.json` (context `Global`).

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { isUnder, newlyBlocked, sortSessions, toSession, worktreePaths } from '../hooks/sessions/jobs'
+import { isUnder, sortSessions, toSession, worktreePaths } from '../hooks/sessions/jobs'
 import type { BgSession } from '../types'
 
 const ROOT = '/code/clux'
@@ -104,20 +104,6 @@ describe('helpers', () => {
       row('n', 'needs-input', 0),
     ]).map(s => s.id)
     expect(order).toEqual(['n', 'w2', 'w1', 'r'])
-  })
-
-  test('newlyBlocked names only the new questions', () => {
-    const old = row('old', 'needs-input')
-    const list = [old, row('new', 'needs-input'), row('busy', 'working')]
-    const before = [old, row('new', 'working')]
-    expect(newlyBlocked(list, before).map(x => x.id)).toEqual(['new'])
-  })
-
-  test('newlyBlocked names a second question from the same session', () => {
-    const first = { ...row('a', 'needs-input'), line: 'A or B?' }
-    const second = { ...first, line: 'C or D?' }
-    expect(newlyBlocked([first], [first])).toEqual([])
-    expect(newlyBlocked([second], [first]).map(x => x.line)).toEqual(['C or D?'])
   })
 
   test('worktreePaths reads the porcelain output', () => {
