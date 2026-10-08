@@ -42,7 +42,6 @@ plugins/clux/
 │   └── sessions/                # The background sessions pane (function hooks)
 │       ├── register.tsx         #   Pane, footer label, /clux:sessions, ctrl+x b, alerts
 │       └── jobs.ts              #   Pure helpers: a job's state.json as one row
-├── sounds/needs-input.wav       # The alert of the sessions pane
 ├── tests/                       # claude plugin test: the sessions pane
 ├── types/index.d.ts             # The state of the sessions pane
 ├── tsconfig.json                # tsc for the sessions pane

@@ -2,6 +2,12 @@
 
 All notable changes to clux are documented here.
 
+## [4.5.1]
+
+### Removed
+
+- The sessions pane no longer plays a sound when a background session needs input. The toast and the `needs input` count in the footer stay. The file `sounds/needs-input.wav` is gone. The tmux notification sounds (`@claude-notify-*-sound`) do not change
+
 ## [4.5.0]
 
 ### Added

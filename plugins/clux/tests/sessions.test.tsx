@@ -36,9 +36,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
       e.argv[0] === 'git' ? `worktree ${ROOT}\nHEAD abc\n\nworktree /code/clux-wt\nHEAD def\n`
       : e.argv[1] === 'display-message' ? '$3\n'
       : ''
-    // A Linux machine: no afplay.
-    const exitCode = e.argv[0] === 'afplay' ? 127 : 0
-    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.stat', ($, e) => ({
     value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, realPath: e.path },
@@ -147,32 +145,34 @@ test('selecting a row opens that session in a new tmux window', async ($, on) =>
   await ui.unmount()
 })
 
-test('a new question plays the sound once and raises a toast', async ($, on) => {
+test('a new question raises one toast and plays no sound', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
   const { clock, ran, toasts } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  expect(ran.some(argv => argv[0] === 'paplay')).toBe(false)
+  expect(toasts).toEqual([])
 
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
   await clock.advance(5000)
   await clock.settle()
-  const plays = () => ran.filter(argv => argv[0] === 'paplay').length
-  expect(plays()).toBe(1)
-  expect(ran.find(argv => argv[0] === 'paplay')?.[1]).toContain('sounds/needs-input.wav')
   expect(toasts).toEqual(['fabric-giants needs input: choose: A or B?'])
 
   await clock.advance(5000)
   await clock.settle()
-  expect(plays()).toBe(1)
+  expect(toasts.length).toBe(1)
 
   // A second question from the same session alerts again.
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: C or D?' })
   await clock.advance(5000)
   await clock.settle()
-  expect(plays()).toBe(2)
-  expect(toasts.at(-1)).toBe('fabric-giants needs input: choose: C or D?')
+  expect(toasts).toEqual([
+    'fabric-giants needs input: choose: A or B?',
+    'fabric-giants needs input: choose: C or D?',
+  ])
+
+  // Only git and tmux run: no audio player.
+  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux')).toEqual([])
 })
 
 const runSessions = ($: Engine, args = '') =>
@@ -203,12 +203,11 @@ test('a question found when /clux:sessions opens still alerts', async ($, on) =>
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
-  const { ran, toasts } = world(on, jobs)
+  const { toasts } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: '' })
   await runSessions($)
-  expect(ran.filter(argv => argv[0] === 'paplay').length).toBe(1)
   expect(toasts).toEqual(['fabric-giants needs input'])
 })
 
@@ -216,15 +215,15 @@ test('a question that drops out for one poll does not alert again', async ($, on
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
-  const { clock, ran } = world(on, jobs)
+  const { clock, toasts } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  const plays = () => ran.filter(argv => argv[0] === 'paplay').length
+  const toastCount = () => toasts.length
 
   const asking = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
   jobs.run1 = asking
   await clock.advance(5000)
   await clock.settle()
-  expect(plays()).toBe(1)
+  expect(toastCount()).toBe(1)
 
   // A read during a write: the file does not parse for one poll.
   jobs.run1 = '{not json'
@@ -233,7 +232,7 @@ test('a question that drops out for one poll does not alert again', async ($, on
   jobs.run1 = asking
   await clock.advance(5000)
   await clock.settle()
-  expect(plays()).toBe(1)
+  expect(toastCount()).toBe(1)
 })
 
 test('a run with no person at the prompt does not poll', async ($, on) => {

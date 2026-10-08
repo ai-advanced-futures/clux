@@ -26,9 +26,6 @@ const ROOTS_EVERY = 12
 // How long a question stays known after its last poll. Longer than a roots
 // refresh, so a row that drops out for some polls does not alert again.
 const ALERT_MEMORY_MS = 5 * 60 * 1000
-const SOUND = 'sounds/needs-input.wav'
-// afplay on macOS; on Linux Claude Code has no player, so try clux's.
-const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
 
 const sessions = atom({ plugin: 'clux', key: 'sessions' } as const, [])
 
@@ -89,24 +86,10 @@ async function readSessions($: EngineInterface, scope: Scope, now: number) {
   return sortSessions(found)
 }
 
-let player: string | undefined
-
-async function playAlert($: EngineInterface) {
-  const file = `${$.plugin.root}/${SOUND}`
-  for (const name of player ? [player] : PLAYERS) {
-    const ran = await $.process.run([name, file], { timeoutMs: 5000 }).catch(() => undefined)
-    if (ran?.exitCode === 0) {
-      player = name
-      return
-    }
-  }
-}
-
 // The questions alerted recently, each with the last poll that saw it.
 const alerted = new Map<string, number>()
 
-// `isQuiet` takes a baseline: no sound for questions asked before the start.
-// One sound for each poll, however many questions it finds.
+// `isQuiet` takes a baseline: no toast for questions asked before the start.
 async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
   const now = await $.clock.now()
   const list = await readSessions($, scope, now)
@@ -125,7 +108,6 @@ async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
   for (const session of fresh) {
     $.ui.toast(session.line ? `${session.name} needs input: ${session.line}` : `${session.name} needs input`)
   }
-  void playAlert($)
 }
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the keys.
