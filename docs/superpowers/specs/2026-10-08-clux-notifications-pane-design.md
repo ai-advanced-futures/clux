@@ -1,8 +1,8 @@
 # clux notifications pane — design
 
-Date: 2026-10-08. Status: written for user review. Target version: 4.6.0 (minor: a new capability; the tmux keys and the fzf popup do the same as before).
+Date: 2026-10-08. Status: approved for implementation (2026-10-08). Target version: 4.6.0, in PR #32 with the sessions pane changes (one PR, one release). The tmux keys and the fzf popup do the same as before.
 
-Base design: the background sessions pane (4.5.0, `hooks/sessions/register.tsx`). This pane uses the same pattern.
+Base design: the background sessions pane (`hooks/sessions/register.tsx`) as PR #32 leaves it: no needs-input sound and no toast, Enter inserts `@name`, no attach, and a `ctrl+x tab` hint when the pane opens without the keys. This pane uses the same pattern.
 
 ## 1. Goal
 
@@ -45,6 +45,7 @@ These decisions come from the brainstorm of 2026-10-08.
 | The status bar removes the top line when its window is the current window. It does not look at the other lines. | `scripts/show-notification.sh`. |
 | A pane `Button` can have one `hotkey` (one digit or one lowercase letter). The hotkey presses the button while the pane has the keys. | `ButtonProps.hotkey` in the Claude Code types (2.1.294). |
 | `$.ui.focus({ requestId, key })` moves the focus ring onto an element of the pane while the pane has the keys. | `ui.focus` in the Claude Code types (2.1.294). |
+| `$.ui.open({ focus: true })` is a request. Claude Code refuses it while the message box has text: the pane opens without the keys, and a mod cannot take them. `ctrl+x tab` moves the keys into the pane. | `PaneOpenArgs.focus` in the Claude Code types (2.1.294). Seen live in the sessions pane on 2026-10-08. |
 | The `ui.focus` event gives `element`, the key of the element that gets the focus. A hook on it can record the focused row. | `UiFocusInput` in the Claude Code types (2.1.294). |
 | A pane that opens with `focus: true` gets the keys. Tab and the arrows move the ring, and Enter presses the focused button. | `reference.md` of the plugin-authoring skill (2.1.294). |
 
@@ -63,8 +64,8 @@ These decisions come from the brainstorm of 2026-10-08.
 | `plugins/clux/hooks/hooks.json` | Adds `./notifications/register.tsx` to `modules`. |
 | `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. |
 | `plugins/clux/types/index.d.ts` | Adds the `NotifRow` type and the `notifications` key to the `clux` plugin state. |
-| `plugins/clux/.claude-plugin/plugin.json` | Version 4.5.0 → 4.6.0. |
-| `CHANGELOG.md`, `README.md`, `CONTRIBUTING.md` | A `[4.6.0]` entry, a "Notifications pane" section, and the new files in the file tree. |
+| `plugins/clux/.claude-plugin/plugin.json` | No change: PR #32 already sets 4.6.0. |
+| `CHANGELOG.md`, `README.md`, `CONTRIBUTING.md` | An `Added` part in the existing `[4.6.0]` entry, a "Notifications pane" section, and the new files in the file tree. |
 | `test/notification-line.bats` | New. See 6. |
 | `plugins/clux/tests/notifications-lines.test.ts`, `plugins/clux/tests/notifications.test.tsx` | New. See 6. |
 
@@ -111,6 +112,7 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 
 **Pane (`ui.render`, `Pane`, `notifications`).**
 - Header: `Notifications · N`, then three plain buttons: `j: down`, `k: up`, `x: remove`. Each one has its `hotkey`.
+- While the pane does not have the keys (`e.props.isFocused` is false) and the list is not empty, a dim line under the header says `ctrl+x tab: move into the list`, the same as the sessions pane.
 - One row for each notification: a plain `Button` with key `row:<i>` and the row text as its label. The text is cut at the pane width. The first row has `autoFocus`. Its `onPress` is the jump (see Enter below).
 - An empty list shows `No notifications.`
 
@@ -128,7 +130,7 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 
 ## 5. Limits
 
-- The `j`, `k` and `x` keys work only while the pane has the keys: after `/clux:notifications`, a click in the pane, or `ctrl+x tab`. In the prompt box, `j` types the letter "j".
+- The `j`, `k` and `x` keys work only while the pane has the keys: after `/clux:notifications` with an empty message box, a click in the pane, or `ctrl+x tab`. In the prompt box, `j` types the letter "j".
 - A jump calls `tmux switch-client` with no `-c`. With two tmux clients on the same session, tmux can move the other client. The live check (6.3) tests the usual case of one client. If this fails, a later change can give the client with `-c`.
 - Outside tmux, the pane shows the list and `x` works, but Enter shows the toast.
 - A poll every 2 seconds is one file read. The status bar of tmux shows a new notification sooner, because tmux runs `show-notification.sh` on its own interval.
