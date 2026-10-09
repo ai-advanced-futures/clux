@@ -1,5 +1,5 @@
 ---
-description: Show the clux notification queue in a pane
+description: Show or hide the clux notification queue (ctrl+x n, after you bind it)
 argument-hint: "[on|off]"
 ---
 

@@ -8,6 +8,11 @@ const PANE = 'notifications'
 const TITLE = 'Notifications'
 // commands/notifications.md declares it; the hook below answers it.
 const COMMAND = 'clux:notifications'
+// The chord that toggles the pane, also with a draft in the composer. No
+// engine action runs a plugin command, so the mod borrows this one, as the
+// sessions pane borrows app:cycleDiffBase. It has no default key: the person
+// binds one in ~/.claude/keybindings.json (clux suggests "ctrl+x n").
+const TOGGLE_ACTION = 'app:toggleDiffPreSession'
 // The status bar of tmux shows a new notification sooner, on its own
 // interval; this is one file read.
 const POLL_MS = 2000
@@ -55,7 +60,7 @@ async function tick($: EngineInterface) {
   }
 }
 
-// The row the ring sits on. The `ui.focus` hook below is its only writer
+// The row the ring sits on. The `ui.focus` hook below and `focusRow` write it,
 // apart from `openPane`, which puts it back on the first row when the pane
 // opens new.
 let focused = 0
@@ -105,6 +110,10 @@ async function jumpTo($: EngineInterface, row: NotifRow) {
 // Move the ring. The pane may not hold the keys, and then the engine refuses
 // the move: the person sees nothing, `focused` keeps its value, and the
 // reason goes to the debug log. `j`, `k` and `x` all follow this rule.
+//
+// A move that lands sets `focused` here. The engine does not give a plugin's
+// own `$.ui.focus` to that plugin's `ui.focus` hook (the debug log says
+// "ui.focus skipped: re-entry"), so the hook below never sees it.
 async function focusRow($: EngineInterface, index: number) {
   const key = `row:${index}`
   const moved = await $.ui
@@ -112,7 +121,9 @@ async function focusRow($: EngineInterface, index: number) {
     .catch(error => ({ deny: String(error) }))
   if (moved.deny) {
     $.ui.log(`clux notifications: the ring stayed off ${key}: ${moved.deny}`, { to: 'debug' })
+    return
   }
+  focused = index
 }
 
 // `j` and `k`: one row on, limited to the list. A poll can make the list
@@ -206,6 +217,14 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box>
           <Text bold>{TITLE} · {list.length} </Text>
+          {/* Over the footer's label: the chord closes an open pane. */}
+          <Button
+            key="close-notifications"
+            label="Hide"
+            action={TOGGLE_ACTION}
+            onPress={() => $.ui.close({ id: PANE })}
+          />
+          <Text> </Text>
           {/* Claude Code draws a plain Button with a hotkey as "j: down". */}
           <Button key="nav-down" plain hotkey="j" label="down" onPress={() => move($, 1)} />
           <Text> </Text>
@@ -233,8 +252,8 @@ export const register: Register = on => {
   })
 
   // No band: one label at the end of the prompt footer, so a click opens the
-  // pane while it is closed. It is dim until the queue has something in it,
-  // and it carries no `action`, because this pane has no chord.
+  // pane while it is closed, and the chord has a Button to press. It is dim
+  // until the queue has something in it.
   //
   // `next(e)` draws first, so the sessions label stays on the left. The
   // separator needs no condition: the sessions hook always draws its own
@@ -252,6 +271,7 @@ export const register: Register = on => {
           plain
           dimColor={list.length === 0}
           label={list.length > 0 ? `${list.length} notifs` : 'notifs'}
+          action={TOGGLE_ACTION}
           onPress={() => openPane($)}
         />
       </Box>

@@ -50,10 +50,10 @@ The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.2
 
 ## Notifications pane
 
-`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. This pane has no chord.
+`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. `ctrl+x n` does the same from anywhere, also while you write a message, after you bind it (see below).
 
 ```
-Notifications · 3        j: down  k: up  x: remove
+Notifications · 3 [ Hide ] j: down  k: up  x: remove
 main:editor Task done
 ⚡ agents / pr-flow needs you
 main:tests 8/8 green
@@ -66,6 +66,14 @@ main:tests 8/8 green
 - Outside tmux the pane still lists the queue and `x` still works. Enter then says it could not jump.
 
 The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 2.1.291 or later. The keys of this pane and the keys of the `prefix + M` popup both run `scripts/notification-line.sh`, so a jump means the same thing in both.
+
+`ctrl+x n` needs one line in `~/.claude/keybindings.json`, because Claude Code gives a plugin no default key. Add it to the `Global` context:
+
+```json
+{ "context": "Global", "bindings": { "ctrl+x n": "app:toggleDiffPreSession" } }
+```
+
+The pane borrows the `app:toggleDiffPreSession` action, which Claude Code uses only for the diff view. While the diff view is open, the key can act on the diff view instead of the pane. To use a different key, bind that key to `app:toggleDiffPreSession`.
 
 ## Companion terminal
 

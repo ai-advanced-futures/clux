@@ -476,8 +476,8 @@ test('the footer label counts the queue, and sits after the sessions label', asy
   const label = await ui.find({ key: 'open-notifications' })
   expect(label?.props.label).toBe('3 notifs')
   expect(label?.props.dimColor).toBe(false)
-  // No chord: the label has no engine action to borrow.
-  expect(label?.props.action).toBeUndefined()
+  // The chord: the borrowed engine action the person binds (ctrl+x n).
+  expect(label?.props.action).toBe('app:toggleDiffPreSession')
   // The sessions label keeps the left of the footer.
   expect((await ui.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
     'open-sessions',
@@ -520,5 +520,17 @@ test('a click on the footer label opens the pane', async ($, on) => {
   const ui = await $.ui.mount({ ...FOOTER, props: { modes: [] } })
   await ui.press({ key: 'open-notifications' })
   expect(panes.has('notifications')).toBe(true)
+  await ui.unmount()
+})
+
+test('the chord closes an open pane through its Hide button', async ($, on) => {
+  const { panes } = world(on, { text: `${WINDOW}\n` })
+  await start($)
+  await runNotifications($, 'on')
+
+  const ui = await mountPane($, true)
+  expect((await ui.find({ key: 'close-notifications' }))?.props.action).toBe('app:toggleDiffPreSession')
+  await ui.press({ key: 'close-notifications' })
+  expect(panes.has('notifications')).toBe(false)
   await ui.unmount()
 })

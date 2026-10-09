@@ -28,7 +28,7 @@ These decisions come from the brainstorm of 2026-10-08.
 | Surface | A Claude Code pane (a mod). | The person asked for a clux mod. The fzf popup stays as it is. |
 | Relation to the sessions pane | A separate pane, with its own command and its own footer label. | The two lists have different data and different actions. |
 | Enter | Jump, remove the row, then close the pane. | After the jump, tmux shows a different window. A pane that stays open shows old data. |
-| Chord | None. | The sessions pane already uses `app:cycleDiffBase` (`ctrl+x b`). We know of no other engine action that is safe to use. The person did not ask for a chord. |
+| Chord | `ctrl+x n`, through the borrowed action `app:toggleDiffPreSession`. | Added 2026-10-09 at the user's request. `app:cycleDiffBase` (`ctrl+x b`) is taken by the sessions pane. `app:toggleDiffPreSession` is a diff action with no default key, and its engine handler is not mounted at the prompt (live-proved). The person binds the key in `~/.claude/keybindings.json`; the README gives the line. |
 | Parse of a queue line | Only in one shell script, `scripts/notification-line.sh`. | Today two scripts parse a line (`jump-to-notification.sh`, `notification-picker.sh`). A third parse in TypeScript would be one more copy that can go out of step. |
 
 ## 3. Facts
@@ -64,7 +64,7 @@ These decisions come from the brainstorm of 2026-10-08.
 | `plugins/clux/hooks/hooks.json` | Sets `modules` to `["./register.tsx"]`. `claude plugin validate` refuses a second `modules` entry, so this is the first fallback of 6.0. |
 | `plugins/clux/hooks/register.tsx` | New. Calls the notifications `register`, then the sessions `register`. The notifications hooks are the outermost in the chain, so the notifications label is drawn after the sessions label. |
 | `plugins/clux/tests/sessions.test.tsx` | One line only: the "no audio player" assertion also lets through `notification-line.sh path`, which the composed module runs at the session start. The person allowed this change on 2026-10-08. |
-| `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. The front matter has `description: Show the clux notification queue in a pane` and `argument-hint: "[on|off]"`, with no chord in the description, because this pane has no chord. [inferred] |
+| `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. The front matter has `description: Show the clux notification queue in a pane` and `argument-hint: "[on|off]"`, and the description names the chord (`ctrl+x n`, after the person binds it). |
 | `plugins/clux/types/index.d.ts` | Adds the `NotifRow` type, next to `BgSession`, and the `notifications` key to the `clux` plugin state. |
 | `plugins/clux/.claude-plugin/plugin.json` | No change: PR #32 already sets 4.6.0. |
 | `CHANGELOG.md`, `README.md`, `CONTRIBUTING.md` | An `Added` part in the existing `[4.6.0]` entry, a `Changed` line for the two behavior changes of 4.2 (the popup jumps by id; the queue path has three tiers), a "Notifications pane" section, and the new files in the file tree. [inferred] |
@@ -126,7 +126,7 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 
 **`x`.** Take the row at `min(focused, count − 1)` of the list the last poll wrote, the same limit that `j` and `k` use, because a poll can make the list shorter with no key press. Run `notification-line.sh remove "<line>"`, then poll again. Move the focus to `row:<min(focused, count − 1)>`, with `count` as the row count after the poll, so the focus stays at the same position and removing the last row moves it up one. When `count` is 0 after the poll, call no `$.ui.focus`, because the pane then draws `No notifications.` and has no row key. [inferred] On exit 1, show the toast `The queue is busy. Try again.` When the list is empty, `x` does nothing.
 
-**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays on the left, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. Draw the ` & ` separator before the button with no condition, because the sessions hook always draws its label, so `next(e)` is never empty. [inferred] A click opens the pane. It has no `action`, because there is no chord.
+**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays on the left, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. Draw the ` & ` separator before the button with no condition, because the sessions hook always draws its label, so `next(e)` is never empty. [inferred] A click opens the pane. The button has `action: 'app:toggleDiffPreSession'`, and the header has a `Hide` button with the same action, so the chord closes an open pane, as in the sessions pane.
 
 **Errors.** The `command.run` hook catches its errors and writes them with `$.ui.log(..., { to: 'debug' })`, as `sessions/register.tsx:167` does. The two `ui.render` hooks have no `.catch`, as in `sessions/register.tsx:172` and `:225`: when the footer hook fails, the engine runs `next(e)` and the sessions label stays. A failed poll keeps the last list. When `$.process.run` rejects in the Enter or `x` `onPress` (the script cannot start, or it times out), the pane treats it as exit 1: it shows the same toast, the pane stays open, the row stays, and the reason goes to `$.ui.log(..., { to: 'debug' })`. [inferred]
 
@@ -195,3 +195,8 @@ In a real tmux session, with Claude Code 2.1.291 or later and the plugin loaded 
 - A change to the fzf popup keys.
 - A chord to open the pane.
 - A sound or a toast when a notification arrives. The tmux status bar and `notify-sound.sh` already do this.
+
+## 7. Live results (2026-10-09)
+
+- §6.0 key spike: `$.ui.focus` from the `j` and `k` hotkeys moves the ring. But the engine does not give a plugin's own `$.ui.focus` to that plugin's `ui.focus` hook (debug log: `ui.focus skipped: re-entry`). So `focusRow` sets `focused` itself after a move that lands. Before this fix, `x` after `j` removed the first row.
+- After the fix, in real tmux with a test queue: `j` then `x` removed row 2; `j`, `j`, `k`, `x` removed the expected row; Enter on a line with real tmux ids went to that window and removed the line; `ctrl+x n` opened and closed the pane, also with a draft (the pane then shows the `ctrl+x tab` hint).
