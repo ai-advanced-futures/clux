@@ -240,16 +240,18 @@ test('a jump that exits 1 shows a toast, keeps the row and runs no remove', asyn
   await ui.unmount()
 })
 
-test('outside tmux Enter shows the toast and runs no script at all', async ($, on) => {
+// A background session has no TMUX, but the tmux server and its client are
+// still there: the script moves the client, so the pane does not stop it.
+test('outside tmux Enter still runs the jump, takes the line out and closes the pane', async ($, on) => {
   const { ran, toasts, closes } = world(on, { text: `${WINDOW}\n` })
   await start($)
   const ui = await mountPane($, true)
 
   await ui.press({ key: 'row:0' })
 
-  expect(lineRuns(ran)).toEqual([])
-  expect(toasts).toEqual(['Could not jump to main:editor Task done.'])
-  expect(closes).toEqual([])
+  expect(lineRuns(ran)).toEqual([['jump', WINDOW], ['remove', WINDOW]])
+  expect(toasts).toEqual([])
+  expect(closes).toEqual(['notifications'])
   await ui.unmount()
 })
 
@@ -523,13 +525,25 @@ test('a click on the footer label opens the pane', async ($, on) => {
   await ui.unmount()
 })
 
-test('the chord closes an open pane through its Hide button', async ($, on) => {
+test('the chord closes an open pane through its hide button', async ($, on) => {
   const { panes } = world(on, { text: `${WINDOW}\n` })
   await start($)
   await runNotifications($, 'on')
 
   const ui = await mountPane($, true)
   expect((await ui.find({ key: 'close-notifications' }))?.props.action).toBe('app:toggleDiffPreSession')
+  await ui.press({ key: 'close-notifications' })
+  expect(panes.has('notifications')).toBe(false)
+  await ui.unmount()
+})
+
+test('the hide button has the hotkey q, and q closes the pane', async ($, on) => {
+  const { panes } = world(on, { text: `${WINDOW}\n` })
+  await start($)
+  await runNotifications($, 'on')
+
+  const ui = await mountPane($, true)
+  expect((await ui.find({ key: 'close-notifications' }))?.props.hotkey).toBe('q')
   await ui.press({ key: 'close-notifications' })
   expect(panes.has('notifications')).toBe(false)
   await ui.unmount()

@@ -93,12 +93,12 @@ async function runLine($: EngineInterface, verb: 'jump' | 'remove', row: NotifRo
 // The remove is needed because the status bar removes only the top line. An
 // agent line needs no remove: the jump of an agent line removes it.
 //
-// No tmux around Claude Code means no window to go to, so the script is not
-// even started; the pane and the row both stay, and the person can still
-// press `x`.
+// The script runs also when Claude Code is not in tmux (a background
+// session has no TMUX): with no current client, tmux moves the client it
+// picks itself. With no tmux server, the script exits 1, the pane and the row
+// both stay, and the person can still press `x`.
 async function jumpTo($: EngineInterface, row: NotifRow) {
-  const tmux = await $.env.get('TMUX')
-  if (!tmux || !(await runLine($, 'jump', row))) {
+  if (!(await runLine($, 'jump', row))) {
     $.ui.toast(`Could not jump to ${row.text}.`)
     return
   }
@@ -217,10 +217,14 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box>
           <Text bold>{TITLE} · {list.length} </Text>
-          {/* Over the footer's label: the chord closes an open pane. */}
+          {/* Over the footer's label: the chord closes an open pane, and `q`
+              closes it while the pane has the keys. Plain, so it reads
+              "q: hide", as the other keys do. */}
           <Button
             key="close-notifications"
-            label="Hide"
+            plain
+            hotkey="q"
+            label="hide"
             action={TOGGLE_ACTION}
             onPress={() => $.ui.close({ id: PANE })}
           />

@@ -113,7 +113,7 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 **Command (`command.run`, `clux:notifications`).** No argument toggles the pane. `on` opens it and `off` closes it, the same as `/clux:sessions`. To open, do one poll, then `$.ui.open({ id: 'notifications', title: 'Notifications', focus: true })`.
 
 **Pane (`ui.render`, `Pane`, `notifications`).**
-- Header: `Notifications · N`, then three plain buttons with the labels `down`, `up` and `remove` and the hotkeys `j`, `k` and `x`. Claude Code draws them as `j: down`, `k: up` and `x: remove`.
+- Header: `Notifications · N`, then four plain buttons: `hide` with the hotkey `q` (it closes the pane, and holds the chord), then `down`, `up` and `remove` with the hotkeys `j`, `k` and `x`. Claude Code draws them as `q: hide`, `j: down`, `k: up` and `x: remove`.
 - While the pane does not have the keys (`e.props.isFocused` is false) and the list is not empty, a dim line under the header says `ctrl+x tab: move into the list`, the same as the sessions pane.
 - One row for each notification: a plain `Button` with key `row:<i>` and the row text as its label. The text is cut at the pane width. The first row has `autoFocus`. Its `onPress` is the jump (see Enter below).
 - An empty list shows `No notifications.`
@@ -122,11 +122,11 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 
 **`j` / `k`.** Compute `focused + 1` or `focused − 1`, limited to the list. Call `$.ui.focus({ requestId: 'notifications', key: 'row:<i>' })`.
 
-**Enter (row press).** Run `notification-line.sh jump "<line>"`. On exit 0: for a window line, run `notification-line.sh remove "<line>"`; then close the pane, and poll again. The remove is necessary because the status bar removes only the top line. An agent line gets no remove, because its jump already removed the line. On exit 1, or when Claude Code does not run in tmux (no `TMUX`): show the toast `Could not jump to <text>.`, keep the pane open, and keep the row.
+**Enter (row press).** Run `notification-line.sh jump "<line>"`. On exit 0: for a window line, run `notification-line.sh remove "<line>"`; then close the pane, and poll again. The remove is necessary because the status bar removes only the top line. An agent line gets no remove, because its jump already removed the line. On exit 1: show the toast `Could not jump to <text>.`, keep the pane open, and keep the row. The pane does not check `TMUX`: a background session has no `TMUX`, but the tmux server and its client are there, and `switch-client` with no `-c` moves the client that tmux picks (live, 2026-10-09). With no tmux server, the script exits 1.
 
 **`x`.** Take the row at `min(focused, count − 1)` of the list the last poll wrote, the same limit that `j` and `k` use, because a poll can make the list shorter with no key press. Run `notification-line.sh remove "<line>"`, then poll again. Move the focus to `row:<min(focused, count − 1)>`, with `count` as the row count after the poll, so the focus stays at the same position and removing the last row moves it up one. When `count` is 0 after the poll, call no `$.ui.focus`, because the pane then draws `No notifications.` and has no row key. [inferred] On exit 1, show the toast `The queue is busy. Try again.` When the list is empty, `x` does nothing.
 
-**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays on the left, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. Draw the ` & ` separator before the button with no condition, because the sessions hook always draws its label, so `next(e)` is never empty. [inferred] A click opens the pane. The button has `action: 'app:toggleDiffPreSession'`, and the header has a `Hide` button with the same action, so the chord closes an open pane, as in the sessions pane.
+**Footer (`ui.render`, `SessionMode`).** Draw `next(e)` first, so the sessions label stays on the left, then a plain `Button`: `notifs` (dim) when the count is 0, otherwise `N notifs`. Draw the ` & ` separator before the button with no condition, because the sessions hook always draws its label, so `next(e)` is never empty. [inferred] A click opens the pane. The button has `action: 'app:toggleDiffPreSession'`, and the header's `q: hide` button has the same action, so the chord closes an open pane, as in the sessions pane.
 
 **Errors.** The `command.run` hook catches its errors and writes them with `$.ui.log(..., { to: 'debug' })`, as `sessions/register.tsx:167` does. The two `ui.render` hooks have no `.catch`, as in `sessions/register.tsx:172` and `:225`: when the footer hook fails, the engine runs `next(e)` and the sessions label stays. A failed poll keeps the last list. When `$.process.run` rejects in the Enter or `x` `onPress` (the script cannot start, or it times out), the pane treats it as exit 1: it shows the same toast, the pane stays open, the row stays, and the reason goes to `$.ui.log(..., { to: 'debug' })`. [inferred]
 
@@ -138,7 +138,7 @@ toRows(text: string): NotifRow[]      // one row for each line that is not empty
 - The row key is the row index. When the status bar removes the top line, the rows move up and the ring stays on the same index, so `x` and Enter act on the row that the list now shows there. The next poll draws the new list. [inferred]
 - `x` with no `ui.focus` before it removes the first row, before the person has seen a ring on it. [inferred]
 - The pane runs the plugin copy of `notification-line.sh`, and the tmux keys run the copy in `~/.config/clux/scripts/`. After a plugin update, the two can run different versions until `/clux:upgrade`. [inferred]
-- Outside tmux, the pane shows the list and `x` works, but Enter shows the toast.
+- When Claude Code is not in tmux, Enter still jumps: tmux picks the client. With two clients, tmux can pick the wrong one. With no tmux server, Enter shows the toast.
 - A poll every 2 seconds is one file read. The status bar of tmux shows a new notification sooner, because tmux runs `show-notification.sh` on its own interval.
 
 ## 6. Tests
@@ -193,10 +193,9 @@ In a real tmux session, with Claude Code 2.1.291 or later and the plugin loaded 
 
 - Notifications from other places (background sessions, GitHub). The pane shows the clux queue only.
 - A change to the fzf popup keys.
-- A chord to open the pane.
 - A sound or a toast when a notification arrives. The tmux status bar and `notify-sound.sh` already do this.
 
-## 7. Live results (2026-10-09)
+## 8. Live results (2026-10-09)
 
 - §6.0 key spike: `$.ui.focus` from the `j` and `k` hotkeys moves the ring. But the engine does not give a plugin's own `$.ui.focus` to that plugin's `ui.focus` hook (debug log: `ui.focus skipped: re-entry`). So `focusRow` sets `focused` itself after a move that lands. Before this fix, `x` after `j` removed the first row.
 - After the fix, in real tmux with a test queue: `j` then `x` removed row 2; `j`, `j`, `k`, `x` removed the expected row; Enter on a line with real tmux ids went to that window and removed the line; `ctrl+x n` opened and closed the pane, also with a draft (the pane then shows the `ctrl+x tab` hint).
