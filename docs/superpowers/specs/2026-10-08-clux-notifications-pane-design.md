@@ -61,7 +61,9 @@ These decisions come from the brainstorm of 2026-10-08.
 | `plugins/clux/config/deploy-manifest.txt` | Adds `notification-line.sh`. |
 | `plugins/clux/hooks/notifications/lines.ts` | New. Pure functions, with no `$`: `toRows(text)` and `displayText(line)`. See 4.3. |
 | `plugins/clux/hooks/notifications/register.tsx` | New. The pane, the command, the footer label, the poll and the keys. See 4.4. |
-| `plugins/clux/hooks/hooks.json` | Sets `modules` to `["./notifications/register.tsx", "./sessions/register.tsx"]`. The first module is the outermost in the chain, so the notifications label is drawn after the sessions label. |
+| `plugins/clux/hooks/hooks.json` | Sets `modules` to `["./register.tsx"]`. `claude plugin validate` refuses a second `modules` entry, so this is the first fallback of 6.0. |
+| `plugins/clux/hooks/register.tsx` | New. Calls the notifications `register`, then the sessions `register`. The notifications hooks are the outermost in the chain, so the notifications label is drawn after the sessions label. |
+| `plugins/clux/tests/sessions.test.tsx` | One line only: the "no audio player" assertion also lets through `notification-line.sh path`, which the composed module runs at the session start. The person allowed this change on 2026-10-08. |
 | `plugins/clux/commands/notifications.md` | New. The fallback text for a Claude Code that did not load the module, the same as `commands/sessions.md`. The front matter has `description: Show the clux notification queue in a pane` and `argument-hint: "[on|off]"`, with no chord in the description, because this pane has no chord. [inferred] |
 | `plugins/clux/types/index.d.ts` | Adds the `NotifRow` type, next to `BgSession`, and the `notifications` key to the `clux` plugin state. |
 | `plugins/clux/.claude-plugin/plugin.json` | No change: PR #32 already sets 4.6.0. |
