@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
-# Interactive notification picker using fzf
+# Interactive notification picker using fzf (prefix + M). The parse of the
+# selected line lives in notification-line.sh, so this popup, prefix + m and
+# the Claude Code notifications pane route a line the same way.
 
-NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
-LOCKDIR="${NOTIFY_FILE}.lock"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./path.sh
+# shellcheck disable=SC1091
+source "$CURRENT_DIR/path.sh"
+NOTIFY_FILE=$(resolve_notify_file)
 
 # Check fzf is installed
 if ! command -v fzf &>/dev/null; then
@@ -40,69 +45,11 @@ line=$(tail -1 <<< "$selected")
 [ -z "$line" ] && exit 0
 
 if [ "$key" = "ctrl-d" ]; then
-    # Dismiss: remove the selected line from the queue
-    # Retry briefly (user-triggered: 500ms max)
-    _i=0
-    while ! mkdir "$LOCKDIR" 2>/dev/null; do
-        _i=$((_i + 1)); [ "$_i" -ge 5 ] && exit 0
-        sleep 0.1
-    done
-    trap 'rm -rf "$LOCKDIR"' EXIT
-    grep -vF "$line" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp" 2>/dev/null
-    mv "${NOTIFY_FILE}.tmp" "$NOTIFY_FILE"
+    "$CURRENT_DIR/notification-line.sh" remove "$line"
 else
-    # ENTER: jump to the window
-    # Check for agent-view entry first — these have |||agent: in the line.
-    # NOTE: sourcing helpers.sh here re-runs its module-level code (sets NOTIFY_FILE
-    # and LOCKDIR globals). This is SAFE because the agent: branch calls agent_jump
-    # and the handler returns immediately — no code after this block reads NOTIFY_FILE.
-    # The Ctrl-D dismiss path (above) runs before this else branch and is unaffected.
-    if [[ "$line" == *"|||agent:"* ]]; then
-        # shellcheck source=./helpers.sh
-        # shellcheck disable=SC1091
-        source "$(dirname "${BASH_SOURCE[0]}")/helpers.sh"
-        # helpers.sh re-derives NOTIFY_FILE from get_tmux_option at source time,
-        # which ignores CLUX_NOTIFY_FILE — restore the queue we actually read so
-        # _agent_remove_entry clears the right file (mirrors jump-to-notification.sh).
-        NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$NOTIFY_FILE}"
-        recompute_lock_target
-        # Line shape (new):    "<marker> <label>|||agent:<SID>@@<TMUXSID>:<WID>:<PID>@@<CWD>"
-        # Line shape (legacy): "<marker> <label>|||agent:<SID>"
-        # Parse identically to jump-to-notification.sh (P6: the pane id is seg2's
-        # LAST colon token, NOT seg1 — the dedup/remove key is seg1, the display SID).
-        rest="${line##*|||agent:}"
-        seg1="${rest%%@@*}"
-        if [[ "$rest" != *@@* ]]; then
-            seg2=""
-            seg3=""
-        else
-            after1="${rest#*@@}"
-            seg2="${after1%%@@*}"
-            seg3="${after1#*@@}"
-        fi
-        remove_key="$seg1"  # dedup key is the display SID (seg1), NOT the pane coords
-
-        if [ -n "$seg2" ]; then
-            pane_id="${seg2##*:}"   # last colon token
-            sid="${seg2%%:*}"       # first colon token
-            _mid="${seg2#*:}"
-            wid="${_mid%%:*}"       # middle colon token
-            target="$sid $wid $pane_id"
-        else
-            target=""
-        fi
-
-        agent_jump "$target" "$seg3"      # fast-path / re-resolve / v3 fallback
-        _agent_remove_entry "$remove_key" # clear-on-jump (widened regex clears both formats)
-        tmux refresh-client -S 2>/dev/null
-    else
-        # Parse SESSION:WINDOW_NAME from bare format (interactive)
-        session="${line%%:*}"
-        remainder="${line#*:}"
-        window="${remainder%% *}"
-        if [ -n "$session" ] && [ -n "$window" ]; then
-            tmux select-window -t "${session}:${window}" 2>/dev/null && \
-              tmux switch-client -t "${session}" 2>/dev/null
-        fi
-    fi
+    "$CURRENT_DIR/notification-line.sh" jump "$line"
 fi
+
+# The popup always ends well, as prefix + m does: a line with no target or a
+# busy queue must not leave an error line inside display-popup.
+exit 0

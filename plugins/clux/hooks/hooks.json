@@ -29,5 +29,5 @@
       { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/terminal.sh close --hook", "timeout": 5 }
     ] }]
   },
-  "modules": ["./sessions/register.tsx"]
+  "modules": ["./register.tsx"]
 }

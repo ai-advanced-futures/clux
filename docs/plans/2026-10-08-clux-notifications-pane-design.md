@@ -1510,7 +1510,7 @@ Change the last line of `plugins/clux/hooks/hooks.json`:
   "modules": ["./register.tsx"]
 ```
 
-The composed module now runs the notifications `session.start` hook inside `plugins/clux/tests/sessions.test.tsx` too, and that file's test `a new question raises no toast and plays no sound` asserts the `process.run` list is empty of everything but `git` and `tmux`. The notifications hook's `queuePath` runs `notification-line.sh path`, so that one assertion must let it through. [inferred] Change line 237 of `plugins/clux/tests/sessions.test.tsx` from: [inferred]
+The composed module now runs the notifications `session.start` hook inside `plugins/clux/tests/sessions.test.tsx` too, and that file's test `a new question raises no toast and plays no sound` asserts the `process.run` list is empty of everything but `git` and `tmux`. The notifications hook's `queuePath` runs `notification-line.sh path`, so that one assertion must let it through. [inferred] The person allowed this one change only: let through only an `argv[0]` that ends in `/scripts/notification-line.sh` with `argv[1] === 'path'`; every other process (an audio player, `osascript`) still fails the test; the `toasts` assertion stays unchanged; no other line of `tests/sessions.test.tsx` or `hooks/sessions/` changes. Change line 237 of `plugins/clux/tests/sessions.test.tsx` from: [inferred]
 
 ```ts
 expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux')).toEqual([])
@@ -1519,7 +1519,7 @@ expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux')).toEqual([])
 to: [inferred]
 
 ```ts
-expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !(argv[0] ?? '').endsWith('/scripts/notification-line.sh'))).toEqual([])
+expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !((argv[0] ?? '').endsWith('/scripts/notification-line.sh') && argv[1] === 'path'))).toEqual([])
 ```
 
 - [ ] Step 4 (run the test, observe PASS). `/Users/jazz/.local/bin/claude plugin test plugins/clux` — 39 pass, 0 fail, across 4 files (the 13 sessions tests still pass from the composed module).

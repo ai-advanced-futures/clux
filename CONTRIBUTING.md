@@ -29,7 +29,8 @@ plugins/clux/
 │   ├── validate.md              # /clux:validate
 │   ├── upgrade.md               # /clux:upgrade — setup again with the old answers
 │   ├── follow.md                # /clux:follow — mirror mode on and off
-│   └── sessions.md              # /clux:sessions — the hooks module answers it
+│   ├── sessions.md              # /clux:sessions — the hooks module answers it
+│   └── notifications.md         # /clux:notifications — the hooks module answers it
 ├── skills/
 │   └── configuring-tmux/        # The whole setup procedure and every rule
 │       └── SKILL.md             #   governing it. /clux:setup invokes this
@@ -37,20 +38,25 @@ plugins/clux/
 │       └── SKILL.md             #   Plain, interactive, and secret command rules
 ├── hooks/
 │   ├── hooks.json               # Auto-registered hooks, and the hooks module
+│   ├── register.tsx             # The one hooks module: it loads both panes
 │   ├── notify-tmux.sh           # Writes the notification queue
 │   ├── agent-state.sh           # Writes the per-pane agent-state file
+│   ├── notifications/           # The notification queue pane (function hooks)
+│   │   ├── register.tsx         #   Pane, footer label, /clux:notifications
+│   │   └── lines.ts             #   Pure helpers: the queue text as rows
 │   └── sessions/                # The background sessions pane (function hooks)
 │       ├── register.tsx         #   Pane, footer label, /clux:sessions, ctrl+x b
 │       └── jobs.ts              #   Pure helpers: a job's state.json as one row
-├── tests/                       # claude plugin test: the sessions pane
-├── types/index.d.ts             # The state of the sessions pane
-├── tsconfig.json                # tsc for the sessions pane
+├── tests/                       # claude plugin test: both panes
+├── types/index.d.ts             # The state of both panes
+├── tsconfig.json                # tsc for the panes
 ├── scripts/
 │   │                            # Libraries — sourced, never executed
 │   ├── path.sh                  # Path resolution and the agents-pane resolver
 │   ├── helpers.sh               # Shared utilities and config defaults
 │   │                            # Notifications
 │   ├── show-notification.sh     # Renders the notification token
+│   ├── notification-line.sh     # The one parse of a queue line: path, jump, remove
 │   ├── jump-to-notification.sh  # Jump to notifying window
 │   ├── dismiss-notification.sh  # Dismiss top notification
 │   ├── notification-picker.sh   # Interactive notification picker
@@ -100,6 +106,12 @@ plugins/clux/
 `config/deploy-manifest.txt` is the only list of what `/clux:setup` copies into
 `~/.config/clux/scripts/`. `/clux:setup`, `/clux:validate`, and the tests all read
 it. A new script needs a line there, or `test/deploy-manifest.bats` fails.
+
+`hooks/hooks.json` names exactly one hooks module, and `claude plugin validate`
+refuses a second entry. `hooks/register.tsx` is that module: it calls the
+`register` of each pane. Two hooks on one event in one module need a matcher on
+at least one of them, and the `ui.render` hook registered first is the outermost
+— it draws `next(e)` before its own label.
 
 ### Testing hooks locally
 

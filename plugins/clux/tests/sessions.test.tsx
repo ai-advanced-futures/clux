@@ -234,7 +234,7 @@ test('a new question raises no toast and plays no sound', async ($, on) => {
 
   expect(toasts).toEqual([])
   // Only git and tmux run: no audio player.
-  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux')).toEqual([])
+  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !((argv[0] ?? '').endsWith('/scripts/notification-line.sh') && argv[1] === 'path'))).toEqual([])
 })
 
 const runSessions = ($: Engine, args = '') =>

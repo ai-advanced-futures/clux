@@ -4,8 +4,22 @@ All notable changes to clux are documented here.
 
 ## [4.6.0]
 
+### Added
+
+- **The notifications pane: `/clux:notifications`.** One pane for the clux notification queue — the same list the tmux status bar and the `prefix + M` popup show. Each row is one notification. `/clux:notifications` toggles the pane; `/clux:notifications on` and `/clux:notifications off` set it
+- The keys of the pane: `j` and `k` move the focus, and the Down and Up arrows and Tab do the same. Enter goes to the tmux window (or the agents pane) of the focused row, takes that row out of the queue, and closes the pane. `x` takes the focused row out and keeps the pane open. Esc gives the keys back to the prompt. The header draws the three keys as buttons: `j: down`, `k: up` and `x: remove`
+- The keys work only while the pane has the keyboard. With a draft in the message box, Claude Code opens the pane without it, and the pane shows `ctrl+x tab: move into the list`
+- At the right end of the prompt footer, a dim `notifs` label opens the pane, and shows the count when the queue is not empty (`3 notifs`). The pane has no chord
+- Outside tmux the pane still lists the queue and `x` still works; Enter says `Could not jump to <text>.`
+- clux reads the queue file every 2 seconds, one poll at a time. A queue file that is not there is an empty list
+- `scripts/notification-line.sh`, the one parse of a queue line: `path` prints the queue path, `jump "<line>"` goes to the window of a line, and `remove "<line>"` takes a line out of the queue. `prefix + m` and `prefix + M` both call it, so the two tmux keys and the pane share one copy of the parse
+
 ### Changed
 
+- **`prefix + M` jumps by id.** Enter on an interactive line now uses the session id and the window id in the line, as `prefix + m` always did. Before, it used the session name and the window name, so a session renamed after the notification arrived went to the wrong window, or nowhere
+- `prefix + M` with Ctrl-D removes an equal line only. Before, it also removed a longer line that held the selected line inside it
+- `jump-to-notification.sh` and `notification-picker.sh` resolve the queue path with the same three tiers as the status bar: `CLUX_NOTIFY_FILE`, then `~/.config/clux/notify-file-path`, then `~/.config/tmux/claude_notification`. Before, both read two tiers and ignored the sidecar file
+- clux has one hooks module, `hooks/register.tsx`, and it loads both panes. `hooks.json` takes one `modules` entry for each plugin
 - **The sessions pane puts a session in the message box.** Enter on a row, or its number `1` to `9`, closes the pane and puts `@<name> ` in the message box at the cursor. The draft stays. When the cursor follows a word, a space goes before the `@`. The first row has the focus when the pane opens, and the Up and Down arrows move it
 - When the message box does not take the text, a toast says so
 - Claude Code opens a pane without the keyboard while the message box has a draft. The pane then shows `ctrl+x tab: move into the list`

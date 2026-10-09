@@ -48,6 +48,25 @@ Background sessions · 3                      [ Hide ]
 
 The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.291 or later. `ctrl+x b` is the chord of the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel. To use a different chord, bind it to `app:cycleDiffBase` in `~/.claude/keybindings.json` (context `Global`).
 
+## Notifications pane
+
+`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. This pane has no chord.
+
+```
+Notifications · 3        j: down  k: up  x: remove
+main:editor Task done
+⚡ agents / pr-flow needs you
+main:tests 8/8 green
+```
+
+- `j` and `k` move the focus, and so do the Down and Up arrows and Tab. Enter goes to the tmux window of the focused row (or to the agents pane of an agent row), takes the row out of the queue, and closes the pane. `x` takes the focused row out and keeps the pane open. Esc gives the keyboard back to the prompt.
+- The keys work only while the pane has the keyboard. When the message box has a draft, Claude Code opens the pane without it, and the pane says `ctrl+x tab: move into the list`. Press `ctrl+x tab` to move in.
+- At the right end of the prompt footer, a dim `notifs` label opens the pane. When the queue is not empty, the label shows the count, for example `3 notifs`.
+- clux reads the queue file every 2 seconds. The tmux status bar shows a new notification sooner, because tmux runs its own job on its own interval.
+- Outside tmux the pane still lists the queue and `x` still works. Enter then says it could not jump.
+
+The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 2.1.291 or later. The keys of this pane and the keys of the `prefix + M` popup both run `scripts/notification-line.sh`, so a jump means the same thing in both.
+
 ## Companion terminal
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A local model, Laya, examines each command before it runs. A dangerous command waits for your `y`. Install Laya one time. Claude asks you before it runs the install:
