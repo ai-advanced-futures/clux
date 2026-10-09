@@ -254,6 +254,21 @@ test('a script that cannot start reads as exit 1, and says why in the debug log'
   await ui.unmount()
 })
 
+test('a remove that cannot start reads as exit 1, keeps the row and says why in the debug log', async ($, on) => {
+  const { toasts, logs, closes, script } = world(on, { text: `${WINDOW}\n` })
+  await start($)
+  script.rejects.add('remove')
+  const ui = await mountPane($, true)
+
+  await ui.press({ key: 'row-remove' })
+
+  expect(toasts).toEqual(['The queue is busy. Try again.'])
+  expect(closes).toEqual([])
+  expect(await rowLabels(ui)).toEqual(['main:editor Task done'])
+  expect(logs.some(line => line.includes('remove failed') && line.includes('EACCES'))).toBe(true)
+  await ui.unmount()
+})
+
 // The row key of the last focus the mod asked for. `$.ui.focus` has no
 // implementation beneath `claude plugin test` — it rejects with "no
 // implementation for ui.focus", whatever the test registers — so every
