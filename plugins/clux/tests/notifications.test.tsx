@@ -192,6 +192,19 @@ test('Enter on a row jumps, takes the line out and closes the pane', async ($, o
   await ui.unmount()
 })
 
+test('Enter on an agent row jumps and runs no remove: the jump removed it', async ($, on) => {
+  const { ran, closes, queue } = world(on, { text: `${AGENT}\n${WINDOW}\n` }, IN_TMUX)
+  await start($)
+  const ui = await mountPane($, true)
+
+  queue.text = `${WINDOW}\n`
+  await ui.press({ key: 'row:0' })
+
+  expect(lineRuns(ran)).toEqual([['jump', AGENT]])
+  expect(closes).toEqual(['notifications'])
+  await ui.unmount()
+})
+
 test('a run with no person at the prompt does not poll', async ($, on) => {
   const { clock, ran } = world(on, { text: `${WINDOW}\n` })
   await $.session.start({ cwd: ROOT, surface: null, isInteractive: false })
@@ -480,6 +493,24 @@ test('the footer label counts the queue, and sits after the sessions label', asy
   expect(quietLabel?.props.label).toBe('notifs')
   expect(quietLabel?.props.dimColor).toBe(true)
   await quiet.unmount()
+})
+
+test('a click on the footer label while the pane is open keeps the focused row for x', async ($, on) => {
+  const { ran, queue } = world(on, { text: `${WINDOW}\n${AGENT}\n${THIRD}\n` })
+  await start($)
+  await runNotifications($, 'on')
+  const ui = await mountPane($, true)
+  await raiseFocus($, 'row:2')
+
+  // The pane is open: the engine keeps the ring on row:2.
+  const footer = await $.ui.mount({ ...FOOTER, props: { modes: [] } })
+  await footer.press({ key: 'open-notifications' })
+
+  queue.text = `${WINDOW}\n${AGENT}\n`
+  await ui.press({ key: 'row-remove' })
+  expect(lineRuns(ran)).toEqual([['remove', THIRD]])
+  await footer.unmount()
+  await ui.unmount()
 })
 
 test('a click on the footer label opens the pane', async ($, on) => {

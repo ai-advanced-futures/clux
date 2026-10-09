@@ -79,6 +79,33 @@ SCRIPT="$SCRIPTS_DIR/notification-line.sh"
     grep -qxF "$line" "$QUEUE_FILE" || false
 }
 
+@test "notification-line remove: a line that starts with - is a pattern, and the rest of the queue stays" {
+    local dash='-main:editor done|||$sess1:@win3'
+    local keep='main:tests green|||$sess1:@win5'
+    printf '%s\n%s\n' "$dash" "$keep" > "$QUEUE_FILE"
+
+    run bash "$SCRIPT" remove "$dash"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$QUEUE_FILE")" = "$keep" ]
+}
+
+@test "notification-line remove: a queue grep cannot read stays, and the remove exits 1" {
+    local line='main:editor done|||$sess1:@win3'
+    printf '%s\n' "$line" > "$QUEUE_FILE"
+    chmod 000 "$QUEUE_FILE"
+    # root reads a mode 000 file, so the case proves nothing there.
+    if cat "$QUEUE_FILE" >/dev/null 2>&1; then
+        chmod 644 "$QUEUE_FILE"
+        skip "this user can read a mode 000 file"
+    fi
+
+    run bash "$SCRIPT" remove "$line"
+    chmod 644 "$QUEUE_FILE"
+    [ "$status" -eq 1 ]
+    grep -qxF "$line" "$QUEUE_FILE" || false
+    [ ! -e "${QUEUE_FILE}.tmp" ]
+}
+
 @test "notification-line remove: a missing queue file is exit 0 and takes no lock" {
     rm -f "$QUEUE_FILE"
 

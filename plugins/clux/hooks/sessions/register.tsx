@@ -99,7 +99,12 @@ function openPane($: EngineInterface) {
 // Selecting a session puts its @name in the message box at the cursor. The
 // pane closes first, so the keys go back to the box for the next word.
 async function mention($: EngineInterface, session: BgSession) {
-  const { text, cursor } = await $.prompt.read()
+  const draft = await $.prompt.read().catch(() => undefined)
+  if (!draft) {
+    $.ui.toast(`Could not put @${session.name} in the message box.`)
+    return
+  }
+  const { text, cursor } = draft
   const handle = mentionText(session.name, text.slice(0, cursor))
   await $.ui.close({ id: PANE })
   const filled = await $.prompt.fill({ text: handle, mode: 'insert' }).catch(() => undefined)

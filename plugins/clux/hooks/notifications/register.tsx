@@ -56,15 +56,18 @@ async function tick($: EngineInterface) {
 }
 
 // The row the ring sits on. The `ui.focus` hook below is its only writer
-// apart from `openPane`, which puts it back on the first row.
+// apart from `openPane`, which puts it back on the first row when the pane
+// opens new.
 let focused = 0
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the
-// keys. The ring goes back to the first row, so the command and the footer
-// label share one reset and `j`, `k` and `x` act on the row the person sees
-// first, until a `ui.focus` says otherwise.
+// keys. A pane that opens new puts the ring on the first row, so `focused`
+// goes back to 0. A pane that is already open keeps its ring where the
+// person put it, so `focused` keeps its value too: a reset there would make
+// `x` remove the first row while the ring shows another.
 async function openPane($: EngineInterface) {
-  focused = 0
+  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+  if (!isOpen) focused = 0
   await tick($)
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
@@ -82,8 +85,8 @@ async function runLine($: EngineInterface, verb: 'jump' | 'remove', row: NotifRo
 
 // Enter on a row. The jump leaves tmux on another window, so the pane closes:
 // a pane that stays open shows the list of the window the person just left.
-// The remove is needed because the status bar removes only the top line; for
-// an agent line the jump removed it already and `remove` finds nothing.
+// The remove is needed because the status bar removes only the top line. An
+// agent line needs no remove: the jump of an agent line removes it.
 //
 // No tmux around Claude Code means no window to go to, so the script is not
 // even started; the pane and the row both stay, and the person can still
@@ -94,7 +97,7 @@ async function jumpTo($: EngineInterface, row: NotifRow) {
     $.ui.toast(`Could not jump to ${row.text}.`)
     return
   }
-  await runLine($, 'remove', row)
+  if (row.kind === 'window') await runLine($, 'remove', row)
   await $.ui.close({ id: PANE })
   await tick($)
 }

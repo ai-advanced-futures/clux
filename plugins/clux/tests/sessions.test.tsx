@@ -61,9 +61,9 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   // The prompt box: the draft, the cursor, and what the mod put in it.
-  const box = { text: '', cursor: 0, isRefused: false }
+  const box = { text: '', cursor: 0, isRefused: false, isUnread: false }
   const fills: { text: string; mode: string }[] = []
-  on('prompt.read', () => ({ value: { text: box.text, cursor: box.cursor } }))
+  on('prompt.read', () => (box.isUnread ? { deny: 'no prompt' } : { value: { text: box.text, cursor: box.cursor } }))
   on('prompt.fill', ($, e) => {
     if (box.isRefused) return { isFilled: false }
     fills.push({ text: e.text, mode: e.mode })
@@ -194,6 +194,17 @@ test('a cursor right after a word gets a space before the @name', async ($, on) 
   const ui = await mountPane($)
   await ui.press({ key: 'mention-ask1' })
   expect(fills).toEqual([{ text: ' @fabric-giants ', mode: 'insert' }])
+  await ui.unmount()
+})
+
+test('a box that cannot be read shows the @name in a toast', async ($, on) => {
+  const { box, fills, toasts } = world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  box.isUnread = true
+  const ui = await mountPane($)
+  await ui.press({ key: 'mention-ask1' })
+  expect(fills).toEqual([])
+  expect(toasts).toEqual(['Could not put @fabric-giants in the message box.'])
   await ui.unmount()
 })
 

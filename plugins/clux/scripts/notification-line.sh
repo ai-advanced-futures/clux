@@ -47,12 +47,21 @@ _take_lock() {
 # removes a longer line that holds the argument inside it; -x removes an equal
 # line only. The new file goes into place with mv, so a reader never sees a
 # part list. grep exits 1 when every line matched, which is the "queue is now
-# empty" case and not a failure, so the exit code of the script is its own.
+# empty" case and not a failure. grep exits 2 when it cannot read the queue:
+# then the empty .tmp says nothing about the queue, so the queue stays as it
+# is and the remove is a failure. -e keeps a line that starts with "-" a
+# pattern, not an option.
 _remove() {
+    local rc
     [ -n "$LINE" ] || return 0
     [ -s "$NOTIFY_FILE" ] || return 0
     _take_lock || return 1
-    grep -vxF "$LINE" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp" 2>/dev/null
+    grep -vxF -e "$LINE" "$NOTIFY_FILE" > "${NOTIFY_FILE}.tmp" 2>/dev/null
+    rc=$?
+    if [ "$rc" -gt 1 ]; then
+        rm -f "${NOTIFY_FILE}.tmp"
+        return 1
+    fi
     if [ -s "${NOTIFY_FILE}.tmp" ]; then
         mv "${NOTIFY_FILE}.tmp" "$NOTIFY_FILE"
     else
