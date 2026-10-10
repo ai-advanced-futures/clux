@@ -21,12 +21,22 @@ LOCKDIR="${NOTIFY_FILE}.lock"
 VERB="${1:-}"
 LINE="${2:-}"
 
-# Take the queue lock, as dismiss-notification.sh does. mkdir is atomic on
-# every filesystem; five tries at 100 ms is the 500 ms budget of a key the
-# person pressed. A lock older than 10 seconds is the leftover of a killed
-# process, so it goes.
+# Take the queue lock. The writers (acquire_lock in helpers.sh) use flock on
+# "<queue>.flock" when flock is installed, and the mkdir directory when it is
+# not; dismiss-notification.sh uses the mkdir directory only. This remove
+# takes BOTH, so it excludes every writer on every host: with only one of the
+# two, a notification that a writer appends between the grep and the mv below
+# is lost. flock waits 1 second at most: a whole number, because some flock
+# builds do not accept a fraction. mkdir is atomic on every filesystem; five
+# tries at 100 ms is the 500 ms budget of a key the person pressed. A lock
+# directory older than 10
+# seconds is the leftover of a killed process, so it goes.
 _take_lock() {
     local now mtime i=0
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"${NOTIFY_FILE}.flock" || return 1
+        flock -w 1 9 || return 1
+    fi
     if [ -d "$LOCKDIR" ]; then
         now=$(date +%s)
         # GNU stat (-c %Y) first: on Linux `stat -f` means --file-system and
@@ -138,6 +148,12 @@ esac
 # --- jump, an agent line -------------------------------------------------
 # Line shape (new):    "<marker> <label>|||agent:<SID>@@<TMUXSID>:<WID>:<PID>@@<CWD>"
 # Line shape (legacy): "<marker> <label>|||agent:<SID>"
+#
+# agent_jump always returns 0, and the jump clears the line after it. With no
+# tmux server there is no place to go, so stop here with exit 1 and keep the
+# line: the pane then says it could not jump, as it does for a window line.
+tmux list-sessions >/dev/null 2>&1 || exit 1
+
 _AGENT_QUEUE="$NOTIFY_FILE"   # the queue the three tiers resolved
 # shellcheck source=./helpers.sh
 # shellcheck disable=SC1091

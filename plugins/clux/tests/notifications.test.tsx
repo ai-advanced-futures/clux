@@ -240,6 +240,20 @@ test('a jump that exits 1 shows a toast, keeps the row and runs no remove', asyn
   await ui.unmount()
 })
 
+test('a jump whose remove fails still closes the pane, and says the row stays', async ($, on) => {
+  const { ran, toasts, closes, script } = world(on, { text: `${WINDOW}\n` }, IN_TMUX)
+  await start($)
+  script.exits.remove = 1
+  const ui = await mountPane($, true)
+
+  await ui.press({ key: 'row:0' })
+
+  expect(lineRuns(ran)).toEqual([['jump', WINDOW], ['remove', WINDOW]])
+  expect(toasts).toEqual(['The queue is busy. The notification stays in the queue.'])
+  expect(closes).toEqual(['notifications'])
+  await ui.unmount()
+})
+
 // A background session has no TMUX, but the tmux server and its client are
 // still there: the script moves the client, so the pane does not stop it.
 test('outside tmux Enter still runs the jump, takes the line out and closes the pane', async ($, on) => {

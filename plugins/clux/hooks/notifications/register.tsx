@@ -79,9 +79,13 @@ async function openPane($: EngineInterface) {
 
 // One verb of the shared script on one line. A script that cannot start, or
 // that overruns its budget, reads as a failure exactly as a non-zero exit
-// does; the reason goes to the debug log, never to the person.
+// does; the reason goes to the debug log, never to the person. The budget is
+// RUN_MS: the engine default is 30 s, too long for a key press when tmux
+// does not answer.
+const RUN_MS = 5000
+
 async function runLine($: EngineInterface, verb: 'jump' | 'remove', row: NotifRow) {
-  const answer = await $.process.run([script($), verb, row.line]).catch(error => {
+  const answer = await $.process.run([script($), verb, row.line], { timeoutMs: RUN_MS }).catch(error => {
     $.ui.log(`clux notifications: ${verb} failed: ${String(error)}`, { to: 'debug' })
     return undefined
   })
@@ -102,7 +106,11 @@ async function jumpTo($: EngineInterface, row: NotifRow) {
     $.ui.toast(`Could not jump to ${row.text}.`)
     return
   }
-  if (row.kind === 'window') await runLine($, 'remove', row)
+  // The jump is done, so the pane closes also when the remove fails; the
+  // person learns that the row stays in the queue.
+  if (row.kind === 'window' && !(await runLine($, 'remove', row))) {
+    $.ui.toast('The queue is busy. The notification stays in the queue.')
+  }
   await $.ui.close({ id: PANE })
   await tick($)
 }

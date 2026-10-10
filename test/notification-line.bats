@@ -127,6 +127,31 @@ SCRIPT="$SCRIPTS_DIR/notification-line.sh"
     rmdir "${QUEUE_FILE}.lock"
 }
 
+@test "notification-line remove: exits 1 while a writer holds the flock lock" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    local line='main:editor done|||$sess1:@win3'
+    printf '%s\n' "$line" > "$QUEUE_FILE"
+
+    # A writer (acquire_lock in helpers.sh) holds "<queue>.flock": flock times
+    # out. The committed stub always succeeds, so this test replaces it.
+    cat > "$BATS_TEST_TMPDIR/stubs/flock" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "flock $*" >> "${STUB_LOG:-/dev/null}"
+exit 1
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/flock"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        bash '$SCRIPT' remove '$line'
+    "
+    [ "$status" -eq 1 ]
+    grep -qF 'flock -w' "$stub_log" || false
+    grep -qxF "$line" "$QUEUE_FILE" || false
+    [ -f "${QUEUE_FILE}.flock" ]
+    [ ! -d "${QUEUE_FILE}.lock" ]
+}
+
 @test "notification-line remove: removes from the sidecar queue when only the sidecar is set" {
     local sidecar_queue="$BATS_TEST_TMPDIR/sidecar-queue"
     local line='main:editor done|||$sess1:@win3'
@@ -232,6 +257,29 @@ STUBEOF
     grep -qF 'refresh-client -S' "$stub_log" || false
     # Clear-on-jump took the entry out.
     run grep -qF '|||agent:abc-123@@' "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+}
+
+@test "notification-line jump: an agent line with no tmux server exits 1 and keeps the line" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
+[ "$1" = "list-sessions" ] && exit 1
+exit 0
+STUBEOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+
+    local line='⚡ agents / x|||agent:abc-123@@$s9:@w9:%pane3@@/c'
+    printf '%s\n' "$line" > "$QUEUE_FILE"
+
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        bash '$SCRIPT' jump '⚡ agents / x|||agent:abc-123@@\$s9:@w9:%pane3@@/c'
+    "
+    [ "$status" -eq 1 ]
+    grep -qxF "$line" "$QUEUE_FILE" || false
+    run grep -E 'switch-client|select-window|new-window|send-keys' "$stub_log"
     [ "$status" -ne 0 ]
 }
 
