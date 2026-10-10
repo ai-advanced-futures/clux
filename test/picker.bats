@@ -58,11 +58,15 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# Case 3: ENTER on interactive line → SESSION:WINDOW parse unchanged
-# Falsifiable: assert "select-window -t" was called with the parsed session:window
-# and that agent_jump (new-window/switch-client from list-panes) was NOT invoked.
+# Case 3: ENTER on interactive line → the id parse (4.6.0)
+# Until 4.6.0 the picker parsed SESSION:WINDOW out of the text of the line and
+# jumped by name, while prefix + m jumped by the ids after |||. Both now run
+# notification-line.sh, so the popup jumps by id too: a session renamed after
+# the notification arrived still lands on the right window.
+# Falsifiable: the id target must appear, the name target must not, and
+# agent_jump's new-window must not be invoked.
 # ---------------------------------------------------------------------------
-@test "picker: ENTER on interactive line uses session:window parse" {
+@test "picker: ENTER on interactive line jumps by the ids in the line" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
 
     printf 'main:editor Task done|||$sess1:@win3\n' > "$QUEUE_FILE"
@@ -77,8 +81,9 @@ STUBEOF
         bash '$SCRIPTS_DIR/notification-picker.sh'
     "
     [ "$status" -eq 0 ]
-    # The select-window call must have used main:editor (the session:window parse)
-    grep -qF "select-window -t main:editor" "$stub_log" || false
+    grep -qF 'select-window -t $sess1:@win3' "$stub_log" || false
+    run grep -F 'select-window -t main:editor' "$stub_log"
+    [ "$status" -ne 0 ]
     # agent_jump's new-window must NOT have been called (no mis-routing)
     run grep -qF "new-window" "$stub_log"
     [ "$status" -ne 0 ]

@@ -118,24 +118,17 @@ export function sortSessions(list: readonly BgSession[]): BgSession[] {
   )
 }
 
-// The sessions with a question that was not there at the last check: a new
-// session that needs input, or a new question from the same session.
-export const question = (s: BgSession) => `${s.id}\n${s.line}`
-
-export function newlyBlocked(
-  list: readonly BgSession[],
-  before: readonly BgSession[],
-): BgSession[] {
-  const asked = new Set(
-    before.filter(s => s.status === 'needs-input').map(question),
-  )
-  return list.filter(s => s.status === 'needs-input' && !asked.has(question(s)))
-}
-
 // The worktree paths that `git worktree list --porcelain` prints.
 export function worktreePaths(porcelain: string): string[] {
   return porcelain
     .split('\n')
     .filter(line => line.startsWith('worktree '))
     .map(line => line.slice('worktree '.length))
+}
+
+// The text that names a session in the message box: its @name and a space,
+// with a space before it when the cursor follows a word.
+export function mentionText(name: string, before: string): string {
+  const gap = before === '' || /\s$/.test(before) ? '' : ' '
+  return `${gap}@${name} `
 }

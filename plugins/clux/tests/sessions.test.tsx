@@ -36,9 +36,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
       e.argv[0] === 'git' ? `worktree ${ROOT}\nHEAD abc\n\nworktree /code/clux-wt\nHEAD def\n`
       : e.argv[1] === 'display-message' ? '$3\n'
       : ''
-    // A Linux machine: no afplay.
-    const exitCode = e.argv[0] === 'afplay' ? 127 : 0
-    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.stat', ($, e) => ({
     value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, realPath: e.path },
@@ -62,6 +60,15 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     value: [...panes].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true, plugin: 'clux' })),
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  // The prompt box: the draft, the cursor, and what the mod put in it.
+  const box = { text: '', cursor: 0, isRefused: false, isUnread: false }
+  const fills: { text: string; mode: string }[] = []
+  on('prompt.read', () => (box.isUnread ? { deny: 'no prompt' } : { value: { text: box.text, cursor: box.cursor } }))
+  on('prompt.fill', ($, e) => {
+    if (box.isRefused) return { isFilled: false }
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled: true }
+  })
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Box } = $.ui.resolve(e)
     return <Box key="engine-band" />
@@ -75,7 +82,7 @@ function world(on: On, jobs: Record<string, string>, env: Record<string, string>
     )
   })
 
-  return { clock, ran, toasts, lists, panes }
+  return { clock, ran, toasts, lists, panes, box, fills }
 }
 
 const PANE_PROPS = {
@@ -123,56 +130,122 @@ test('the pane lists name, status, PRs and description for this repository only'
   expect(texts).toContain('8/8 tests')
   const link = await ui.find({ type: 'Link' })
   expect(link?.props.href).toBe('https://github.com/o/r/pull/28')
-  expect((await ui.find({ key: 'open-ask1' }))?.props.hotkey).toBe('1')
+  const first = await ui.find({ key: 'mention-ask1' })
+  expect(first?.props.hotkey).toBe('1')
+  expect(first?.props.autoFocus).toBe(true)
+  expect((await ui.find({ key: 'mention-run1' }))?.props.autoFocus).toBeUndefined()
   await ui.unmount()
 })
 
-test('selecting a row opens that session in a new tmux window', async ($, on) => {
-  const { ran } = world(
-    on,
-    { ask1: state({ name: 'tenant-registry-p1', state: 'blocked', detail: 'q' }) },
-    { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%5' },
-  )
-  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({
+const mountPane = ($: Engine) =>
+  $.ui.mount({
     plugin: 'clux',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'sessions',
     props: PANE_PROPS,
   })
-  await ui.press({ key: 'open-ask1' })
-  expect(ran).toContainEqual(['tmux', 'display-message', '-p', '-t', '%5', '#{session_id}'])
-  expect(ran).toContainEqual(['tmux', 'new-window', '-t', '$3:', '-n', 'tenant-registry-p1', 'claude', 'attach', 'ask1'])
+
+test('Enter on a row inserts its @name at the cursor and closes the pane', async ($, on) => {
+  const { ran, panes, box, fills } = world(
+    on,
+    { ask1: state({ name: 'tenant-registry-p1', state: 'blocked', detail: 'q' }) },
+    { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%5' },
+  )
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await runSessions($)
+  box.text = 'ask  for its status'
+  box.cursor = 4
+  const ui = await mountPane($)
+  await ui.press({ key: 'mention-ask1' })
+  expect(fills).toEqual([{ text: '@tenant-registry-p1 ', mode: 'insert' }])
+  expect(panes.has('sessions')).toBe(false)
+  // The pane no longer opens a session.
+  expect(ran.some(argv => argv[0] === 'tmux' || argv[0] === 'claude')).toBe(false)
   await ui.unmount()
 })
 
-test('a new question plays the sound once and raises a toast', async ($, on) => {
+test('a pane without the keys says how to move into it', async ($, on) => {
+  world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const hint = 'ctrl+x tab: move into the list'
+  const texts = async (isFocused: boolean) => {
+    const ui = await $.ui.mount({
+      plugin: 'clux',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'sessions',
+      props: { ...PANE_PROPS, isFocused },
+    })
+    const all = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    await ui.unmount()
+    return all
+  }
+  // A draft in the message box: Claude Code opens the pane without the keys.
+  expect(await texts(false)).toContain(hint)
+  expect((await texts(true)).includes(hint)).toBe(false)
+})
+
+test('a cursor right after a word gets a space before the @name', async ($, on) => {
+  const { box, fills } = world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  box.text = 'ping'
+  box.cursor = 4
+  const ui = await mountPane($)
+  await ui.press({ key: 'mention-ask1' })
+  expect(fills).toEqual([{ text: ' @fabric-giants ', mode: 'insert' }])
+  await ui.unmount()
+})
+
+test('a box that cannot be read shows the @name in a toast', async ($, on) => {
+  const { box, fills, toasts } = world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  box.isUnread = true
+  const ui = await mountPane($)
+  await ui.press({ key: 'mention-ask1' })
+  expect(fills).toEqual([])
+  expect(toasts).toEqual(['Could not put @fabric-giants in the message box.'])
+  await ui.unmount()
+})
+
+test('a box that refuses the text shows the @name in a toast', async ($, on) => {
+  const { box, fills, toasts } = world(on, { ask1: state({ name: 'fabric-giants', state: 'working' }) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  box.isRefused = true
+  const ui = await mountPane($)
+  await ui.press({ key: 'mention-ask1' })
+  expect(fills).toEqual([])
+  expect(toasts).toEqual(['Could not put @fabric-giants in the message box.'])
+  await ui.unmount()
+})
+
+test('a new question raises no toast and plays no sound', async ($, on) => {
   const jobs: Record<string, string> = {
     run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
   }
   const { clock, ran, toasts } = world(on, jobs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  expect(ran.some(argv => argv[0] === 'paplay')).toBe(false)
 
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
   await clock.advance(5000)
   await clock.settle()
-  const plays = () => ran.filter(argv => argv[0] === 'paplay').length
-  expect(plays()).toBe(1)
-  expect(ran.find(argv => argv[0] === 'paplay')?.[1]).toContain('sounds/needs-input.wav')
-  expect(toasts).toEqual(['fabric-giants needs input: choose: A or B?'])
-
-  await clock.advance(5000)
-  await clock.settle()
-  expect(plays()).toBe(1)
-
-  // A second question from the same session alerts again.
   jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: C or D?' })
   await clock.advance(5000)
   await clock.settle()
-  expect(plays()).toBe(2)
-  expect(toasts.at(-1)).toBe('fabric-giants needs input: choose: C or D?')
+
+  // The poll saw the question: the footer counts it.
+  const ui = await $.ui.mount({
+    plugin: 'clux',
+    surface: 'terminal',
+    component: 'SessionMode',
+    props: { modes: [] },
+  })
+  expect((await ui.find({ key: 'open-sessions' }))?.props.label).toBe('1 needs input')
+  await ui.unmount()
+
+  expect(toasts).toEqual([])
+  // Only git and tmux run: no audio player.
+  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !((argv[0] ?? '').endsWith('/scripts/notification-line.sh') && argv[1] === 'path'))).toEqual([])
 })
 
 const runSessions = ($: Engine, args = '') =>
@@ -197,43 +270,6 @@ test('/clux:sessions opens the pane, and /clux:sessions again closes it', async 
   expect(panes.has('sessions')).toBe(true)
   await runSessions($, 'off')
   expect(panes.has('sessions')).toBe(false)
-})
-
-test('a question found when /clux:sessions opens still alerts', async ($, on) => {
-  const jobs: Record<string, string> = {
-    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
-  }
-  const { ran, toasts } = world(on, jobs)
-  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-
-  jobs.run1 = state({ name: 'fabric-giants', state: 'blocked', detail: '' })
-  await runSessions($)
-  expect(ran.filter(argv => argv[0] === 'paplay').length).toBe(1)
-  expect(toasts).toEqual(['fabric-giants needs input'])
-})
-
-test('a question that drops out for one poll does not alert again', async ($, on) => {
-  const jobs: Record<string, string> = {
-    run1: state({ name: 'fabric-giants', state: 'working', detail: 'building' }),
-  }
-  const { clock, ran } = world(on, jobs)
-  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
-  const plays = () => ran.filter(argv => argv[0] === 'paplay').length
-
-  const asking = state({ name: 'fabric-giants', state: 'blocked', detail: 'choose: A or B?' })
-  jobs.run1 = asking
-  await clock.advance(5000)
-  await clock.settle()
-  expect(plays()).toBe(1)
-
-  // A read during a write: the file does not parse for one poll.
-  jobs.run1 = '{not json'
-  await clock.advance(5000)
-  await clock.settle()
-  jobs.run1 = asking
-  await clock.advance(5000)
-  await clock.settle()
-  expect(plays()).toBe(1)
 })
 
 test('a run with no person at the prompt does not poll', async ($, on) => {

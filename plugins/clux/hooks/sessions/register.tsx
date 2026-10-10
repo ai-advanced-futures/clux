@@ -5,8 +5,7 @@ import type { BgSession, BgStatus } from '../../types'
 import {
   LABEL,
   isFresh,
-  newlyBlocked,
-  question,
+  mentionText,
   sortSessions,
   toSession,
   worktreePaths,
@@ -23,12 +22,6 @@ const TITLE = 'Background sessions'
 const POLL_MS = 5000
 // Read the worktree list again after this many polls (one minute).
 const ROOTS_EVERY = 12
-// How long a question stays known after its last poll. Longer than a roots
-// refresh, so a row that drops out for some polls does not alert again.
-const ALERT_MEMORY_MS = 5 * 60 * 1000
-const SOUND = 'sounds/needs-input.wav'
-// afplay on macOS; on Linux Claude Code has no player, so try clux's.
-const PLAYERS = ['afplay', 'paplay', 'pw-play', 'aplay', 'play']
 
 const sessions = atom({ plugin: 'clux', key: 'sessions' } as const, [])
 
@@ -89,43 +82,13 @@ async function readSessions($: EngineInterface, scope: Scope, now: number) {
   return sortSessions(found)
 }
 
-let player: string | undefined
-
-async function playAlert($: EngineInterface) {
-  const file = `${$.plugin.root}/${SOUND}`
-  for (const name of player ? [player] : PLAYERS) {
-    const ran = await $.process.run([name, file], { timeoutMs: 5000 }).catch(() => undefined)
-    if (ran?.exitCode === 0) {
-      player = name
-      return
-    }
-  }
-}
-
-// The questions alerted recently, each with the last poll that saw it.
-const alerted = new Map<string, number>()
-
-// `isQuiet` takes a baseline: no sound for questions asked before the start.
-// One sound for each poll, however many questions it finds.
-async function poll($: EngineInterface, scope: Scope, isQuiet: boolean) {
+async function poll($: EngineInterface, scope: Scope) {
   const now = await $.clock.now()
   const list = await readSessions($, scope, now)
   const before = await read($, sessions)
   if (JSON.stringify(list) !== JSON.stringify(before)) {
     await update($, sessions, () => list)
   }
-  for (const [key, seen] of alerted) {
-    if (now - seen > ALERT_MEMORY_MS) alerted.delete(key)
-  }
-  const fresh = newlyBlocked(list, before).filter(s => !alerted.has(question(s)))
-  for (const s of list) {
-    if (s.status === 'needs-input') alerted.set(question(s), now)
-  }
-  if (isQuiet || fresh.length === 0) return
-  for (const session of fresh) {
-    $.ui.toast(session.line ? `${session.name} needs input: ${session.line}` : `${session.name} needs input`)
-  }
-  void playAlert($)
 }
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the keys.
@@ -133,26 +96,19 @@ function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
 
-// Selecting a session opens it: a new tmux window that attaches to it, or
-// the attach command on the clipboard outside tmux.
-async function attach($: EngineInterface, session: BgSession) {
-  const argv = ['claude', 'attach', session.id]
-  const pane = await $.env.get('TMUX_PANE')
-  if (pane && (await $.env.get('TMUX'))) {
-    // The new window goes in the tmux session of this pane, not in the
-    // session that tmux used last.
-    const own = await $.process
-      .run(['tmux', 'display-message', '-p', '-t', pane, '#{session_id}'])
-      .catch(() => undefined)
-    const target = own?.exitCode === 0 ? ['-t', `${own.stdout.trim()}:`] : []
-    const ran = await $.process
-      .run(['tmux', 'new-window', ...target, '-n', session.name, ...argv])
-      .catch(() => undefined)
-    if (ran?.exitCode === 0) return
+// Selecting a session puts its @name in the message box at the cursor. The
+// pane closes first, so the keys go back to the box for the next word.
+async function mention($: EngineInterface, session: BgSession) {
+  const draft = await $.prompt.read().catch(() => undefined)
+  if (!draft) {
+    $.ui.toast(`Could not put @${session.name} in the message box.`)
+    return
   }
-  const command = argv.join(' ')
-  const copied = await $.ui.copy({ text: command }).catch(() => undefined)
-  $.ui.toast(copied?.isCopied ? `Copied: ${command}` : `Run: ${command}`)
+  const { text, cursor } = draft
+  const handle = mentionText(session.name, text.slice(0, cursor))
+  await $.ui.close({ id: PANE })
+  const filled = await $.prompt.fill({ text: handle, mode: 'insert' }).catch(() => undefined)
+  if (!filled?.isFilled) $.ui.toast(`Could not put @${session.name} in the message box.`)
 }
 
 const countNeeds = (list: readonly BgSession[]) =>
@@ -164,15 +120,15 @@ const loop: { scope?: Scope; timer?: Timer; isPolling: boolean; polls: number } 
   polls: 0,
 }
 
-// One poll at a time, so a slow poll and the next tick never both alert.
-async function tick($: EngineInterface, isQuiet = false) {
+// One poll at a time, so a slow poll and the next tick never overlap.
+async function tick($: EngineInterface) {
   const scope = loop.scope
   if (!scope || loop.isPolling) return
   loop.isPolling = true
   try {
     loop.polls += 1
     if (loop.polls % ROOTS_EVERY === 0) scope.roots = await repoRoots($)
-    await poll($, scope, isQuiet)
+    await poll($, scope)
   } catch (error) {
     $.ui.log(`clux sessions: poll failed: ${String(error)}`, { to: 'debug' })
   } finally {
@@ -182,7 +138,7 @@ async function tick($: EngineInterface, isQuiet = false) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // A `-p` run or the SDK has no person to alert and no pane to show.
+    // A `-p` run or the SDK has no person at the prompt and no pane to show.
     if (!e.isInteractive) return next(e)
     try {
       loop.scope = {
@@ -190,8 +146,7 @@ export const register: Register = on => {
         roots: await repoRoots($),
         selfId: await $.session.id(),
       }
-      // Only the first poll after the start is quiet.
-      await tick($, true)
+      await tick($)
       loop.timer?.cancel()
       loop.timer = $.clock.every(POLL_MS, () => void tick($))
     } catch (error) {
@@ -213,7 +168,7 @@ export const register: Register = on => {
     await tick($)
     await openPane($)
 
-    return { text: 'Background sessions pane opened. Press a number to open a session.' }
+    return { text: 'Background sessions pane opened. Press Enter or a number to put a session in the message box.' }
   }).catch(($, e, next) => {
     $.ui.log(`clux sessions: command failed: ${String(next.error)}`, { to: 'debug' })
     return { text: 'The background sessions pane did not respond. Try the command again.' }
@@ -236,6 +191,11 @@ export const register: Register = on => {
             onPress={() => $.ui.close({ id: PANE })}
           />
         </Box>
+        {/* Claude Code opens a pane without the keys while the message box
+            has a draft, and a mod cannot take them: the person moves in. */}
+        {!e.props.isFocused && list.length > 0 && (
+          <Text dimColor>ctrl+x tab: move into the list</Text>
+        )}
         {list.length === 0 && (
           <Text dimColor>No background sessions for this repository.</Text>
         )}
@@ -244,11 +204,12 @@ export const register: Register = on => {
           <Box key={`row-${s.id}`}>
             <Box flexShrink={0}>
               <Button
-                key={`open-${s.id}`}
+                key={`mention-${s.id}`}
+                autoFocus={i === 0 ? true : undefined}
                 plain
                 hotkey={i < 9 ? String(i + 1) : undefined}
                 label={s.name.slice(0, nameWidth).padEnd(nameWidth)}
-                onPress={() => attach($, s)}
+                onPress={() => mention($, s)}
               />
               <Text color={COLOR[s.status]}> ● {LABEL[s.status].padEnd(12)}</Text>
               {s.prs.map(pr => (

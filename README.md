@@ -41,12 +41,39 @@ Background sessions · 3                      [ Hide ]
 ```
 
 - Each row shows the name, the status (needs input, working, unknown, done, failed, stopped), the PRs as links, and the description. The description is the question of a session that needs input, else what the session does now or the result it gave.
-- Press the number of a row (`1` to `9`), or Tab and then Enter, to open that session. In tmux, clux opens a new window that runs `claude attach <id>`. Outside tmux, it copies that command. Esc gives the keyboard back to the prompt.
+- The first row has the focus when the pane opens. The Up and Down arrows (or Tab) move the focus. Enter, or the number of a row (`1` to `9`), puts the `@name` of that session in the message box at the cursor, and closes the pane. Then you can write, for example, `ask @fabric-giants for its status`. When the message box has a draft, Claude Code opens the pane without the keyboard. The pane then says `ctrl+x tab: move into the list`. Press `ctrl+x tab` to move into it. Esc gives the keyboard back to the prompt.
 - clux draws nothing above the prompt. At the right end of the prompt footer, a dim `sessions` label opens the pane. When a session needs input, the label changes to the count, for example `1 needs input`.
-- When a session writes `needs input:`, clux shows a toast and plays a sound, one time for each new question.
+- When a session writes `needs input:`, the footer label counts it. The pane shows no toast and plays no sound.
 - A session counts when its folder or its worktree is in the repository, also a worktree that `git worktree list` names. The session that shows the pane is not in the list. A working session that has not written its state for 30 minutes shows as unknown.
 
 The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.291 or later. `ctrl+x b` is the chord of the `app:cycleDiffBase` action, which Claude Code uses only in the diff panel. To use a different chord, bind it to `app:cycleDiffBase` in `~/.claude/keybindings.json` (context `Global`).
+
+## Notifications pane
+
+`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. `ctrl+x n` does the same from anywhere, also while you write a message, after you bind it (see below).
+
+```
+Notifications · 3 q: hide  j: down  k: up  x: remove
+main:editor Task done
+⚡ agents / pr-flow needs you
+main:tests 8/8 green
+```
+
+- `j` and `k` move the focus, and so do the Down and Up arrows and Tab. Enter goes to the tmux window of the focused row (or to the agents pane of an agent row), takes the row out of the queue, and closes the pane. `x` takes the focused row out and keeps the pane open. `q` closes the pane. Esc gives the keyboard back to the prompt and keeps the pane open.
+- The keys work only while the pane has the keyboard. When the message box has a draft, Claude Code opens the pane without it, and the pane says `ctrl+x tab: move into the list`. Press `ctrl+x tab` to move in.
+- At the right end of the prompt footer, a dim `notifs` label opens the pane. When the queue is not empty, the label shows the count, for example `3 notifs`.
+- clux reads the queue file every 2 seconds. The tmux status bar shows a new notification sooner, because tmux runs its own job on its own interval.
+- Enter works also when Claude Code itself does not run in tmux (for example a background session): tmux moves its attached client to the window. With no tmux server, Enter says it could not jump, and `x` still works.
+
+The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 2.1.291 or later. The keys of this pane and the keys of the `prefix + M` popup both run `scripts/notification-line.sh`, so a jump means the same thing in both.
+
+`ctrl+x n` needs one line in `~/.claude/keybindings.json`, because Claude Code gives a plugin no default key. Add it to the `Global` context:
+
+```json
+{ "context": "Global", "bindings": { "ctrl+x n": "app:toggleDiffPreSession" } }
+```
+
+The pane borrows the `app:toggleDiffPreSession` action, which Claude Code uses only for the diff view. While the diff view is open, the key can act on the diff view instead of the pane. To use a different key, bind that key to `app:toggleDiffPreSession`.
 
 ## Companion terminal
 

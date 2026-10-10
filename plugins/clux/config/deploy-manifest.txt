@@ -24,6 +24,7 @@ path.sh
 
 # Notifications
 show-notification.sh
+notification-line.sh
 jump-to-notification.sh
 dismiss-notification.sh
 notification-picker.sh
