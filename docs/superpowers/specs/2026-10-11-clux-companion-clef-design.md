@@ -79,14 +79,15 @@ These decisions come from the user (2026-10-11).
 
 - **No model package.** The client turns each policy schema into questions: a `boolean` property becomes `noul`, an `enum` becomes `choice` (each value is its own criterion), and the `description` is the instruction. Another property type is bad input (exit 2). The client reads `answers[<name>].noul` and `answers[<name>].choice`. A missing or bad value gives exit 1.
 - **No cut by the server.** Each request has `"truncate": false`. A 413 gives exit 3 (`clef: too long to examine`). The `CUT_TOKENS` rule, `ROW_MARGIN` and the split of a cut block go away: Clef reads 16,384 tokens, and it tells the client when a state is too long. A server that gives another code for a long state (for example 500 from `llama-server`) makes the client exit 1, so the verb fails closed.
-- **Time.** The request limit is 15 s (was 5 s), because a request can wait for a request of another companion (section 7), and the request goes over the network. The retry after 503 stays, because a proxy can give 503. The gate limit is 15 s (was 11 s), with the retry inside it.
+- **Time.** The request limit is 15 s (was 5 s), because a request can wait for a request of another companion (section 7), and the request goes over the network. The retry after 503 stays, because a proxy can give 503. The gate limit is a fixed 15 s (was 11 s), its own constant and not `2 * REQUEST_LIMIT + RETRY_DELAY`, and a retry after 503 runs only in the time that is left in those 15 s.
+- **One request at a time.** The client sends one request at a time (`MAX_PARALLEL = 1`), for the block check and for the line search. [inferred]
 - **Hosts.** The URL must use `http` and have no user part. The host must be one of these:
   - a loopback host (`127.0.0.1`, `localhost`, `::1`);
   - a Tailscale IPv4 address (`100.64.0.0/10`) or IPv6 address (`fd7a:115c:a1e0::/48`);
-  - a name that ends in `.ts.net` and that resolves only to Tailscale addresses. The client resolves the name one time for each process and connects to the address that it checked, so a second lookup cannot give another address.
+  - a name that ends in `.ts.net` and that resolves only to Tailscale addresses. The client resolves the name one time for each process and connects to the address that it checked, so a second lookup cannot give another address. The host of the request URL becomes that address, and the `Host` header holds the name, so the lookup function is on the connect path. [inferred] The client does the lookup in one function of `clef_client.py`, and no environment variable or option changes it. [inferred]
   
   Each other host gives exit 1 and `clef: the host of CLUX_CLEF_URL is not a loopback or Tailscale host`. The traffic on the tailnet is encrypted by Tailscale (WireGuard). A redirect is still refused.
-- **Key.** When `CLUX_CLEF_KEY` is set, each request sends it. A 401 or 403 gives exit 4, as in the base design.
+- **Key.** When `CLUX_CLEF_KEY` is set, each request sends it, also `health`, because clux does not own the port now. A 401 or 403 gives exit 4, as in the base design; a 401 or 403 from `health` gives the `refused CLUX_CLEF_KEY` message of section 6, step 4.
 - **Names.** Messages start with `clef:`, for example `clef: not available`.
 
 ## 6. The server
@@ -96,8 +97,8 @@ clux does not start or stop a server. The rules of the base design for an extern
 1. `open` reads `CLUX_CLEF_URL`. When it is not set, `open` exits 6 with `clef not configured: set CLUX_CLEF_URL to the URL of your Clef server`.
 2. `open` checks the host (section 5). A bad host gives exit 6.
 3. `open` checks that the client Python is 3.10 or later. It uses `python3`, or `CLUX_CLEF_PYTHON` when that is set. Else it exits 6 with `clef not available: the client needs python3 3.10 or later`.
-4. `open` calls `health`, then sends one pane request, so that a bad key or a server that is not Clef fails at `open`. A failure gives exit 6 with `clef not available: the server at CLUX_CLEF_URL does not answer` (or `refused CLUX_CLEF_KEY`).
-5. `open` writes `clef_url` and, when it is set, `clef_key` to the `state` of the companion. The later verbs read them from `state`, as in the base design.
+4. `open` calls `health`, then sends one pane request, so that a bad key or a server that is not Clef fails at `open`. This request runs before the pane opens, so it carries a fixed one-word state and not the pane. [inferred] An empty state is not allowed for this check, because `pane` sends no request for it. [inferred] The request adds about 0.6 s to `open` (section 2). [inferred] A failure gives exit 6 with `clef not available: the server at CLUX_CLEF_URL does not answer` (or `refused CLUX_CLEF_KEY`).
+5. `open` writes `clef_url` and, when it is set, `clef_key` to the `state` of the companion. The later verbs read them from `state`, as in the base design. `open` on a live companion makes steps 1 to 4 again and writes the current `CLUX_CLEF_URL` to `state`, which replaces an older `clef_url`; a state with no `clef_url` (a 4.x companion) still gets the message "this companion has no Clef server: use close, then open". [inferred]
 
 When the server stops during a session (the Mac Studio sleeps, or the user stops the server), each check fails, the verb exits 6 with `clef not available`, and no output goes to Claude. `open` is not necessary after the server is back: the next verb tries again.
 
@@ -130,8 +131,8 @@ The guard keeps its inputs, its results, its markers, `secret-values.txt`, `not-
 
 1. **Blocks.** Blocks of whole lines, at most 2,000 characters, made from the last line up. A line longer than 2,000 characters is cut into pieces that share 100 characters.
 2. **Block check.** One request for each block with `output-block.json`, one block at a time. A block with `prompt_injection` above 0.8 is held as one unit, as in the base design.
-3. **Line search.** For a block with `secret` above 0.5, the client asks which lines hold the secret, with `output-line.json`. The state is the full block, each line with its number (`<n>: <line>`). Each request has one `noul` question for at most 10 lines (`Does line <n> contain a password, API key, token, private key or other credential?`), so that one request takes at most about 8 s and a request of another companion does not wait too long (section 7). A block of 30 lines needs 3 requests. A line above 0.75 is held. The pair rule of the base design goes away: the block gives each line its context. The lines that `secret-values.txt` holds get no question. A block that is a piece of a long line gets no line search: the full line is held (base design, step 7).
-4. **No time for the line search.** The client estimates the cost of the line search from the measured rate of this guard: the time of the block check of this block, plus 0.35 s for each line question. When the time left is less than that, the full block is held as `[held by clef: secret, <k> lines]`. A block is never held as `not_examined` after its block check gave `secret`.
+3. **Line search.** For a block with `secret` above 0.5, the client asks which lines hold the secret, with `output-line.json`. The state is the full block, each line with its number (`<n>: <line>`). Each request has one `noul` question for at most 10 lines (`Does line <n> contain a password, API key, token, private key or other credential?`), so that one request takes at most about 8 s and a request of another companion does not wait too long (section 7). A block of 30 lines needs 3 requests. The question for line `<n>` is named `line<n>`; `<n>` counts from 1 in the block, and the client maps it back to the output line. The text of the question is the `description` of the `secret` property in `output-line.json`, with "the text" changed to "line `<n>`". [inferred] A line above 0.75 is held. The pair rule of the base design goes away: the block gives each line its context. The lines that `secret-values.txt` holds get no question. A block that is a piece of a long line gets no line search: the full line is held (base design, step 7).
+4. **No time for the line search.** The client estimates the cost of the line search from the measured rate of this guard: the number of line-search requests (`ceil(<lines> / 10)`) times the time of the block check of this block, plus 0.35 s for each line question. When the time left is less than that, the full block is held as `[held by clef: secret, <k> lines]`. A block is never held as `not_examined` after its block check gave `secret`. When a line-search request of such a block gets no answer (the request limit, two 503 answers, or the end of the guard limit), the full block is held in the same way. [inferred]
 
 ### Time
 
@@ -141,7 +142,7 @@ The time budget of `run` (base design and `test/terminal.bats`): the gate (15 s)
 
 ## 9. Status
 
-`terminal.sh clef status` prints `url=<CLUX_CLEF_URL or none>`, `key=set|none`, `host=loopback|tailscale|refused`, and `server=answers|no answer|not checked`. It sends one `health` request when the URL is set and the host is allowed. It does not print the key.
+`terminal.sh clef status` prints `url=<CLUX_CLEF_URL or none>`, `key=set|none`, `host=loopback|tailscale|refused`, and `server=answers|no answer|not checked`. It sends one `health` request (with the key, when it is set) when the URL is set and the host is allowed. It does not print the key.
 
 ## 10. Names
 
@@ -160,6 +161,8 @@ The time budget of `run` (base design and `test/terminal.bats`): the gate (15 s)
 
 The `CHANGELOG.md` history and the dated design documents keep the name Laya.
 
+`README.md`, `docs/reference.md` and `CONTRIBUTING.md` get new text, not only the rename: the install text becomes the `CLUX_CLEF_URL` setup of section 6. `docs/reference.md` holds the server command; `README.md` links to it. [inferred]
+
 ## 11. Skill
 
 `skills/terminal/SKILL.md` changes:
@@ -172,10 +175,11 @@ The `CHANGELOG.md` history and the dated design documents keep the name Laya.
 ## 12. Tests
 
 - `test/fixtures/fake-clef.py` answers in the wire form captured from `clef_mlx.py serve` with the real model (`capture-clef-wire.sh`): `noul`, `choice`, `/health` and 413. A fake 401 comes from the base design captures.
-- `test/clef-client.bats`: the base design tests, without the cut tests, and with these new tests: the schema to questions conversion for each policy; `"truncate": false` in each request; the line search holds only the line above 0.75 and sends at most 10 questions in one request; no time for the line search holds the full block; the host rule (loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name that resolves to a Tailscale address, and refusals for other hosts, for a `.ts.net` name that resolves to another address, and for a user part); the key is sent only when it is set.
+- `test/clef-client.bats`: the base design tests, without the cut tests, and with these new tests: the schema to questions conversion for each policy; `"truncate": false` in each request; the line search holds only the line above 0.75 and sends at most 10 questions in one request; no time for the line search holds the full block; the host rule (loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name that resolves to a Tailscale address, and refusals for other hosts, for a `.ts.net` name that resolves to another address, and for a user part); the key is sent only when it is set. The two `.ts.net` cases run through a Python wrapper in the test that imports `clef_client`, replaces the lookup function, and calls the client; they do not skip off the tailnet. [inferred]
 - `test/terminal.bats`: `open` with no `CLUX_CLEF_URL` exits 6 with `clef not configured`; the time budget against 180 s; `clef status` does not print the key. The tests of the removed parts (install, server start, server stop) go away.
 - `test/terminal-e2e.bats`: the base design cases with the fake server through `CLUX_CLEF_URL`, without the server-stop case.
 - `test/clef-live.bats` (`CLUX_CLEF_LIVE=1` and `CLUX_CLEF_URL` set, not in CI): the 26 commands, the 30 real blocks and the secret cases of section 2 against the real server, and the guard time of 16,384 bytes under `CLEF_GUARD_LIMIT`.
+- The skip gate of `test/test_helper.bash` (`import laya`) and the venv default of `CLUX_CLEF_PYTHON` go away; the tests use `python3`. [inferred]
 - `bats test/` must pass in full.
 
 ## 13. Out of scope
