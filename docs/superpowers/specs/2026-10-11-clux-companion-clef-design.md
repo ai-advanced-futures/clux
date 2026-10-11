@@ -1,6 +1,6 @@
 # clux companion terminal: Clef replaces Laya — design
 
-Date: 2026-10-11. Status: written for user review. Target version: 5.0.0 (major: the companion needs Clef, and the names, the install and the environment variables change).
+Date: 2026-10-11. Status: written for user review. Target version: 5.0.0 (major: the companion needs a Clef server that the user runs, and clux does not install or start a model now).
 
 Base designs: `2026-09-28-clux-companion-laya-guard-design.md` (4.0.0) and `2026-09-30-clux-companion-background-sessions-design.md` (4.1.0). This document gives only the changes to those designs. Where this document does not name a part, that part stays as it is, with the name `laya` changed to `clef` (section 10).
 
@@ -8,10 +8,11 @@ Base designs: `2026-09-28-clux-companion-laya-guard-design.md` (4.0.0) and `2026
 
 The user wants better decisions from the command gate, the output guard and the pane state. Speed is less important.
 
-In 5.0.0 the Cloudflare model Clef (27B) makes the decisions in place of Laya. Two more changes come with it:
+In 5.0.0 the Cloudflare model Clef (27B) makes the decisions in place of Laya. The plugin does not run the model:
 
-1. **One shared server.** One Clef server serves all companions of the user on the Mac. Before, each companion started its own Laya server.
-2. **Remote companions.** A companion on a Linux VM can use the Clef server of the Mac over the user's Tailscale network.
+1. **The user runs one Clef server** on the Mac Studio (`mac-studio`, `100.117.159.16` on the user's tailnet).
+2. **Each companion connects to that server** through the URL in `CLUX_CLEF_URL`, on each Mac and Linux VM of the user, over the tailnet. The Mac Studio uses the same URL, or a loopback URL.
+3. **clux does not install, start or stop a model server.** The install verb, the venv, the server start, the API key that clux makes, and the server stops of `close`, the watchdog and the reaper go away.
 
 ## 2. What Clef is
 
@@ -20,10 +21,9 @@ These facts come from the model cards, the code of `clef_mlx.py`, and tests on t
 - Clef (`Cloudflare/clef`, Apache-2.0) is a decision model. It does not write text. It reads a state and typed questions, and it gives a probability for each allowed answer of each question, in one forward pass. The base model is Qwen 3.8 27B. Clef-Flash is the 9B form.
 - The question types are the same as for Laya: `noul`, `choice` and `score`. The request (`POST /v1/systemone`) and the answer have the same form as for `laya-serve`. A `noul` answer is `{"type": "noul", "noul": <p>}`. A `choice` answer has `choice`, `confidence` and `probabilities`.
 - Clef reads at most 16,384 tokens for one request. All questions go in that one request.
-- `mlx-community/clef-4bit` is Clef for Apple Silicon (MLX, 4 bits, 16.3 GB download). It runs only with its loader `clef_mlx.py`, which is Python code in the model repository. The tested revision is `b973b6f405d02f8e9b83208c7e82ddf43a742eb6`. Packages: `mlx-vlm>=0.7.4,<0.8` and `huggingface_hub`. There is no PyTorch.
-- `clef_mlx.py serve` is an HTTP server with `GET /health` and `POST /v1/systemone`. It runs one request at a time (a lock); other requests wait. It has no API key check and no 503. With `"truncate": false` in the request, a state that is too long gives 413 and `maximum context length exceeded`. Without it, the server cuts the state with no error.
-- MLX runs only on Apple Silicon. clux supports Linux, so a Linux companion uses the server of the Mac (section 6).
-- llama.cpp also runs Clef (`llama-server`, GGUF, support merged on 2026-10-03). It has `--api-key`. A state that is too long gives 500, not 413. It was about 10% slower than MLX here, and its memory was 21 GB for Clef-Flash with a 16k batch. clux does not use it in 5.0.0.
+- `mlx-community/clef-4bit` is Clef for Apple Silicon (MLX, 4 bits, 16.3 GB download). It runs only with its loader `clef_mlx.py`, which is Python code in the model repository. The tested revision is `b973b6f405d02f8e9b83208c7e82ddf43a742eb6`. Packages: `mlx-vlm>=0.7.4,<0.8` and `huggingface_hub`.
+- `clef_mlx.py serve` is an HTTP server with `GET /health` and `POST /v1/systemone`. It runs one request at a time (a lock); other requests wait. It has no API key check and no 503. With `"truncate": false` in the request, a state that is too long gives 413 and `maximum context length exceeded`. Without it, the server cuts the state with no error. `--host` sets the address that it listens on (default `127.0.0.1`).
+- llama.cpp also runs Clef (`llama-server`, GGUF, support merged on 2026-10-03). It has `--api-key`. A state that is too long gives 500, not 413. It was about 10% slower than MLX here.
 
 ### Measured speed (MLX, 4 bits, this machine)
 
@@ -51,79 +51,78 @@ The time is linear in the tokens, also for the question text. Each question adds
 These decisions come from the user (2026-10-11).
 
 - **Reason.** Better decisions. Speed is less important.
-- **Model.** Clef 27B (`mlx-community/clef-4bit`) for all checks. There is no Clef-Flash and no Laya fallback.
-- **Runtime.** MLX on the Mac.
+- **Model.** Clef 27B (`mlx-community/clef-4bit`), on MLX, on the Mac Studio. There is no Laya fallback.
+- **Who runs it.** The user runs the server. The plugin does not run a model.
+- **Where.** All Macs and Linux VMs of the user use that one server over the tailnet. The URL comes from an environment variable.
 - **Guard time.** The output guard can use 45 s (section 8).
-- **Linux.** A companion on a Linux VM uses the server of the Mac over Tailscale, with an API key.
 - **Names.** `laya` becomes `clef` in all names. The version is 5.0.0.
 
 ### Assumed, not confirmed
 
-- clux puts a small front of its own (`clef_front.py`) in front of `clef_mlx.py`. The front checks the API key, because `clef_mlx.py` has none, and the tailnet has tagged devices that the user does not control in full.
-- The shared server stops by itself after 30 minutes with no request. There is no launchd agent.
-- A remote companion needs only Python 3.10 or later on the VM. It needs no venv, no model and no install.
-- The model and the loader are pinned to one revision. `clef install` checks the SHA-256 of `clef_mlx.py` before it runs it.
-- `clux 4.x` state (`laya_*` fields, the `laya` venv) is not carried over. `close` and `open` again is the path.
+- `CLUX_CLEF_KEY` is optional. `clef_mlx.py serve` has no key check, so with that server the user sets no key. When the user puts a server with a key in front (for example `llama-server --api-key`, or a proxy), clux sends the key as `Authorization: Bearer <key>`.
+- clux accepts only a loopback host or a Tailscale host (section 5). It refuses each other host, so terminal text does not go out of the tailnet.
+- The thresholds and the time limits are set for Clef 27B on MLX on an M4 Max. Another model or a slower machine works, but more output stays `not_examined` in the guard limit.
+- How the user starts the server and keeps it running (for example a launchd agent on the Mac Studio) is not part of clux. `docs/reference.md` gives one example command.
+- 4.x state (`laya_*` fields, the `laya` venv) is not carried over. `close` and `open` again is the path. The 4.x venv `~/.local/share/clux/laya` stays on disk; `docs/reference.md` tells the user that it can be deleted.
 
 ## 4. Parts
 
 | Part | Purpose |
 |---|---|
-| `scripts/clef_client.py` (was `laya_client.py`) | The only code that speaks to Clef. It does not import a model package. It turns the policy schema into questions itself (section 5). |
-| `scripts/clef_front.py` (new) | The server process that clux starts. It starts `clef_mlx.py serve` as its child on a loopback port, checks the API key, and passes `/health` and `/v1/systemone` to the child. It is not deployed: it runs from the plugin tree. |
-| `scripts/terminal.sh` | Uses the shared server (section 6). The verb `laya` becomes `clef`, with `install`, `status`, `share` and `stop`. |
+| `scripts/clef_client.py` (was `laya_client.py`) | The only code that speaks to Clef. It imports no model package and runs with any Python 3.10 or later. It turns the policy schema into questions itself (section 5). The helpers `checkpoint`, `ready`, `port`, `version` and `pip-install` go away. |
+| `scripts/terminal.sh` | Reads `CLUX_CLEF_URL` (section 6). All code that installs, starts, checks or stops a Laya server goes away. The verb `laya` becomes `clef`, with only `status`. |
 | `config/clef/*.json`, `*.txt` (was `config/laya/`) | The four policies and the two pattern files. The `model` field goes away. The thresholds stay (section 8). |
 
 ## 5. The client
 
-`clef_client.py` keeps the subcommands, the exit codes and the rules of the base design. These parts change:
+`clef_client.py` keeps the subcommands `health`, `command`, `output`, `pane`, `check-url`, `after-cursor` and `scrub`, the exit codes and the rules of the base design. These parts change:
 
-- **No model package.** The client turns each policy schema into questions: a `boolean` property becomes `noul`, an `enum` becomes `choice` (each value is its own criterion), and the `description` is the instruction. Another property type is bad input (exit 2). The client reads `answers[<name>].noul` and `answers[<name>].choice`. A missing or bad value gives exit 1. Thus the client runs with any Python 3.10 or later.
-- **No cut by the server.** Each request has `"truncate": false`. A 413 gives exit 3 (`clef: too long to examine`). The `CUT_TOKENS` rule, `ROW_MARGIN` and the split of a cut block go away: Clef reads 16,384 tokens, and it tells the client when a state is too long.
-- **Time.** The request limit is 15 s (was 5 s), because a request can wait for one guard block of another companion (section 7). There is no 503 from the front, so the retry after 503 goes away. The gate limit is 15 s (was 11 s).
-- **Hosts.** The URL must use `http`. The host must be a loopback host, or a Tailscale address: `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, or a name that ends in `.ts.net`. A `.ts.net` name must resolve to a Tailscale address. A key is required for a Tailscale host. A redirect is still refused.
+- **No model package.** The client turns each policy schema into questions: a `boolean` property becomes `noul`, an `enum` becomes `choice` (each value is its own criterion), and the `description` is the instruction. Another property type is bad input (exit 2). The client reads `answers[<name>].noul` and `answers[<name>].choice`. A missing or bad value gives exit 1.
+- **No cut by the server.** Each request has `"truncate": false`. A 413 gives exit 3 (`clef: too long to examine`). The `CUT_TOKENS` rule, `ROW_MARGIN` and the split of a cut block go away: Clef reads 16,384 tokens, and it tells the client when a state is too long. A server that gives another code for a long state (for example 500 from `llama-server`) makes the client exit 1, so the verb fails closed.
+- **Time.** The request limit is 15 s (was 5 s), because a request can wait for a request of another companion (section 7), and the request goes over the network. The retry after 503 stays, because a proxy can give 503. The gate limit is 15 s (was 11 s), with the retry inside it.
+- **Hosts.** The URL must use `http` and have no user part. The host must be one of these:
+  - a loopback host (`127.0.0.1`, `localhost`, `::1`);
+  - a Tailscale IPv4 address (`100.64.0.0/10`) or IPv6 address (`fd7a:115c:a1e0::/48`);
+  - a name that ends in `.ts.net` and that resolves only to Tailscale addresses. The client resolves the name one time for each process and connects to the address that it checked, so a second lookup cannot give another address.
+  
+  Each other host gives exit 1 and `clef: the host of CLUX_CLEF_URL is not a loopback or Tailscale host`. The traffic on the tailnet is encrypted by Tailscale (WireGuard). A redirect is still refused.
+- **Key.** When `CLUX_CLEF_KEY` is set, each request sends it. A 401 or 403 gives exit 4, as in the base design.
 - **Names.** Messages start with `clef:`, for example `clef: not available`.
 
 ## 6. The server
 
-### The local server
+clux does not start or stop a server. The rules of the base design for an external server (`CLUX_LAYA_URL`, section 6, "With `CLUX_LAYA_URL`") are now the only rules:
 
-One server serves all companions of the user on the machine. Its directory is `${XDG_STATE_HOME:-$HOME/.local/state}/clux/clef` (0700). It holds `server` (0600: the pid of the front, the port and the API key) and `front.log` (0600).
+1. `open` reads `CLUX_CLEF_URL`. When it is not set, `open` exits 6 with `clef not configured: set CLUX_CLEF_URL to the URL of your Clef server`.
+2. `open` checks the host (section 5). A bad host gives exit 6.
+3. `open` checks that the client Python is 3.10 or later. It uses `python3`, or `CLUX_CLEF_PYTHON` when that is set. Else it exits 6 with `clef not available: the client needs python3 3.10 or later`.
+4. `open` calls `health`, then sends one pane request, so that a bad key or a server that is not Clef fails at `open`. A failure gives exit 6 with `clef not available: the server at CLUX_CLEF_URL does not answer` (or `refused CLUX_CLEF_KEY`).
+5. `open` writes `clef_url` and, when it is set, `clef_key` to the `state` of the companion. The later verbs read them from `state`, as in the base design.
 
-`open` without `CLUX_CLEF_URL`:
+When the server stops during a session (the Mac Studio sleeps, or the user stops the server), each check fails, the verb exits 6 with `clef not available`, and no output goes to Claude. `open` is not necessary after the server is back: the next verb tries again.
 
-1. It checks the install (section 9). If the install is not complete, it exits 6 with `clef not installed: run terminal.sh clef install`.
-2. It takes the lock of the server directory.
-3. When `server` names a live front (the pid is alive, its command line contains `clef_front.py`, the front listens on the port, and `/health` answers), `open` uses it.
-4. Else `open` starts a new front: a free loopback port and a new random key (32 bytes from `/dev/urandom`, in hex). The key goes to the front in its environment, not in its arguments. The front starts `clef_mlx.py serve --no-truncate --quiet --host 127.0.0.1 --port <child port>` with `HF_HUB_OFFLINE=1`. `open` waits for `/health` at most 120 s, then sends one warm-up request. The checks of the base design stay: the started process must listen on the port before the key goes to it.
-5. `open` writes `clef_url` and `clef_key` to the `state` of the companion. It does not write a pid: the companion does not own the shared server.
+These parts of the base designs go away: `laya install`, the venv, the install marker, the checkpoint check, the free port, the random key, `laya_start_server`, the check that the process listens on the port, the warm-up loop, `laya_pid`, the server stop in `close` and `close --hook`, the server stop of the reaper and of the watchdog (background sessions design), and the restart of a dead server in `open`.
 
-The front stops itself and its child after 30 minutes with no request. `close`, `close --hook`, the watchdog and the reaper do not stop the shared server. The verb `terminal.sh clef stop` stops it at once.
+### The server on the Mac Studio
 
-When the shared server is gone during a session, the next verb gets exit 6 and `clef not available: open the companion again`. `open` on a live companion starts a new server (step 4) and writes the new `clef_url` and `clef_key` to `state`.
+`docs/reference.md` gives the user this example (not run by clux):
 
-### Share over Tailscale
+```bash
+hf download mlx-community/clef-4bit --revision b973b6f405d02f8e9b83208c7e82ddf43a742eb6 --local-dir ~/models/clef-4bit
+python ~/models/clef-4bit/clef_mlx.py serve --model ~/models/clef-4bit --host 100.117.159.16 --port 8765 --no-truncate --quiet
+```
 
-`terminal.sh clef share` (on the Mac) does these steps:
+On each machine: `export CLUX_CLEF_URL=http://mac-studio.<tailnet>.ts.net:8765` (or `http://100.117.159.16:8765`). The reference names these points:
 
-1. It finds the Tailscale IPv4 address of the Mac (`tailscale ip -4`). If there is none, it exits 2 with `clef share needs Tailscale`.
-2. It starts the shared server, or uses the live one.
-3. It tells the front to also listen on `<tailscale ip>:<share port>` (default 8765, or `--port N`). The front checks the API key on each request on that address too.
-4. It prints the two lines to set on each VM: `CLUX_CLEF_URL=http://<tailscale ip>:<port>` and `CLUX_CLEF_KEY=<key>`.
-
-While the share is on, the front does not stop after 30 minutes. `terminal.sh clef share --off` removes the share. `terminal.sh clef stop` stops the server and the share. The key of a share stays the same over a restart of the server, so that the VMs do not need a new key. `terminal.sh clef share --new-key` makes a new one.
-
-### A remote companion
-
-On the VM, `CLUX_CLEF_URL` and `CLUX_CLEF_KEY` are set. `open` uses the rules of the base design for an external server (`CLUX_LAYA_URL`), with the host rule of section 5. `open` checks that the client Python is 3.10 or later; it does not need a venv.
-
-When the Mac sleeps or the share is off, each check fails, and the companion fails closed: exit 6, and no output goes to Claude.
+- `clef_mlx.py serve` has no key check. Each device on the tailnet that the Tailscale ACL lets reach the port can send requests. It cannot read the requests of other devices. The user limits the port with the ACL.
+- `clef_mlx.py` is code from the model repository. The user reads it before the first run.
+- With `--host 100.117.159.16`, a process on the Mac Studio uses the same tailnet URL, not `127.0.0.1`.
 
 ## 7. Command gate and pane state
 
 The rules of the base design stay. The time limits change: the gate and the pane probe each use the request limit of 15 s.
 
-All companions share one server, and the server runs one request at a time. A request can wait for one guard request of another companion (at most about 8 s: a line search of 10 lines in a block of 2,000 characters). The request limit covers this wait when one other companion works. The server lock does not keep an order, so with three or more busy companions a request can wait longer and fail with exit 6. This is a known limit; `open` again is not necessary, the next verb tries again.
+All companions of all machines share one server, and the server runs one request at a time. A request can wait for one guard request of another companion (at most about 8 s: a line search of 10 lines in a block of 2,000 characters). The request limit covers this wait when one other companion works. The server lock does not keep an order, so with three or more busy companions a request can wait longer and fail with exit 6. This is a known limit; the next verb tries again.
 
 ## 8. Output guard
 
@@ -140,19 +139,9 @@ The guard limit is 45 s (`CLEF_GUARD_LIMIT`, was 15 s). The guard gets at most t
 
 The time budget of `run` (base design and `test/terminal.bats`): the gate (15 s), the prompt wait (2 s), the clear (5 s), the run limit (64 s), the last pane probe (15 s), the report grace (1 s), one late tick (1 s) and the guard (45 s) are 148 s. This is more than the 120 s default of the Bash tool. The skill tells Claude to set the Bash tool `timeout` to 180000 ms for each `run` and `wait`, and to (S + 116) × 1000 ms or more for `--timeout S` above 64. The test checks that the sum stays 10 s under 180 s.
 
-## 9. Install
+## 9. Status
 
-`terminal.sh clef install` (only on Apple Silicon macOS; elsewhere it exits 2 with `clef install needs an Apple Silicon Mac: on Linux, use the Clef server of a Mac with clef share`):
-
-1. It finds `python3` 3.10 or later.
-2. It makes the venv `${XDG_DATA_HOME:-$HOME/.local/share}/clux/clef` and runs `pip install "mlx-vlm>=0.7.4,<0.8" huggingface_hub`.
-3. It downloads `mlx-community/clef-4bit` at the pinned revision to `<venv>/model` with `hf download --revision <sha> --local-dir`. The download continues from where it stopped when the verb runs again.
-4. It checks the SHA-256 of `<venv>/model/clef_mlx.py` against the value in `terminal.sh`. When it differs, it deletes the model directory and exits 1.
-5. It writes the install marker.
-
-The budget of one run of the verb stays 540 s. A download of 16.3 GB can need more time. Then the verb exits 1 with `clef install: the download is not complete: run terminal.sh clef install again`, and the next run continues the download. The skill tells Claude to run the verb again until it is complete, each time with the user's agreement from the first time.
-
-`terminal.sh clef status` prints the venv, the versions, the model revision, the download state, and the state of the shared server and of the share.
+`terminal.sh clef status` prints `url=<CLUX_CLEF_URL or none>`, `key=set|none`, `host=loopback|tailscale|refused`, and `server=answers|no answer|not checked`. It sends one `health` request when the URL is set and the host is allowed. It does not print the key.
 
 ## 10. Names
 
@@ -160,12 +149,12 @@ The budget of one run of the verb stays 540 s. A download of 16.3 GB can need mo
 |---|---|
 | `laya_client.py` | `clef_client.py` |
 | `config/laya/` | `config/clef/` |
-| `terminal.sh laya install` / `status` | `terminal.sh clef install` / `status` / `share` / `stop` |
+| `terminal.sh laya install` / `status` | `terminal.sh clef status` (no install) |
 | `CLUX_LAYA_URL`, `CLUX_LAYA_KEY`, `CLUX_LAYA_PYTHON`, `CLUX_LAYA_LIVE` | `CLUX_CLEF_URL`, `CLUX_CLEF_KEY`, `CLUX_CLEF_PYTHON`, `CLUX_CLEF_LIVE` |
 | `LAYA_GUARD_LIMIT`, `LAYA_GUARD_BYTES` | `CLEF_GUARD_LIMIT`, `CLEF_GUARD_BYTES` |
 | `[held by laya: …]`, `laya: held <k> lines`, `laya: dangerous (…)`, `laya: caution (…)` | `[held by clef: …]`, `clef: held <k> lines`, `clef: dangerous (…)`, `clef: caution (…)` |
-| `laya not installed`, `laya not available` | `clef not installed`, `clef not available` |
-| `~/.local/share/clux/laya` | `~/.local/share/clux/clef` |
+| `laya not installed` | `clef not configured` |
+| `laya not available` | `clef not available` |
 | `test/fixtures/fake-laya.py`, `laya-wire/`, `capture-laya-wire.sh` | `fake-clef.py`, `clef-wire/`, `capture-clef-wire.sh` |
 | `test/laya-*.bats` | `test/clef-*.bats` |
 
@@ -175,22 +164,24 @@ The `CHANGELOG.md` history and the dated design documents keep the name Laya.
 
 `skills/terminal/SKILL.md` changes:
 
-- The companion needs Clef. On exit 6 with `clef not installed`, Claude tells the user that the install downloads about 17 GB and needs an Apple Silicon Mac, and asks to run `terminal.sh clef install`. On Linux, Claude tells the user to run `terminal.sh clef share` on the Mac and to set the two variables on the VM.
+- The companion needs a Clef server. On exit 6 with `clef not configured`, Claude tells the user to set `CLUX_CLEF_URL` (and `CLUX_CLEF_KEY` when the server has a key) in the environment of Claude Code, and to start Claude Code again. Claude does not try to start a model.
+- On exit 6 with `clef not available`, Claude tells the user that the Clef server does not answer, and names the URL from `terminal.sh clef status`.
 - The Bash tool `timeout` for `run` and `wait` (section 8).
 - `[held by clef: secret, <k> lines]` is a held block. Claude runs the command again with less output (`| grep`, `| tail`), not with a way to read the held text.
 
 ## 12. Tests
 
-- `test/fixtures/fake-clef.py` answers in the wire form captured from `clef_front.py` with the real model (`capture-clef-wire.sh`): `noul`, `choice`, `/health`, 401 and 413.
-- `test/clef-client.bats`: the base design tests, without the cut and 503 tests, and with these new tests: the schema to questions conversion for each policy; `"truncate": false` in each request; the line search holds only the line above 0.75; no time for the line search holds the full block; the host rule (loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `.ts.net`, and refusals for other hosts and for a Tailscale host with no key).
-- `test/clef-front.bats` (new): the key check (401 with no key or a wrong key, on the loopback and the share address); the stop after the idle time (a short test value); the stop of the child when the front stops.
-- `test/terminal.bats`: the time budget against 180 s; two companions use one server; `close` does not stop the shared server.
-- `test/clef-live.bats` (`CLUX_CLEF_LIVE=1`, not in CI): the 26 commands, the 30 real blocks and the secret cases of section 2 against the real model, and the guard time of 16,384 bytes under `CLEF_GUARD_LIMIT`.
+- `test/fixtures/fake-clef.py` answers in the wire form captured from `clef_mlx.py serve` with the real model (`capture-clef-wire.sh`): `noul`, `choice`, `/health` and 413. A fake 401 comes from the base design captures.
+- `test/clef-client.bats`: the base design tests, without the cut tests, and with these new tests: the schema to questions conversion for each policy; `"truncate": false` in each request; the line search holds only the line above 0.75 and sends at most 10 questions in one request; no time for the line search holds the full block; the host rule (loopback, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name that resolves to a Tailscale address, and refusals for other hosts, for a `.ts.net` name that resolves to another address, and for a user part); the key is sent only when it is set.
+- `test/terminal.bats`: `open` with no `CLUX_CLEF_URL` exits 6 with `clef not configured`; the time budget against 180 s; `clef status` does not print the key. The tests of the removed parts (install, server start, server stop) go away.
+- `test/terminal-e2e.bats`: the base design cases with the fake server through `CLUX_CLEF_URL`, without the server-stop case.
+- `test/clef-live.bats` (`CLUX_CLEF_LIVE=1` and `CLUX_CLEF_URL` set, not in CI): the 26 commands, the 30 real blocks and the secret cases of section 2 against the real server, and the guard time of 16,384 bytes under `CLEF_GUARD_LIMIT`.
 - `bats test/` must pass in full.
 
 ## 13. Out of scope
 
-- llama.cpp, Clef-Flash, and a model on a Linux VM.
-- A launchd agent for the server.
+- A model that clux installs, starts or stops.
+- A key check in front of `clef_mlx.py`.
+- llama.cpp as a tested server.
 - More than one request at one time on the server.
 - A migration of 4.x companions (`close`, then `open`).
