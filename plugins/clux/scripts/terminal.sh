@@ -336,7 +336,7 @@ refuse_credential() {
 }
 
 refuse_clef() {
-    printf '%s\n' 'clef not available: close and open the companion' >&2
+    printf '%s\n' 'clef not available: the server does not answer: try the verb again later' >&2
     return 6
 }
 
@@ -2033,16 +2033,13 @@ open_command() {
         && ! owner_gone "$S_OWNER_PID" "$S_OWNER_START"; then
         fail 'the companion directory belongs to another session' 2
     fi
-    clef_open_check
     if [ -d "$D" ]; then
         remove_companion_dir "$D" 0
         [ "$OWNER_KIND" != session ] || watch_stop "$S_WATCH_PID" "${D##*/}"
-        # remove_companion_dir reads the state of the old directory
-        # (state_load), which clobbers S_CLEF_URL and S_CLEF_KEY: set them
-        # again from the server that clef_open_check already checked.
-        S_CLEF_URL="$CLUX_CLEF_URL"
-        S_CLEF_KEY="${CLUX_CLEF_KEY:-}"
     fi
+    # After remove_companion_dir: its state_load clears S_CLEF_URL and
+    # S_CLEF_KEY, which clef_open_check sets.
+    clef_open_check
     umask 077; mkdir -p "$D"
     # The fields of a session owner (spec 2026-09-30, section 6). The old
     # state can have set them, so each one gets its value here.

@@ -527,7 +527,7 @@ lock_holder() {
     [ "$status" -eq 1 ]
     run "$TERMINAL" wait --timeout 10 --idle
     [ "$status" -eq 6 ]
-    [[ "$output" == *'clef not available: close and open the companion'* ]] || false
+    [[ "$output" == *'clef not available: the server does not answer: try the verb again later'* ]] || false
 }
 
 @test "wait --pattern goes on after one failed pane probe" {
@@ -677,7 +677,7 @@ lock_holder() {
     stop_fake_clef
     run "$TERMINAL" run -- "touch '$BATS_TEST_TMPDIR/never'"
     [ "$status" -eq 6 ]
-    [[ "$output" == *'clef not available: close and open the companion'* ]] || false
+    [[ "$output" == *'clef not available: the server does not answer: try the verb again later'* ]] || false
     [ ! -e "$BATS_TEST_TMPDIR/never" ]
     [ ! -d "$(companion_dir)/busy" ]
 }

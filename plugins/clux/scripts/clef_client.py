@@ -216,6 +216,10 @@ def host_kind(url):
             addresses = lookup(host)
         except OSError:
             addresses = []
+        # IPv4 first: the reference server listens on the 100.x address
+        # only (tailscale ip -4), and a name of the tailnet also has an
+        # fd7a: address.
+        addresses = sorted(addresses, key=lambda address: ":" in address)
         RESOLVED[host] = addresses if addresses and all(is_tailscale(a) for a in addresses) else None
     return ("tailscale", RESOLVED[host][0]) if RESOLVED[host] else None
 
@@ -294,8 +298,9 @@ class Remote:
         try:
             result = self.call("POST", "/v1/systemone", body)
         except Busy as busy:
-            # Try one time more, after the Retry-After of a proxy.
-            time.sleep(busy.delay)
+            # Try one time more, after the Retry-After of a proxy, in the
+            # time that is left.
+            time.sleep(min(busy.delay, max(0.0, self.deadline - time.monotonic())))
             try:
                 result = self.call("POST", "/v1/systemone", body)
             except Busy:
@@ -373,7 +378,7 @@ def cmd_health(args):
         answer = remote(REQUEST_LIMIT).health()
     except Busy:
         raise Fail(1)
-    if not isinstance(answer, dict):
+    if not isinstance(answer, dict) or answer.get("status") != "ok":
         raise Fail(1)
     print(json.dumps({"ok": True}))
 

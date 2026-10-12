@@ -20,13 +20,14 @@ All notable changes to clux are documented here.
 ### Removed
 
 - `terminal.sh laya install`, the venv in `~/.local/share/clux/laya`, the checkpoint download, the API key that clux made, the free port, and every start, health wait and stop of a model server, also in `close`, in the reaper and in the watchdog. The venv of 4.x stays on disk; you can delete it
-- The `checkpoint`, `ready`, `port`, `version` and `pip-install` helpers of the client, and the `model` field of the policies
+- The `checkpoint`, `ready`, `port`, `version`, `pip-install` and `scrub` helpers of the client, and the `model` field of the policies
 - The rules for a state that the model cut: the client sends no shorter state again and splits no block
 
 ### Migration
 
 - Set `CLUX_CLEF_URL` (and `CLUX_CLEF_KEY` when your server has a key) in the environment of Claude Code, and start Claude Code again
 - A companion of 4.x has no Clef server: use `close`, then `open`
+- 5.0.0 does not stop the `laya-serve` process that 4.x started for a companion: `close` of 5.0.0 removes its pid. Use `close` before the upgrade. After the upgrade, stop each remaining server yourself (`pkill -f laya-serve`)
 
 ## [4.6.0]
 

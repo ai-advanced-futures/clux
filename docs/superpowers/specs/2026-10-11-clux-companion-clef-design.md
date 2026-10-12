@@ -69,13 +69,13 @@ These decisions come from the user (2026-10-11).
 
 | Part | Purpose |
 |---|---|
-| `scripts/clef_client.py` (was `laya_client.py`) | The only code that speaks to Clef. It imports no model package and runs with any Python 3.10 or later. It turns the policy schema into questions itself (section 5). The helpers `checkpoint`, `ready`, `port`, `version` and `pip-install` go away. |
+| `scripts/clef_client.py` (was `laya_client.py`) | The only code that speaks to Clef. It imports no model package and runs with any Python 3.10 or later. It turns the policy schema into questions itself (section 5). The helpers `checkpoint`, `ready`, `port`, `version`, `pip-install` and `scrub` go away. |
 | `scripts/terminal.sh` | Reads `CLUX_CLEF_URL` (section 6). All code that installs, starts, checks or stops a Laya server goes away. The verb `laya` becomes `clef`, with only `status`. |
 | `config/clef/*.json`, `*.txt` (was `config/laya/`) | The four policies and the two pattern files. The `model` field goes away. The thresholds stay (section 8). |
 
 ## 5. The client
 
-`clef_client.py` keeps the subcommands `health`, `command`, `output`, `pane`, `check-url`, `after-cursor` and `scrub`, the exit codes and the rules of the base design. These parts change:
+`clef_client.py` keeps the subcommands `health`, `command`, `output`, `pane`, `check-url` and `after-cursor`, the exit codes and the rules of the base design. These parts change:
 
 - **No model package.** The client turns each policy schema into questions: a `boolean` property becomes `noul`, an `enum` becomes `choice` (each value is its own criterion), and the `description` is the instruction. Another property type is bad input (exit 2). The client reads `answers[<name>].noul` and `answers[<name>].choice`. A missing or bad value gives exit 1.
 - **No cut by the server.** Each request has `"truncate": false`. A 413 gives exit 3 (`clef: too long to examine`). The `CUT_TOKENS` rule, `ROW_MARGIN` and the split of a cut block go away: Clef reads 16,384 tokens, and it tells the client when a state is too long. A server that gives another code for a long state (for example 500 from `llama-server`) makes the client exit 1, so the verb fails closed.
