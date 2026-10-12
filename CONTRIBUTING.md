@@ -85,12 +85,12 @@ plugins/clux/
 │   ├── upgrade-clux.sh          # /clux:upgrade: reads the old answers, renders again
 │   ├── plugin-version.sh        # Loaded, installed and latest clux versions
 │   ├── terminal.sh              # Companion pane lifecycle and command transport
-│   └── laya_client.py           # The only code that speaks to Laya
+│   └── clef_client.py           # The only code that speaks to Clef
 ├── config/
 │   ├── deploy-manifest.txt      # The single list of scripts setup deploys
 │   ├── credential-patterns.txt  # Credential prompt includes and exclusions
 │   ├── tmux-config.yaml         # Default tmux configuration reference
-│   └── laya/                    # Laya policies, read from the plugin tree
+│   └── clef/                    # Clef policies, read from the plugin tree
 │       ├── command.json         # The command gate
 │       ├── output-block.json    # The block check of the output guard
 │       ├── output-line.json     # The line check of the output guard

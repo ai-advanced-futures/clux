@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""laya_client.py: the only code of clux that speaks to Laya.
+"""clef_client.py: the only code of clux that speaks to Clef.
 
-terminal.sh runs this file with the Python of the clux venv, or with
-CLUX_LAYA_PYTHON. The server URL comes from CLUX_LAYA_URL and the API key
-from CLUX_LAYA_KEY. The URL must use http and name a loopback host.
+terminal.sh runs this file with python3, or with CLUX_CLEF_PYTHON. The
+server URL comes from CLUX_CLEF_URL and the API key from CLUX_CLEF_KEY. The
+URL must use http and name a loopback host or a Tailscale host. The client
+makes its own plan from each policy schema and sends one POST to the
+server; it imports no model package.
 
-Subcommands that ask Laya (input on stdin, one result on stdout):
+Subcommands that ask Clef (input on stdin, one result on stdout):
 
   health                          {"ok": true}
   command [--screen] [--shell]
                                   {"level": "safe|caution|dangerous", "reason": "..."}
                                   With --screen, the last input line is the
                                   command line, and the lines above it are the
-                                  screen. Each command goes to Laya.
+                                  screen. Each command goes to Clef.
                                   --shell (with --screen): the line is at the
                                   prompt of a nested shell, and it comes as two
                                   input lines: the start of the line (the
-                                  prompt), then the text that clux typed. Laya
+                                  prompt), then the text that clux typed. Clef
                                   gets them as one line. Typed text that can
                                   change that shell is dangerous.
   output [--render] [--limit S] [--pieces BYTES] [--runs 0,I,...]
@@ -32,45 +34,47 @@ Subcommands that ask Laya (input on stdin, one result on stdout):
   pane [--limit S]                {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
                                   --limit: a time limit shorter than the gate limit.
 
-Helpers that do not ask Laya: checkpoint, ready, port, version,
-pip-install SECONDS PACKAGE, scrub.
+Helpers that do not ask Clef: check-url, after-cursor, scrub.
 
-Exit codes: 0 a decision; 1 Laya is not available or gave a bad answer;
-2 bad input; 3 the text is too long: Laya would examine only its start; 4 the
-server refused the API key (401 or 403). On a failure, stdout is empty and stderr has one fixed message.
+Exit codes: 0 a decision; 1 Clef is not available or gave a bad answer;
+2 bad input; 3 the state is too long for Clef to examine; 4 the server
+refused the API key (401 or 403). On a failure, stdout is empty and stderr has one fixed message.
 The client never writes terminal text to stderr or to a log.
 """
 import http.client
+import ipaddress
 import json
 import math
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
-from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-CONFIG = os.path.join(HERE, "..", "config", "laya")
+CONFIG = os.path.join(HERE, "..", "config", "clef")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
-REQUEST_LIMIT = 5.0
-RETRY_DELAY = 1.0   # the Retry-After of the server, and the most that the client waits
-GATE_LIMIT = 2 * REQUEST_LIMIT + RETRY_DELAY   # one request, the pause and the retry after a 503
-MESSAGES = {1: "laya: not available", 2: "laya: bad input", 3: "laya: too long to examine",
-            4: "laya: the server refused the API key"}
+REQUEST_LIMIT = 15.0
+RETRY_DELAY = 1.0   # the Retry-After of a proxy, and the most that the client waits
+# Its own constant (spec section 5): one request can wait for a request of
+# another companion, so the gate does not add the retry to the request limit.
+GATE_LIMIT = 15.0
+MESSAGES = {1: "clef: not available", 2: "clef: bad input", 3: "clef: too long to examine",
+            4: "clef: the server refused the API key"}
 
 
-# The HTTP error codes of laya-serve, and what each one means to the
-# client: the exit code. The one table for all requests. 503 (a queue: at
-# most LAYA_MAX_CONCURRENT requests at one time) is not here: predict tries
-# one time more, and a second 503 is a late request (Fail late=True), which
-# the guard holds as not examined. 413: the state is longer than
-# MAX_STATE_CHARS (50000) of the server; the guard sends at most a block,
-# so only a command or a pane state can get it. Each other code is an error
-# of the server with its own message, and the client exits 1.
+# The HTTP error codes of the Clef server, and the exit code that each one
+# means to the client. The one table for all requests. 503 is not here:
+# predict tries one time more, and a second 503 is a late request (Fail
+# late=True), which the guard holds. 413: the state is longer than the
+# context of the model, and each request sends "truncate": false, so the
+# server says so instead of cutting the state. Each other code is an error
+# of the server with its own message, and the client exits 1, so the verb
+# fails closed (spec section 5).
 HTTP_ERRORS = {401: 4, 403: 4, 413: 3}
 
 
@@ -111,9 +115,9 @@ def read_stdin():
 
 
 def policy(name):
-    """Read config/laya/<name>.json. There is no user copy, so a user file
+    """Read config/clef/<name>.json. There is no user copy, so a user file
     cannot turn off the gate or the guard with a threshold of 2. This is a
-    defense in depth only: a command that Laya passed can write any file of
+    defense in depth only: a command that Clef passed can write any file of
     the user, also these files, the venv and the state file. Spec section 7
     ("The limit of the private directory") puts that out of scope."""
     path = os.path.join(CONFIG, name + ".json")
@@ -165,16 +169,65 @@ def shipped_lines(name):
     return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
 
 
-def url_is_loopback(url):
-    """http, a loopback host and no user part. terminal.sh uses this check
-    too (check-url), so the two cannot disagree."""
+TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"),
+                  ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+TAILNET_SUFFIX = ".ts.net"
+HOST_MESSAGE = "clef: the host of CLUX_CLEF_URL is not a loopback or Tailscale host"
+# The addresses of each name that this process resolved: one lookup for each
+# name, so a second lookup cannot give another address.
+RESOLVED = {}
+
+
+def lookup(name):
+    """The addresses of NAME. The one lookup of the client: no environment
+    variable and no option changes it, and a test replaces this function."""
+    return [info[4][0] for info in socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)]
+
+
+def is_tailscale(address):
+    """ADDRESS is in the Tailscale ranges. A zone (fe80::1%en0) is not."""
+    try:
+        value = ipaddress.ip_address(address.split("%")[0])
+    except ValueError:
+        return False
+    return any(value in net for net in TAILSCALE_NETS)
+
+
+def host_kind(url):
+    """(kind, address) for a URL that the client may use: ("loopback", host)
+    or ("tailscale", address). None for each other URL, so terminal text does
+    not go out of the tailnet. The URL must use http and have no user part."""
     try:
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname
+        parts.port
     except ValueError:
-        return False
-    return (parts.scheme == "http" and host in LOOPBACK
-            and not parts.username and not parts.password)
+        return None
+    if parts.scheme != "http" or not host or parts.username or parts.password:
+        return None
+    if host in LOOPBACK:
+        return "loopback", host
+    if is_tailscale(host):
+        return "tailscale", host
+    if not host.endswith(TAILNET_SUFFIX):
+        return None
+    if host not in RESOLVED:
+        try:
+            addresses = lookup(host)
+        except OSError:
+            addresses = []
+        RESOLVED[host] = addresses if addresses and all(is_tailscale(a) for a in addresses) else None
+    return ("tailscale", RESOLVED[host][0]) if RESOLVED[host] else None
+
+
+def connect_url(url, address):
+    """(request URL, Host header) for URL with ADDRESS in place of its host.
+    The client connects to the address that host_kind checked, so the lookup
+    function is on the connect path, and the server still sees the name."""
+    parts = urllib.parse.urlsplit(url)
+    literal = "[%s]" % address if ":" in address else address
+    netloc = literal + (":%d" % parts.port if parts.port else "")
+    return urllib.parse.urlunsplit(("http", netloc, parts.path, "", "")).rstrip("/"), parts.netloc
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -187,19 +240,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class Remote:
-    """The runner that laya.structured.decide calls: one POST to laya-serve.
-
-    LayaDecision is not used: it has no time limit for each request, and it
-    does not keep the HTTP status. This runner uses no proxy, so terminal
-    text cannot go to a proxy that the environment names.
-    """
+    """The runner of one companion: each request goes to one POST to the
+    Clef server. This runner uses no proxy, so terminal text cannot go to a
+    proxy that the environment names."""
 
     def __init__(self, url, key, deadline):
-        if not url_is_loopback(url):
-            raise Fail(1)
-        self.url = url.rstrip("/")
+        kind = host_kind(url)
+        if kind is None:
+            raise Fail(1, message=HOST_MESSAGE)
+        self.url, self.host = connect_url(url, kind[1])
         self.key = key
         self.deadline = deadline
+        self.last = 0.0
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def limit(self):
@@ -208,12 +260,13 @@ class Remote:
             raise Fail(1)
         return min(REQUEST_LIMIT, left)
 
-    def call(self, method, path, body=None, key=True):
-        headers = {"Content-Type": "application/json"}
-        if key and self.key:
+    def call(self, method, path, body=None):
+        headers = {"Content-Type": "application/json", "Host": self.host}
+        if self.key:
             headers["Authorization"] = "Bearer " + self.key
         data = None if body is None else json.dumps(body).encode("utf-8")
         request = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
+        start = time.monotonic()
         try:
             with self.opener.open(request, timeout=self.limit()) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -222,28 +275,26 @@ class Remote:
                 raise Busy(retry_after(error.headers))
             if error.code in HTTP_ERRORS:
                 raise Fail(HTTP_ERRORS[error.code])
-            raise Fail(1, message="laya: the server gave error %d" % error.code)
+            raise Fail(1, message="clef: the server gave error %d" % error.code)
         except TimeoutError:
             raise Fail(1, late=True)
         except urllib.error.URLError as error:
             raise Fail(1, late=isinstance(error.reason, TimeoutError))
         except (OSError, ValueError, http.client.HTTPException):
             raise Fail(1)
+        finally:
+            self.last = time.monotonic() - start
 
     def health(self):
-        # /health of laya-serve needs no key. Before open knows that its own
-        # process listens on the port, the key must not go to that port.
-        return self.call("GET", "/health", key=False)
+        # The key goes to health too: clux does not own the port now.
+        return self.call("GET", "/health")
 
-    def predict(self, state, questions, model=None):
-        body = {"state": state, "questions": questions}
-        if model:
-            body["model"] = model
+    def predict(self, state, questions):
+        body = {"state": state, "questions": questions, "truncate": False}
         try:
             result = self.call("POST", "/v1/systemone", body)
         except Busy as busy:
-            # The server runs at most LAYA_MAX_CONCURRENT requests at one
-            # time. Try one time more, after the Retry-After of the server.
+            # Try one time more, after the Retry-After of a proxy.
             time.sleep(busy.delay)
             try:
                 result = self.call("POST", "/v1/systemone", body)
@@ -256,20 +307,44 @@ class Remote:
 
 def remote(limit):
     """A runner for the server of this companion, with a total time limit."""
-    return Remote(os.environ.get("CLUX_LAYA_URL", ""), os.environ.get("CLUX_LAYA_KEY", ""),
+    return Remote(os.environ.get("CLUX_CLEF_URL", ""), os.environ.get("CLUX_CLEF_KEY", ""),
                   time.monotonic() + limit)
 
 
+def questions_of(pol):
+    """The Clef questions of a policy schema (spec section 5): a boolean
+    property is a noul question, an enum is a choice question with one
+    criterion for each value, and the description is the instruction. Each
+    other property type is bad input. The client makes this plan itself, so
+    it imports no model package."""
+    properties = pol.get("schema", {}).get("properties")
+    if not isinstance(properties, dict) or not properties:
+        raise Fail(2)
+    questions = {}
+    for name, prop in properties.items():
+        if not isinstance(prop, dict) or not isinstance(prop.get("description"), str):
+            raise Fail(2)
+        if prop.get("type") == "boolean":
+            questions[name] = {"type": "noul", "instructions": prop["description"]}
+        elif isinstance(prop.get("enum"), list) and prop["enum"]:
+            questions[name] = {"type": "choice", "instructions": prop["description"],
+                               "criteria": {value: None for value in prop["enum"]}}
+        else:
+            raise Fail(2)
+    return questions
+
+
 class Answer:
-    """One DecisionResult of laya.structured.decide."""
+    """The answers of one POST /v1/systemone."""
 
     def __init__(self, result):
         self.result = result
+        self.answers = result.get("answers") or {}
 
     def p(self, name):
-        """The probability of "true" for a boolean property."""
+        """The noul probability of a boolean question."""
         try:
-            value = float(self.result.probabilities[name]["true"])
+            value = float(self.answers[name]["noul"])
         except (KeyError, TypeError, ValueError):
             raise Fail(1)
         if not 0.0 <= value <= 1.0:
@@ -277,33 +352,18 @@ class Answer:
         return value
 
     def choice(self, name, labels):
-        value = self.result.values.get(name)
+        try:
+            value = self.answers[name]["choice"]
+        except (KeyError, TypeError):
+            raise Fail(1)
         if value not in labels:
             raise Fail(1)
         return value
 
-    def tokens(self):
-        try:
-            return int((self.result.usage or {})["input_tokens"])
-        except (KeyError, TypeError, ValueError):
-            raise Fail(1)
-
 
 def ask(runner, pol, state):
-    """Send one state to Laya with the schema of a policy."""
-    try:
-        from laya.structured import SchemaError, decide
-    except ImportError:
-        raise Fail(1)
-    try:
-        return Answer(decide(runner, state, schema=pol["schema"], return_details=True,
-                             model=pol.get("model") or "english"))
-    except (Fail, Busy):
-        raise
-    except SchemaError:
-        raise Fail(2)
-    except Exception:
-        raise Fail(1)
+    """Send one state to Clef with the questions of a policy."""
+    return Answer(runner.predict(state, questions_of(pol)))
 
 
 def cmd_health(args):
@@ -313,26 +373,12 @@ def cmd_health(args):
         answer = remote(REQUEST_LIMIT).health()
     except Busy:
         raise Fail(1)
-    if not isinstance(answer, dict) or answer.get("status") != "ok":
+    if not isinstance(answer, dict):
         raise Fail(1)
     print(json.dumps({"ok": True}))
 
 
 LEVELS = ("safe", "caution", "dangerous")
-
-
-def ask_whole_or_alone(runner, pol, whole, *shorter):
-    """Ask with the whole state. When Laya cuts it, ask again with each
-    shorter state in turn (the line alone, then less of it). A state that
-    Laya still cuts is refused (exit 3): Laya would examine only its start."""
-    answer = ask(runner, pol, whole)
-    for state in shorter:
-        if not is_cut(answer, pol):
-            break
-        answer = ask(runner, pol, state)
-    if is_cut(answer, pol):
-        raise Fail(3)
-    return answer
 
 
 def split_screen(text, cursor_keep, above_keep, rows=1):
@@ -378,7 +424,7 @@ def level_of(answer, pol):
 # later lines (spec section 7). The gate examines each line alone, so such
 # a line is dangerous. The rule reads the words anywhere in the line, also
 # inside quotes. It is not complete: quotes can split a word (e""val), and
-# only the Laya score stops that. It reads only the text that clux typed,
+# only the Clef score stops that. It reads only the text that clux typed,
 # not the prompt (a directory named source in the prompt is not a word).
 # Each name that __clux_carry in terminal.sh does not carry back from run,
 # and PATH and the loader names (a test keeps the two lists equal); names
@@ -439,7 +485,7 @@ def cmd_command(args):
         screen = "\n".join(above)
         state = {"line": command, "screen": screen}
         # A blank line in a program can accept a default ([Y/n]), so it goes
-        # to Laya with the screen above it.
+        # to Clef with the screen above it.
         if not command.strip() and not screen.strip():
             raise Fail(2)
     else:
@@ -448,28 +494,21 @@ def cmd_command(args):
         if not command.strip():
             raise Fail(2)
     # The shell rule needs no request: a line that it refuses is refused
-    # also when Laya is slow or does not answer.
+    # also when Clef is slow or does not answer.
     if shell and SHELL_WORDS.search(typed):
         print(json.dumps({"level": "dangerous", "reason": "can change the shell for later commands"}))
         return
-    # Each command goes to Laya: no safe list (spec section 7). Laya cuts a
-    # long state and examines only its start, so a cut state is refused.
-    # When Laya cuts the line and the screen, the line goes alone: a long
-    # screen must not stop a short line. A blank line needs its screen.
-    shorter = []
-    if isinstance(state, dict) and state["screen"] and command.strip():
-        shorter.append({"line": command, "screen": ""})
+    # Each command goes to Clef: no safe list (spec section 7). A command
+    # that is longer than the context of Clef gives 413, which is exit 3.
     pol = policy("command")
-    answer = ask_whole_or_alone(remote(GATE_LIMIT), pol, state, *shorter)
+    answer = ask(remote(GATE_LIMIT), pol, state)
     level, reason = level_of(answer, pol)
     print(json.dumps({"level": level, "reason": reason}))
 
 
 PANE_STATES = ("credential", "yes_no", "menu", "pager", "shell_prompt", "other")
-PANE_CURSOR = 400          # the end of the cursor line that goes to Laya
+PANE_CURSOR = 400          # the end of the cursor line that goes to Clef
 PANE_ABOVE = 200           # the end of each line above it
-PANE_SHORT = 100           # the end of the cursor line when Laya cuts PANE_CURSOR
-PAIR_ABOVE = 200           # the end of the line above in a pair of the line check
 
 
 def cmd_pane(args):
@@ -486,29 +525,19 @@ def cmd_pane(args):
     if not text.strip():
         print(json.dumps({"state": "other"}))
         return
-    # Laya cuts a long state from the right, and the prompt is at the end of
-    # the cursor line. Thus each line keeps only its end: PANE_CURSOR
-    # characters of the cursor line and PANE_ABOVE of each line above it.
-    # When Laya still cuts the text, the cursor line goes alone, then only
-    # its last PANE_SHORT characters.
+    # Clef reads the end of the state last, and the prompt is at the end of
+    # the cursor line. Each line keeps only its end: PANE_CURSOR characters
+    # of the cursor line and PANE_ABOVE of each line above it.
     (cursor,), above = split_screen(text, PANE_CURSOR, PANE_ABOVE)
-    shorter = [cursor] if above else []
-    if len(cursor) > PANE_SHORT:
-        shorter.append(cursor[-PANE_SHORT:])
-    answer = ask_whole_or_alone(remote(limit), policy("pane"),
-                                "\n".join(above + [cursor]), *shorter)
+    answer = ask(remote(limit), policy("pane"), "\n".join(above + [cursor]))
     print(json.dumps({"state": answer.choice("state", PANE_STATES)}))
 
 
-BLOCK_CHARS = 600          # 300 tokens at 2 characters for each token (spec section 8)
+BLOCK_CHARS = 2000         # the block of the guard (spec section 8, step 1)
 PIECE_OVERLAP = 100        # the text that two pieces of one long line share
-CUT_TOKENS = 512           # the English checkpoint reads at most 512 tokens for each row
-ROW_MARGIN = 16            # measured: the two output-block rows differ by 9 tokens
-# laya-serve 0.3.21 runs one model request at a time (one worker thread), and
-# REQUEST_LIMIT counts the time in its queue. Two requests at one time keep
-# the server busy, and a request waits at most for one other request.
-MAX_PARALLEL = 2
-DEFAULT_OUTPUT_LIMIT = 15.0
+LINE_QUESTIONS = 10        # the line questions of one request (spec section 8, step 3)
+LINE_COST = 0.35           # the time that each line question adds (spec section 8, step 4)
+DEFAULT_OUTPUT_LIMIT = 45.0
 
 
 class Unit:
@@ -523,11 +552,11 @@ class Unit:
 
 def make_blocks(lines):
     """Split the lines into blocks of complete lines, at most BLOCK_CHARS
-    characters each. A line longer than BLOCK_CHARS is cut into pieces, and
-    each piece is a block of its own. Two pieces share PIECE_OVERLAP
-    characters, so a token of up to that length is whole in one piece (a
-    held piece holds its full line). [inferred] A block of only blank lines
-    is not sent.
+    characters each (spec section 8, step 1). A line longer than BLOCK_CHARS
+    is cut into pieces, and each piece is a block of its own. Two pieces
+    share PIECE_OVERLAP characters, so a token of up to that length is whole
+    in one piece (a held piece holds its full line). [inferred] A block of
+    only blank lines is not sent.
 
     The blocks start at the last line and go up. Each cut of the text
     (read --lines, --max-lines, the byte cut) keeps the end, so a line keeps
@@ -565,39 +594,14 @@ def block_text(block):
     return "\n".join(unit.text for unit in block)
 
 
-def halve(block):
-    """Split a block that Laya cut in two. A block of one unit splits the
-    text of that unit into two pieces that share up to PIECE_OVERLAP
-    characters at the middle."""
-    if len(block) > 1:
-        middle = len(block) // 2
-        return [block[:middle], block[middle:]]
-    unit = block[0]
-    middle = len(unit.text) // 2
-    if middle == 0:
-        raise Fail(1)
-    share = min(PIECE_OVERLAP // 2, middle // 2)
-    return [[Unit(unit.line, unit.start, unit.text[:middle + share])],
-            [Unit(unit.line, unit.start + middle - share, unit.text[middle - share:])]]
-
-
-def is_cut(answer, pol):
-    """laya-serve gives usage.input_tokens as the sum over the question rows
-    (one row for each question of the policy), and it cuts each row at
-    CUT_TOKENS. When the mean row is within ROW_MARGIN of CUT_TOKENS, the
-    longest row can be cut."""
-    rows = max(1, len(pol["schema"]["properties"]))
-    return answer.tokens() / rows >= CUT_TOKENS - ROW_MARGIN
-
-
 TIME_MARGIN = 0.05         # a failure this near the end of the time limit is the limit
 
 
 def in_time(runner, request):
     """Run one request of the guard. Give None when the time limit of the
     guard ended, or this one request reached REQUEST_LIMIT (a queue on the
-    server), before Laya answered: the caller holds that text as not
-    examined. Any other failure (Laya does not answer) stops the guard."""
+    server), before Clef answered: the caller holds that text as not
+    examined. Any other failure (Clef does not answer) stops the guard."""
     try:
         return request()
     except Fail as fail:
@@ -606,124 +610,102 @@ def in_time(runner, request):
         raise
 
 
-def check_blocks(pool, runner, pol, blocks):
-    """Send each block with the block policy. laya-serve gives
-    usage.input_tokens as the sum over the question rows (one row for each
-    boolean question of this policy), and it cuts each row at CUT_TOKENS.
-    When the mean row is within ROW_MARGIN of CUT_TOKENS, the longest row
-    can be cut: send the halves of the block again. Give the list of
-    (block, answer) and the list of blocks that the time limit left not
-    examined. The bottom blocks go first: they are the newest lines (the
-    last error), and when the time limit ends, the top blocks are the ones
-    that stay not examined."""
-    done, late, pending = [], [], blocks[::-1]
-    while pending:
-        answers = list(pool.map(
-            lambda block: in_time(runner, lambda: ask(runner, pol, block_text(block))), pending))
-        again = []
-        for block, answer in zip(pending, answers):
-            if answer is None:
-                late.append(block)
-            elif is_cut(answer, pol):
-                again.extend(half for half in halve(block)
-                             if any(unit.text.strip() for unit in half))
-            else:
-                done.append((block, answer))
-        pending = again
+# The client sends one request at a time (spec section 5): the Clef server
+# runs one request at a time, and a second request of this client would only
+# make the request of another companion wait longer.
+def check_blocks(runner, pol, blocks):
+    """Step 2: one request for each block, one at a time, the bottom blocks
+    first (the newest lines). Give the list of (block, answer, seconds) and
+    the list of blocks that the time limit left not examined. The seconds of
+    a block are the cost of one request on this block: step 4 reads them."""
+    done, late = [], []
+    for block in blocks[::-1]:
+        answer = in_time(runner, lambda: ask(runner, pol, block_text(block)))
+        if answer is None:
+            late.append(block)
+        else:
+            done.append((block, answer, runner.last))
     return done, late
 
 
 def block_ranges(checked, pol):
-    """Step 4 and the start of step 5: a block with prompt_injection above its
-    threshold becomes one held range. The units of a block with secret above
-    its threshold go to the line check. Give (ranges, flagged unit ids)."""
-    ranges, flagged = [], set()
-    for block, answer in checked:
+    """Step 2: a block with prompt_injection above its threshold is one held
+    range. Give (ranges, flagged): flagged are the blocks that the line
+    search reads, each with the seconds that its block check took."""
+    ranges, flagged = [], []
+    for block, answer, seconds in checked:
         if answer.p("prompt_injection") > threshold(pol, "prompt_injection", 0.8):
             ranges.append((block[0].line, block[-1].line, "prompt_injection"))
         elif answer.p("secret") > threshold(pol, "secret", 0.5):
-            flagged.update(id(unit) for unit in block)
+            flagged.append((block, seconds))
     return ranges, flagged
 
 
-def check_lines(pool, runner, pol, units, flagged, values, cleared=frozenset()):
-    """Step 5, the line check. `units` are all units of the text in order.
-    Each flagged unit goes to Laya alone, and with the unit above it when
-    the alone score does not decide. Give the set of line indexes that the
-    check holds.
+def line_text(pol):
+    """The question text of the line search: the description of the secret
+    property of output-line.json. search_lines puts the line number in it."""
+    prop = (pol.get("schema", {}).get("properties") or {}).get("secret")
+    if not isinstance(prop, dict) or not isinstance(prop.get("description"), str) \
+            or "the text" not in prop["description"]:
+        raise Fail(2)
+    return prop["description"]
 
-    A unit is held when it alone is above the threshold, or when the pair is
-    above the threshold and the unit above is not: not above the threshold
-    alone, not held by this check, and not in `values` (the lines that
-    secret-values.txt holds). [inferred] Without the last two conditions, the
-    line after `hunter2` is held because of `hunter2`. The unit above is held
-    when it alone is above the threshold, also when its own block was not
-    flagged. `cleared` are the lines that not-secret.txt clears: the check
-    never holds them and sends no request for them, and the pair rule reads
-    such a line above as not held. A line in `values` is held whatever Laya
-    answers, so it gets no request either.
 
-    Phase 1 sends the alone requests, phase 2 only the pairs that can change
-    the result. A pair has only the end of the unit above (PAIR_ABOVE), so
-    that Laya does not cut the unit below. A request that Laya cuts holds
-    its unit: Laya did not examine all of it. Give (held, late): late are
-    the lines that the time limit left not examined."""
-    limit = threshold(pol, "secret", 0.75)
-
-    def above_of(position):
-        if position == 0:
-            return None
-        above, unit = units[position - 1], units[position]
-        if above.text.strip() and above.line in (unit.line, unit.line - 1):
-            return above
+def search_lines(runner, pol, block, skip, limit, seconds):
+    """Step 3, the line search of one block. The state is the full block,
+    each line with its number from 1, so the block gives each line its
+    context: there is no pair rule. One request asks for at most
+    LINE_QUESTIONS lines, so it stays near 8 s and a request of another
+    companion does not wait too long (spec section 7). SKIP are the numbers
+    that get no question. Give the held line indexes, or None when the time
+    that is left is less than the estimated cost of the search (the number
+    of requests times the time of the block check of this block, plus
+    LINE_COST for each line question), or when one request got no answer:
+    the caller holds the full block (spec section 8, step 4)."""
+    numbers = [index + 1 for index in range(len(block)) if index + 1 not in skip]
+    if not numbers:
+        return set()
+    requests = -(-len(numbers) // LINE_QUESTIONS)
+    if runner.deadline - time.monotonic() < requests * seconds + LINE_COST * len(numbers):
         return None
-
-    def score(text):
-        answer = in_time(runner, lambda: ask(runner, pol, text))
+    state = "\n".join("%d: %s" % (index + 1, unit.text) for index, unit in enumerate(block))
+    text = line_text(pol)
+    held = set()
+    for start in range(0, len(numbers), LINE_QUESTIONS):
+        part = numbers[start:start + LINE_QUESTIONS]
+        questions = {"line%d" % number:
+                     {"type": "noul", "instructions": text.replace("the text", "line %d" % number)}
+                     for number in part}
+        answer = in_time(runner, lambda: Answer(runner.predict(state, questions)))
         if answer is None:
             return None
-        return 1.0 if is_cut(answer, pol) else answer.p("secret")
+        for number in part:
+            if answer.p("line%d" % number) > limit:
+                held.add(block[number - 1].line)
+    return held
 
-    targets = [position for position, unit in enumerate(units)
-               if id(unit) in flagged and unit.text.strip() and unit.line not in cleared
-               and unit.line not in values]
-    alone_ids = set(targets)
-    for position in targets:
-        above = above_of(position)
-        if above is not None and above.line not in cleared and above.line not in values:
-            alone_ids.add(position - 1)
-    # The bottom lines first, as in check_blocks.
-    order = sorted(alone_ids, reverse=True)
-    alone = dict(zip(order, pool.map(lambda position: score(units[position].text), order)))
-    # A unit above that its block check passed and that got no alone answer
-    # in time stays shown: then only the pair rule can hold the unit below.
-    late = {units[position].line for position, value in alone.items()
-            if value is None and position in targets}
-    held = set()
-    for position in targets:
-        if alone[position] is not None and alone[position] > limit:
-            held.add(units[position].line)
-        if (position - 1 in alone and above_of(position) is not None
-                and alone[position - 1] is not None and alone[position - 1] > limit):
-            held.add(units[position - 1].line)
-    pairs = []
-    for position in targets:
-        above = above_of(position)
-        if units[position].line in held or units[position].line in late or above is None:
+
+def check_lines(runner, pol, lines, flagged, values, cleared):
+    """Step 3 for each flagged block. A block that is one piece of a line
+    longer than BLOCK_CHARS gets no line search: the full line is held. A
+    line that secret-values.txt holds, a line that not-secret.txt clears and
+    a blank line get no question. Give (held lines, full ranges): the full
+    ranges are the blocks that the search did not finish and the long lines
+    of the pieces."""
+    limit = threshold(pol, "secret", 0.75)
+    held, full = set(), []
+    for block, seconds in flagged:
+        if len(lines[block[0].line]) > BLOCK_CHARS:
+            full.append((block[0].line, block[0].line, "secret"))
             continue
-        if above.line in held or above.line in values:
-            continue
-        pairs.append(position)
-    texts = [units[position - 1].text[-PAIR_ABOVE:] + "\n" + units[position].text for position in pairs]
-    # The bottom pairs go to Laya first, and the answers are read in line
-    # order: a line that its pair holds stops the pair of the line below it.
-    scores = list(pool.map(score, texts[::-1]))[::-1]
-    for position, value in zip(pairs, scores):
-        if value is None:
-            late.add(units[position].line)
-        elif value > limit and units[position - 1].line not in held:
-            held.add(units[position].line)
-    return held, late - held
+        skip = {index + 1 for index, unit in enumerate(block)
+                if not unit.text.strip() or unit.line in values or unit.line in cleared}
+        found = search_lines(runner, pol, block, skip, limit, seconds)
+        if found is None:
+            full.append((block[0].line, block[-1].line, "secret"))
+        else:
+            held |= found
+    return held, full
 
 
 def merge(ranges, order):
@@ -767,9 +749,9 @@ def render(lines, ranges):
         out.extend(lines[index:first])
         count = last - first + 1
         if kind == "secret" and count == 1:
-            out.append("[held by laya: secret]")
+            out.append("[held by clef: secret]")
         else:
-            out.append("[held by laya: %s, %d lines]" % (kind, count))
+            out.append("[held by clef: %s, %d lines]" % (kind, count))
         held.append({"kind": kind, "lines": count})
         index = last + 1
     out.extend(lines[index:])
@@ -817,14 +799,14 @@ def never_secret(line, patterns):
 def pem_ranges(lines):
     """Step 6: -----BEGIN to -----END is one held unit. [inferred] The BEGIN
     line of a private key with no END holds to the end of the text; another
-    BEGIN with no END (a certificate) holds nothing, and Laya examines it.
+    BEGIN with no END (a certificate) holds nothing, and Clef examines it.
     The END line of a private key with no BEGIN holds from the line after
     the END before it (or from the first line). This applies to all text,
     not only to cut text: tail, grep -A or sed -n on a key file give the
     end of a key with no BEGIN. Round 7 limited it to cut text so that a
     lone -----END OF REPORT----- held no output; the END side must now name
     PRIVATE KEY, so that case holds nothing. The rule holds each range
-    whatever Laya answers. A line can hold more than one marker (cat of a
+    whatever Clef answers. A line can hold more than one marker (cat of a
     file with no newline at its end gives -----END CERTIFICATE----------BEGIN
     RSA PRIVATE KEY-----), so the markers of a line count in their order."""
     ranges, begin, key, start = [], None, None, 0
@@ -853,33 +835,33 @@ def half_rule(checked, ranges):
     held = {line for first, last, kind in ranges if kind != "not_examined"
             for line in range(first, last + 1)}
     result = []
-    for block, _answer in checked:
+    for block, _answer, _seconds in checked:
         block_lines = sorted({unit.line for unit in block})
         if 2 * sum(1 for line in block_lines if line in held) > len(block_lines):
             result.append((block_lines[0], block_lines[-1], "secret"))
     return result
 
 
-def guard_lines(lines, pem, runner, pool, setup):
+def guard_lines(lines, pem, runner, setup):
     """The output guard of one piece (spec section 8). setup holds the
     policies and the patterns, which guard reads one time. pem holds the
-    ranges of pem_ranges in this piece. Give (guarded lines, held)."""
+    ranges of pem_ranges in this piece. Give (guarded lines, held). A block
+    is never held as not_examined after its block check gave secret (spec
+    section 8, step 4)."""
     if not any(line.strip() for line in lines):
         return lines, []
     block_pol, line_pol, value_patterns, shapes = setup
     values = value_lines(lines, value_patterns)
-    checked, late_blocks = check_blocks(pool, runner, block_pol, make_blocks(lines))
+    checked, late_blocks = check_blocks(runner, block_pol, make_blocks(lines))
     ranges, flagged = block_ranges(checked, block_pol)
-    units = sorted((unit for block, _answer in checked for unit in block),
-                   key=lambda unit: (unit.line, unit.start))
-    # not-secret.txt runs before the pair rule and before the half rule
-    # counts, and it removes only holds of the line check.
+    # not-secret.txt runs before the half rule counts, and it removes only
+    # the holds of the line search.
     cleared = {index for index, line in enumerate(lines) if never_secret(line, shapes)}
-    held, late = check_lines(pool, runner, line_pol, units, flagged, values, cleared)
+    held, full = check_lines(runner, line_pol, lines, flagged, values, cleared)
     ranges += [(line, line, "secret") for line in sorted(held | values)]
+    ranges += full
     # Text that the time limit left not examined is held (spec section 8).
     ranges += [(block[0].line, block[-1].line, "not_examined") for block in late_blocks]
-    ranges += [(line, line, "not_examined") for line in sorted(late - values)]
     ranges += pem
     ranges += half_rule(checked, ranges)
     return render(lines, ranges)
@@ -891,10 +873,10 @@ def guard(text, limit, size=0, runs=(0,)):
     With SIZE, the text goes in pieces of whole lines, each at most SIZE
     bytes (one line that is longer is a piece of its own), so a guard of
     one piece never starts inside a line (wait --pattern). All pieces share
-    one time limit, one pool and one read of the policies. The bottom
-    piece goes first, as the bottom blocks do in check_blocks. The PEM rule
-    runs on the full text, not in each piece, because a key can go over
-    the edge of a piece; each piece gets its part of the ranges.
+    one time limit and one read of the policies. The bottom piece goes
+    first, as the bottom blocks do in check_blocks. The PEM rule runs on the
+    full text, not in each piece, because a key can go over the edge of a
+    piece; each piece gets its part of the ranges.
 
     RUNS are the first lines of the runs of lines that are next to each
     other in the source (wait --pattern sends the new lines of a screen,
@@ -925,16 +907,12 @@ def guard(text, limit, size=0, runs=(0,)):
     setup = (policy("output-block"), policy("output-line"),
              compile_lines("secret-values.txt"), compile_lines("not-secret.txt"))
     runner = remote(limit)
-    pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL)
     results = [None] * len(parts)
-    try:
-        for index in reversed(range(len(parts))):
-            first, last = starts[index], starts[index] + len(parts[index]) - 1
-            own = [(max(start, first) - first, min(end, last) - first, kind)
-                   for start, end, kind in pem if start <= last and end >= first]
-            results[index] = guard_lines(parts[index], own, runner, pool, setup)
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    for index in reversed(range(len(parts))):
+        first, last = starts[index], starts[index] + len(parts[index]) - 1
+        own = [(max(start, first) - first, min(end, last) - first, kind)
+               for start, end, kind in pem if start <= last and end >= first]
+        results[index] = guard_lines(parts[index], own, runner, setup)
     return ("\n".join(line for result in results for line in result[0]) + tail,
             [item for result in results for item in result[1]])
 
@@ -974,50 +952,15 @@ def cmd_output(args):
         print(json.dumps({"text": text, "held": held}))
 
 
-def cmd_checkpoint(args):
-    """Exit 0 when the English checkpoint is in the Hugging Face cache
-    (HF_HUB_CACHE, else $HF_HOME/hub, else ~/.cache/huggingface/hub).
-    open, laya install and laya status use this one check."""
-    if args:
-        raise Fail(2)
-    try:
-        from huggingface_hub import try_to_load_from_cache
-    except ImportError:
-        raise Fail(1, message=False)
-    path = try_to_load_from_cache(repo_id="convaiinnovations/laya", filename="model.safetensors")
-    if not isinstance(path, str) or not os.path.isfile(path):
-        raise Fail(1, message=False)
-    print(path)
-
-
-def cmd_ready(args):
-    """Exit 0 when this Python can import laya and the English checkpoint is
-    in the Hugging Face cache: the install check of open in one process."""
-    if args:
-        raise Fail(2)
-    try:
-        import laya.structured  # noqa: F401
-    except ImportError:
-        raise Fail(1, message=False)
-    cmd_checkpoint([])
-
-
-def cmd_port(args):
-    """A free TCP port on 127.0.0.1."""
-    if args:
-        raise Fail(2)
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        print(sock.getsockname()[1])
-
-
 def cmd_check_url(args):
-    """Exit 0 when the URL is http on a loopback host with no user part."""
+    """check-url URL: print the kind of the host of a URL that the client may
+    use (loopback or tailscale), else exit 1. open and clef status read it."""
     if len(args) != 1:
         raise Fail(2)
-    if not url_is_loopback(args[0]):
+    kind = host_kind(args[0])
+    if kind is None:
         raise Fail(1, message=False)
+    print(kind[0])
 
 
 def cells(text):
@@ -1058,36 +1001,6 @@ def cmd_after_cursor(args):
     print("end" if cells(row) <= int(args[0]) else "mid")
 
 
-def cmd_version(args):
-    """The installed laya version (laya status, laya install)."""
-    if args:
-        raise Fail(2)
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        print(version("laya"))
-    except PackageNotFoundError:
-        raise Fail(1, message=False)
-
-
-def cmd_pip_install(args):
-    """pip-install SECONDS PACKAGE: pip in this Python with a time limit.
-    Exit 124 when the time ends, else the pip exit code. The macOS base
-    system has no timeout command. pip writes to the stdout and the stderr of
-    the client, so the user sees the pip error."""
-    import subprocess
-    if len(args) != 2:
-        raise Fail(2)
-    seconds = finite(args[0])
-    if seconds <= 0:
-        raise Fail(124, message=False)
-    try:
-        done = subprocess.run([sys.executable, "-m", "pip", "install",
-                               "--disable-pip-version-check", args[1]], timeout=seconds)
-    except subprocess.TimeoutExpired:
-        raise Fail(124, message=False)
-    raise Fail(done.returncode, message=False)
-
-
 def cmd_scrub(args):
     """Copy stdin to stdout less each line that matches secret-values.txt."""
     if args:
@@ -1104,13 +1017,8 @@ SUBCOMMANDS = {
     "command": cmd_command,
     "pane": cmd_pane,
     "output": cmd_output,
-    "checkpoint": cmd_checkpoint,
-    "ready": cmd_ready,
-    "port": cmd_port,
     "check-url": cmd_check_url,
     "after-cursor": cmd_after_cursor,
-    "version": cmd_version,
-    "pip-install": cmd_pip_install,
     "scrub": cmd_scrub,
 }
 

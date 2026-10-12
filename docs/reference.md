@@ -256,25 +256,40 @@ The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude ru
 
 The companion needs `perl` for its locks and for the start time of a process (macOS and most Linux systems have it). Without perl, `terminal.sh` gives exit code 2 and `clux terminal needs perl`. `/clux:validate` gives a `WARN` when perl is missing.
 
-From 4.0.0, the companion needs Laya, a local model. Laya examines each command before it runs, each line that Claude sends with Enter, the prompt in the pane, and all pane text that goes back to Claude:
+From 5.0.0, the companion needs Clef, a decision model that you run. Clef examines each command before it runs, each line that Claude sends with Enter, the prompt in the pane, and all pane text that goes back to Claude:
 
 - A dangerous command runs only after you type `y` in the pane.
-- A line with a secret goes back to Claude as `[held by laya: secret]`. The raw text stays in the pane.
-- Text that Laya cannot examine in its time limit goes back as `[held by laya: not_examined, <k> lines]`. On a machine with no GPU (no MPS or CUDA), a large output takes more time, so more lines can be held this way.
-- When Laya does not answer, the companion stops with exit code 6 and sends no pane text to Claude.
-- Each command and each line that Claude ends at the companion prompt runs in a subshell. Only the directory and the exported variables persist. A command that Laya passed can still write any file of your user; Laya is the only check before it runs.
-- When the Laya server that the companion started stops, `open` again starts a new one.
+- A line with a secret goes back to Claude as `[held by clef: secret]`. The raw text stays in the pane.
+- A block that Clef found a secret in, and could not examine line by line in its time limit, goes back as `[held by clef: secret, <k> lines]`.
+- Text that Clef cannot examine in its time limit goes back as `[held by clef: not_examined, <k> lines]`.
+- When Clef does not answer, the companion stops with exit code 6 and sends no pane text to Claude. The next verb tries again: `open` is not necessary.
+- Each command and each line that Claude ends at the companion prompt runs in a subshell. Only the directory and the exported variables persist. A command that Clef passed can still write any file of your user; Clef is the only check before it runs.
 
-Install Laya one time. Claude asks you before it runs the install:
+clux does not install, start or stop a model. You run one Clef server and name it with `CLUX_CLEF_URL`. On a Mac with Apple Silicon:
 
 ```bash
-<plugin>/scripts/terminal.sh laya install
-<plugin>/scripts/terminal.sh laya status
+hf download mlx-community/clef-4bit --revision b973b6f405d02f8e9b83208c7e82ddf43a742eb6 --local-dir ~/models/clef-4bit
+python ~/models/clef-4bit/clef_mlx.py serve --model ~/models/clef-4bit --host 100.117.159.16 --port 8765 --no-truncate --quiet
 ```
 
-The install makes a Python venv in `~/.local/share/clux/laya` with `laya` 0.3.21 and PyTorch, and downloads the English checkpoint to the Hugging Face cache. Each Claude session starts its own Laya server, which uses about 1–2 GB of memory. To use a server that you start, set `CLUX_LAYA_URL` (a loopback host only) and `CLUX_LAYA_KEY`.
+Then, on each machine that uses that server, give that name or the Tailscale address:
 
-The policies are in `plugins/clux/config/laya/`. There is no user copy: a command in the companion can write the files of the user, so a user copy could turn off the checks.
+```bash
+export CLUX_CLEF_URL=http://mac-studio.<tailnet>.ts.net:8765
+```
+
+- Clef 27B (`mlx-community/clef-4bit`) needs about 16 GB of memory and 16.3 GB of disk. The server runs one request at a time; other requests wait.
+- `clef_mlx.py serve` has no key check. Each device on your tailnet that the Tailscale ACL lets reach the port can send requests. It cannot read the requests of other devices. Limit the port with the ACL.
+- `clef_mlx.py` is code from the model repository. Read it before the first run.
+- With `--host 100.117.159.16`, a process on that machine uses the same tailnet URL, not `127.0.0.1`.
+- A `.ts.net` name goes through the resolver of that machine before each verb; give the Tailscale address in `CLUX_CLEF_URL` instead of the name to skip that lookup.
+- `CLUX_CLEF_URL` must use `http` and name a loopback host (`127.0.0.1`, `localhost`, `::1`), a Tailscale address (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`) or a `.ts.net` name that resolves only to Tailscale addresses. clux refuses each other host, so terminal text does not go out of your tailnet. The tailnet traffic is encrypted by Tailscale.
+- When a server with a key is in front of Clef (for example `llama-server --api-key`, or a proxy), set `CLUX_CLEF_KEY`. clux sends it as `Authorization: Bearer <key>`.
+- `CLUX_CLEF_PYTHON` names the Python of the client. It needs python3 3.10 or later and no other package.
+- `<plugin>/scripts/terminal.sh clef status` prints the URL, whether a key is set, the kind of the host and whether the server answers.
+- A companion of 4.x has no Clef server: use `close`, then `open`. The venv of 4.x, `~/.local/share/clux/laya`, is not used any more; you can delete it.
+
+The policies are in `plugins/clux/config/clef/`. There is no user copy: a command in the companion can write the files of the user, so a user copy could turn off the checks.
 
 ### Background sessions
 
@@ -283,7 +298,7 @@ From 4.1.0, the companion also operates in a Claude Code session with no tmux pa
 - `open` opens a new window, `clux-terminal <id>`, in the tmux session of the dashboard, on your default tmux server. `<id>` is the first 8 characters of the session ID. The output has a `window=<session>:<index>` line.
 - With no dashboard, or with `--socket`, `open` opens the companion on a private tmux server. The output has an `attach=` line, and an `attach_in_tmux=` line to use inside tmux.
 - The `SessionStart` hook writes `CLUX_SESSION_ID` to the environment of the session. The companion uses it, else `CLAUDE_CODE_SESSION_ID`, and the session process `CLAUDE_PID`.
-- A watchdog process closes the companion and stops its Laya server when the session process ends, also after a crash. The `SessionEnd` hook closes it at the end of the session and at `/clear`.
+- A watchdog process closes the companion when the session process ends, also after a crash. The `SessionEnd` hook closes it at the end of the session and at `/clear`.
 - The companion pane holds a mark. After a restart of the tmux server, a verb that does not find the mark gives exit code 4 and types nothing.
 - clux finds only a dashboard on the default tmux server. A dashboard on another server (`tmux -L name`) gives a private server.
 

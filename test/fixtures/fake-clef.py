@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""fake-laya.py: a stand-in for laya-serve in the clux tests.
+"""fake-clef.py: a stand-in for clef_mlx.py serve in the clux tests.
 
 GET /health and POST /v1/systemone answer in the wire format that
-test/fixtures/capture-laya-wire.sh captured from laya-serve 0.3.21. The
-captures in test/fixtures/laya-wire/ are the templates, so they stay the
+test/fixtures/capture-clef-wire.sh captured from the real clef_mlx.py serve (capture-clef-wire.sh). The
+captures in test/fixtures/clef-wire/ are the templates, so they stay the
 source of truth.
 
-The answers come from the JSON file that CLUX_FAKE_LAYA_ANSWERS names. The
+The answers come from the JSON file that CLUX_FAKE_CLEF_ANSWERS names. The
 fake reads the file again for each request, so a test can change it between
 two verbs:
 
@@ -20,7 +20,7 @@ two verbs:
       {"contains": "slow", "delay": 3}             waits, then the other rules answer
     ],
     "status": [503],       the first requests get these codes, then 200
-    "retry_after": "1",    the Retry-After header of a 503 (as laya-serve)
+    "retry_after": "1",    the Retry-After header of a 503 (as a proxy in front of Clef)
     "delay": 0,            seconds to wait before each answer
     "body": "not json",    a raw body instead of an answer
     "health_status": 200   the code of GET /health
@@ -30,11 +30,11 @@ A rule matches when all of its conditions are true: "equals" (the full state
 text), "contains", "min_lines", "min_length", "asks" (a question name in
 the request) and "not_asks" (a question name not in the request). A state that is a JSON object is matched as its sorted JSON text.
 
-Environment: LAYA_HOST (default 127.0.0.1), LAYA_PORT (0 selects a free port),
-LAYA_API_KEY, CLUX_FAKE_LAYA_ANSWERS, CLUX_FAKE_LAYA_PORT_FILE (gets the
-port), CLUX_FAKE_LAYA_LOG (one JSON line for each request: the state, the
-question names and the model), CLUX_FAKE_LAYA_WIRE (the captures; the default
-is laya-wire next to the real path of this file), CLUX_FAKE_LAYA_IGNORE_TERM
+Environment: CLEF_HOST (default 127.0.0.1), CLEF_PORT (0 selects a free port),
+CLEF_API_KEY, CLUX_FAKE_CLEF_ANSWERS, CLUX_FAKE_CLEF_PORT_FILE (gets the
+port), CLUX_FAKE_CLEF_LOG (one JSON line for each request: the state, the
+question names and the model), CLUX_FAKE_CLEF_WIRE (the captures; the default
+is clef-wire next to the real path of this file), CLUX_FAKE_CLEF_IGNORE_TERM
 (1: the server ignores SIGTERM, as a slow server).
 """
 import copy
@@ -46,7 +46,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-WIRE = os.environ.get("CLUX_FAKE_LAYA_WIRE") or os.path.join(HERE, "laya-wire")
+WIRE = os.environ.get("CLUX_FAKE_CLEF_WIRE") or os.path.join(HERE, "clef-wire")
 BUILTIN_CHOICE = {"risk": "safe", "state": "other"}
 LOCK = threading.Lock()
 SERVED = [0]
@@ -61,11 +61,12 @@ NOUL = load("noul-response.json")
 CHOICE = load("choice-response.json")
 HEALTH = load("health.json")
 BUSY = load("busy-503.json")
+TOO_LONG = load("too-long-413.json")
 
 
 def settings():
     try:
-        with open(os.environ.get("CLUX_FAKE_LAYA_ANSWERS", ""), encoding="utf-8") as handle:
+        with open(os.environ.get("CLUX_FAKE_CLEF_ANSWERS", ""), encoding="utf-8") as handle:
             return json.load(handle)
     except (OSError, ValueError):
         return {}
@@ -128,19 +129,18 @@ def answer(conf, state, questions):
         if "input_tokens" in rule and matches(rule, text, questions):
             tokens = rule["input_tokens"]
             break
-    # laya-serve gives the sum over the question rows, one row for each
-    # question, each cut at 512.
+    # clef_mlx.py serve gives the sum over the question rows.
     result["usage"]["input_tokens"] = tokens * max(1, len(questions))
     return result
 
 
 def log(body):
-    path = os.environ.get("CLUX_FAKE_LAYA_LOG")
+    path = os.environ.get("CLUX_FAKE_CLEF_LOG")
     if not path:
         return
     line = json.dumps({"state": body.get("state"),
-                       "questions": sorted(body.get("questions") or {}),
-                       "model": body.get("model")})
+                       "questions": body.get("questions") or {},
+                       "truncate": body.get("truncate")})
     with LOCK:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
@@ -164,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
         # The real /health needs no key, so the fake needs none.
         if self.path != "/health":
             return self.reply(404, {"detail": "Not Found"})
-        path = os.environ.get("CLUX_FAKE_LAYA_LOG")
+        path = os.environ.get("CLUX_FAKE_CLEF_LOG")
         if path:
             # A test reads which key a health request sent.
             with LOCK:
@@ -177,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/systemone":
             return self.reply(404, {"detail": "Not Found"})
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        key = os.environ.get("LAYA_API_KEY")
+        key = os.environ.get("CLEF_API_KEY")
         if key and self.headers.get("Authorization") != "Bearer " + key:
             return self.reply(401, {"detail": "invalid or missing bearer token"})
         body = json.loads(raw)
@@ -193,6 +193,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(503, BUSY, retry_after=str(conf.get("retry_after", "1")))
             return self.reply(statuses[index], {"detail": "error"})
         text = state_text(body.get("state"))
+        # clef_mlx.py serve: with "truncate": false a state that is longer
+        # than the context gives 413. Without it, the server cuts the state.
+        if body.get("truncate") is False and len(text) > int(conf.get("too_long", 10 ** 9)):
+            return self.reply(413, TOO_LONG)
         for rule in conf.get("rules", []):
             if "fail" in rule and matches(rule, text, questions):
                 return self.reply(rule["fail"], {"detail": "inference failed"})
@@ -208,12 +212,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    if os.environ.get("CLUX_FAKE_LAYA_IGNORE_TERM") == "1":
+    if os.environ.get("CLUX_FAKE_CLEF_IGNORE_TERM") == "1":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    server = ThreadingHTTPServer((os.environ.get("LAYA_HOST", "127.0.0.1"),
-                                  int(os.environ.get("LAYA_PORT", "0"))), Handler)
+    server = ThreadingHTTPServer((os.environ.get("CLEF_HOST", "127.0.0.1"),
+                                  int(os.environ.get("CLEF_PORT", "0"))), Handler)
     server.daemon_threads = True
-    port_file = os.environ.get("CLUX_FAKE_LAYA_PORT_FILE")
+    port_file = os.environ.get("CLUX_FAKE_CLEF_PORT_FILE")
     if port_file:
         with open(port_file + ".tmp", "w", encoding="utf-8") as handle:
             handle.write("%d\n" % server.server_address[1])

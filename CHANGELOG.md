@@ -2,6 +2,32 @@
 
 All notable changes to clux are documented here.
 
+## [5.0.0]
+
+### Changed
+
+- **The companion needs a Clef server that you run.** Clef 27B (`mlx-community/clef-4bit`) makes the decisions of the command gate, the output guard and the pane state in place of Laya. clux does not install, start or stop a model. You run one server and name it with `CLUX_CLEF_URL`; the reference gives the command
+- One server answers all machines. `CLUX_CLEF_URL` must use `http` and name a loopback host (`127.0.0.1`, `localhost`, `::1`), a Tailscale address (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`) or a `.ts.net` name that resolves only to Tailscale addresses. clux refuses each other host, so terminal text does not go out of your tailnet. A `.ts.net` name is resolved one time for each process, and the client connects to the address that it checked
+- `CLUX_CLEF_KEY` is optional: with it, each request, also `health`, sends `Authorization: Bearer <key>`. `clef_mlx.py serve` has no key check; limit the port with your Tailscale ACL
+- `open` reads `CLUX_CLEF_URL`, checks the host, checks that the client Python is 3.10 or later, and asks the server one health question and one pane question. A failure gives exit code 6 with `clef not configured` or `clef not available`. When the server stops during a session, each verb gives exit code 6 and no pane text; the next verb tries again
+- **The output guard reads blocks of 2,000 characters**, and for a block with a secret it asks which lines hold it: one question for each line, at most 10 lines in one request, with the numbered block as the state. A line above 0.75 is held. The pair rule is gone: the block gives each line its context
+- When the time that is left is less than the estimated cost of that line search, the full block is held as `[held by clef: secret, <k> lines]`
+- The guard limit is 45 seconds (was 15), and the guard reads at most the last 16384 bytes of the output (was 32768). A request has 15 seconds (was 5) and the command gate 15 seconds (was 11), because a request can wait for the request of another companion
+- The skill tells Claude to set the Bash tool `timeout` to 180000 milliseconds for each `run` and `wait`, and to (S + 116) × 1000 milliseconds for `--timeout S` above 64
+- **Each name reads `clef`:** `clef_client.py`, `config/clef/`, `terminal.sh clef status`, `CLUX_CLEF_URL`, `CLUX_CLEF_KEY`, `CLUX_CLEF_PYTHON`, `CLEF_GUARD_LIMIT`, `CLEF_GUARD_BYTES`, `[held by clef: ...]` and the `clef:` messages
+- The client imports no model package: it turns each policy schema into Clef questions itself and runs with any python3 3.10 or later. Each request sends `"truncate": false`, so the server answers 413 for a state that is too long in place of cutting it
+
+### Removed
+
+- `terminal.sh laya install`, the venv in `~/.local/share/clux/laya`, the checkpoint download, the API key that clux made, the free port, and every start, health wait and stop of a model server, also in `close`, in the reaper and in the watchdog. The venv of 4.x stays on disk; you can delete it
+- The `checkpoint`, `ready`, `port`, `version` and `pip-install` helpers of the client, and the `model` field of the policies
+- The rules for a state that the model cut: the client sends no shorter state again and splits no block
+
+### Migration
+
+- Set `CLUX_CLEF_URL` (and `CLUX_CLEF_KEY` when your server has a key) in the environment of Claude Code, and start Claude Code again
+- A companion of 4.x has no Clef server: use `close`, then `open`
+
 ## [4.6.0]
 
 ### Added

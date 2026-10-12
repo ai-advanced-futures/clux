@@ -75,7 +75,7 @@ _upgrade() {
 @test "upgrade-clux: a missing required answer stops it before any change" {
     _render_old
     local conf="$HOME/.config/clux/clux.tmux.conf"
-    sed -i '/@clux-editor/d' "$conf"
+    sed -i '' '/@clux-editor/d' "$conf"
     local before; before=$(cat "$conf")
     run "$UPGRADE" --no-reload
     [ "$status" -eq 4 ]
@@ -88,7 +88,7 @@ _upgrade() {
 @test "upgrade-clux: a flag after -- gives a missing answer" {
     [ -n "$REAL_TMUX" ] || skip "no tmux"
     _render_old
-    sed -i '/@clux-editor/d' "$HOME/.config/clux/clux.tmux.conf"
+    sed -i '' '/@clux-editor/d' "$HOME/.config/clux/clux.tmux.conf"
     printf '%s\n' 'source-file -q ~/.config/clux/clux.tmux.conf' > "$HOME/tmux.conf"
     _upgrade -- --editor vim
     [ "$status" -eq 0 ]
