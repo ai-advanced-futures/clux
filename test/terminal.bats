@@ -728,9 +728,9 @@ STUB
     mkdir -p "$root/sessions/0123abcd"
     printf 'mode=window\npane=%%5\nsocket=/tmp/user.sock\nseq=0\ntoken=ab12cd34\nsession=0123abcd-9999-4890-abcd-ef0123456789\nowner_pid=%s\nowner_start=%s\n' \
         "$other" "$start" > "$root/sessions/0123abcd/state"
-    # No Clef (XDG_DATA_HOME has no venv): the check of the owner comes first.
+    # No CLUX_CLEF_URL: the check of the owner comes first.
     run env -u TMUX -u TMUX_PANE -u CLUX_CLEF_URL STUB_LOG="$log" CLUX_TERMINAL_DIR="$root" \
-        XDG_DATA_HOME="$BATS_TEST_TMPDIR/data" CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents" \
+        CLUX_AGENT_STATE_DIR="$BATS_TEST_TMPDIR/agents" \
         CLAUDE_CODE_SESSION_ID=0123abcd-4567-4890-abcd-ef0123456789 CLAUDE_PID=$$ "$TERMINAL" open
     kill "$other"
     [ "$status" -eq 2 ]
@@ -976,16 +976,15 @@ print(c.DEFAULT_OUTPUT_LIMIT)' "$(dirname "$CLEF_CLIENT")"
 
 @test "no code of clux starts, checks or stops a model server" {
     local name
-    for name in clef_start_server clef_stop_server clef_stop_server_later clef_wait_health \
-        clef_wait_ready clef_owns_port clef_proc_owns_port clef_pid_is_server clef_pid_check \
-        clef_restart_if_down clef_installed clef_checkpoint_present clef_python_ready \
-        stop_reaped_servers close_stop_server S_CLEF_PID CLEF_VENV CLEF_MARKER CLEF_VERSION; do
-        ! grep -qF "$name" "$TERMINAL" || { echo "$name is still in terminal.sh"; false; }
+    # The mechanisms of the 4.x lifecycle, not names that a new one may take:
+    # a venv, a download, the model package and a server pid in the state.
+    for name in 'pip install' '-m venv' HF_HUB huggingface mlx S_CLEF_PID CLEF_VENV; do
+        ! grep -qF -e "$name" "$TERMINAL" || { echo "$name is still in terminal.sh"; false; }
     done
     # The client keeps only the subcommands of spec section 5.
     run "$CLUX_CLEF_PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import clef_client as c
 print(" ".join(sorted(c.SUBCOMMANDS)))' "$(dirname "$CLEF_CLIENT")"
-    [ "$output" = 'after-cursor check-url command health output pane scrub' ] || { echo "$output"; false; }
+    [ "$output" = 'after-cursor check-url command health output pane' ] || { echo "$output"; false; }
 }
 
 @test "run refuses a newline, a tab or another control character before it touches tmux" {
@@ -1808,8 +1807,7 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$(grep -c 'random_hex [0-9]' "$TERMINAL")" -eq 1 ]
     run bash -c "source '$TERMINAL'; random_hex 4; echo; random_hex 32"
     [[ "${lines[0]}" =~ ^[0-9a-f]{8}$ ]] && [[ "${lines[1]}" =~ ^[0-9a-f]{64}$ ]] || { echo "$output"; false; }
-    local client="$SCRIPTS_DIR/clef_client.py"
-    [ "$(grep -c 'p.search(line) for p in patterns\|pattern.search(line) for pattern in patterns' "$client")" -eq 1 ]
+    [ "$(grep -c 'p.search(line) for p in patterns\|pattern.search(line) for pattern in patterns' "$CLEF_CLIENT")" -eq 1 ]
 }
 
 @test "wait --pattern starts no guard after its time limit" {

@@ -34,7 +34,7 @@ Subcommands that ask Clef (input on stdin, one result on stdout):
   pane [--limit S]                {"state": "credential|yes_no|menu|pager|shell_prompt|other"}
                                   --limit: a time limit shorter than the gate limit.
 
-Helpers that do not ask Clef: check-url, after-cursor, scrub.
+Helpers that do not ask Clef: check-url, after-cursor.
 
 Exit codes: 0 a decision; 1 Clef is not available or gave a bad answer;
 2 bad input; 3 the state is too long for Clef to examine; 4 the server
@@ -200,7 +200,7 @@ def host_kind(url):
     try:
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname
-        parts.port
+        parts.port     # a port that is not a number raises ValueError here
     except ValueError:
         return None
     if parts.scheme != "http" or not host or parts.username or parts.password:
@@ -1001,17 +1001,6 @@ def cmd_after_cursor(args):
     print("end" if cells(row) <= int(args[0]) else "mid")
 
 
-def cmd_scrub(args):
-    """Copy stdin to stdout less each line that matches secret-values.txt."""
-    if args:
-        raise Fail(2)
-    lines = read_stdin().splitlines()
-    held = value_lines(lines, compile_lines("secret-values.txt"))
-    for index, line in enumerate(lines):
-        if index not in held:
-            print(line)
-
-
 SUBCOMMANDS = {
     "health": cmd_health,
     "command": cmd_command,
@@ -1019,7 +1008,6 @@ SUBCOMMANDS = {
     "output": cmd_output,
     "check-url": cmd_check_url,
     "after-cursor": cmd_after_cursor,
-    "scrub": cmd_scrub,
 }
 
 

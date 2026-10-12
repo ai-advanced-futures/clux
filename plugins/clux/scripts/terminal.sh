@@ -355,15 +355,15 @@ clef_call() {
 }
 
 # The client makes the host check, so the rule is in one place. It prints the
-# kind of the host (loopback or tailscale) on success.
+# kind of the host (loopback or tailscale) on success. check-url reads the URL
+# from its argument, so the server of clef_call does not apply.
 clef_host_kind() {
-    "$CLEF_PY" "$CLEF_CLIENT" check-url "$1" 2>/dev/null
+    clef_call check-url "$1"
 }
 
 # The Clef server needs a client Python of 3.10 or later (spec section 6,
 # step 3).
 clef_python_ok() {
-    [ -n "$CLEF_PY" ] || return 1
     "$CLEF_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
         >/dev/null 2>&1
 }
@@ -1815,7 +1815,7 @@ cursor_mid_line() {
         [ "${#RTRIM}" -gt "$x" ]
         return
     fi
-    rc=$(printf '%s\n' "$row" | "$CLEF_PY" "$CLEF_CLIENT" after-cursor "$x" 2>/dev/null) || return 2
+    rc=$(printf '%s\n' "$row" | clef_call after-cursor "$x") || return 2
     case "$rc" in
         mid) return 0 ;;
         end) return 1 ;;
@@ -3372,13 +3372,9 @@ clef_status() {
     [ -z "${CLUX_CLEF_KEY:-}" ] || key=set
     if [ -n "$url" ]; then
         host=$(clef_host_kind "$url") || host=refused
-        [ -n "$host" ] || host=refused
         if [ "$host" != refused ]; then
-            if S_CLEF_URL="$url" S_CLEF_KEY="${CLUX_CLEF_KEY:-}" clef_call health >/dev/null; then
-                server=answers
-            else
-                server='no answer'
-            fi
+            server='no answer'
+            ! S_CLEF_URL="$url" S_CLEF_KEY="${CLUX_CLEF_KEY:-}" clef_call health >/dev/null || server=answers
         fi
     fi
     printf 'url=%s\nkey=%s\nhost=%s\nserver=%s\n' "${url:-none}" "$key" "$host" "$server"

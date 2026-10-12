@@ -1,17 +1,14 @@
 #!/usr/bin/env bats
 # clef-client.bats — clef_client.py against the fake Clef server (spec
-# sections 5, 7, 8, 9 and 13). Each test skips when CLUX_CLEF_PYTHON cannot
-# import clef.
+# sections 5, 7, 8, 9 and 13). Each test skips when CLUX_CLEF_PYTHON is
+# older than 3.10: the client imports no model package.
 
 bats_require_minimum_version 1.5.0
 
 load test_helper
 
-client() { "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" "$@"; }
-
 setup() {
-    export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME"
-    export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/config"
+    clef_home
     require_client_python
 }
 
@@ -49,13 +46,13 @@ setup() {
         [ "$status" -eq 0 ] || { echo "$url gave $status"; false; }
     done
     # check-url prints the kind of the host, for open and clef status.
-    run "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" check-url "http://127.0.0.1:$port"
+    run client check-url "http://127.0.0.1:$port"
     [ "$output" = loopback ]
-    run "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" check-url http://100.117.159.16:8765
+    run client check-url http://100.117.159.16:8765
     [ "$output" = tailscale ]
-    run "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" check-url 'http://[fd7a:115c:a1e0::1]:8765'
+    run client check-url 'http://[fd7a:115c:a1e0::1]:8765'
     [ "$output" = tailscale ]
-    run "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" check-url http://example.com:8765
+    run client check-url http://example.com:8765
     [ "$status" -eq 1 ]
     [ -z "$output" ]
 }
@@ -992,12 +989,6 @@ for line, fields in cases:
     run client output --render < <(printf 'S3CR one\nclean two\nS3CR three\nclean four\n')
     [ "$output" = $'held=2\n[held by clef: secret]\nclean two\n[held by clef: secret]\nclean four' ] \
         || { echo "$output"; false; }
-}
-
-@test "scrub drops each line that secret-values.txt holds" {
-    run client scrub < <(printf 'plain line\nkey AKIAABCDEFGHIJKLMNOP\nlast line\n')
-    [ "$status" -eq 0 ]
-    [ "$output" = $'plain line\nlast line' ]
 }
 
 @test "after-cursor counts screen cells: a wide character takes 2" {

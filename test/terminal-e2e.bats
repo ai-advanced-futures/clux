@@ -497,8 +497,8 @@ lock_holder() {
 
 # Clef 6
 @test "close --hook removes the pane and the directory first and does not wait for the server" {
-    local data="$BATS_TEST_TMPDIR/data" d pane start
-    XDG_DATA_HOME="$data" "$TERMINAL" open >/dev/null
+    local d pane start
+    "$TERMINAL" open >/dev/null
     d=$(companion_dir)
     pane=$(companion_pane)
     start=$SECONDS
@@ -1576,8 +1576,8 @@ lock_holder() {
 @test "the watchdog closes a background companion when the owner process ends" {
     bg_setup
     bg_add_cache
-    local data="$BATS_TEST_TMPDIR/data" d
-    run env XDG_DATA_HOME="$data" "$TERMINAL" open
+    local d
+    run env "$TERMINAL" open
     [ "$status" -eq 0 ] || { echo "$output"; false; }
     d=$(bg_dir)
     kill "$CLAUDE_PID"

@@ -11,14 +11,11 @@ load test_helper
 
 TERMINAL="$SCRIPTS_DIR/terminal.sh"
 
-client() { "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" "$@"; }
-
 setup() {
     [ "${CLUX_CLEF_LIVE:-}" = 1 ] || skip 'set CLUX_CLEF_LIVE=1 to run the live Clef tests'
     [ -n "${CLUX_CLEF_URL:-}" ] || skip 'set CLUX_CLEF_URL to the URL of your Clef server'
     require_client_python
-    export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME"
-    export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/config"
+    clef_home
 }
 
 @test "live: the server answers health and one pane request" {

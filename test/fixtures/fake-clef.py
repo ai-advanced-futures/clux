@@ -34,13 +34,11 @@ Environment: CLEF_HOST (default 127.0.0.1), CLEF_PORT (0 selects a free port),
 CLEF_API_KEY, CLUX_FAKE_CLEF_ANSWERS, CLUX_FAKE_CLEF_PORT_FILE (gets the
 port), CLUX_FAKE_CLEF_LOG (one JSON line for each request: the state, the
 question names and the model), CLUX_FAKE_CLEF_WIRE (the captures; the default
-is clef-wire next to the real path of this file), CLUX_FAKE_CLEF_IGNORE_TERM
-(1: the server ignores SIGTERM, as a slow server).
+is clef-wire next to the real path of this file).
 """
 import copy
 import json
 import os
-import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -212,8 +210,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    if os.environ.get("CLUX_FAKE_CLEF_IGNORE_TERM") == "1":
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     server = ThreadingHTTPServer((os.environ.get("CLEF_HOST", "127.0.0.1"),
                                   int(os.environ.get("CLEF_PORT", "0"))), Handler)
     server.daemon_threads = True

@@ -20,6 +20,17 @@ FAKE_CLEF="$REPO_ROOT/test/fixtures/fake-clef.py"
 CLEF_CLIENT="$SCRIPTS_DIR/clef_client.py"
 export FAKE_CLEF CLEF_CLIENT
 
+# client ARGS... — run clef_client.py with the test Python. The one spelling
+# of the client launch for every test file.
+client() { "$CLUX_CLEF_PYTHON" "$CLEF_CLIENT" "$@"; }
+
+# clef_home — the per-test HOME and XDG_CONFIG_HOME of a test that runs the
+# client. setup() of this file does the same for the other test files.
+clef_home() {
+    export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME"
+    export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/config"
+}
+
 # install_stubs — copy committed stubs into a per-test dir and prepend to PATH.
 install_stubs() {
     mkdir -p "$BATS_TEST_TMPDIR/stubs"
@@ -28,10 +39,11 @@ install_stubs() {
 }
 
 # A test that runs the client needs only python3 3.10 or later: the client
-# imports no model package (spec section 5).
+# imports no model package (spec section 5). It asks clef_python_ok of
+# terminal.sh, so the version floor stays in one place.
 require_client_python() {
-    "$CLUX_CLEF_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
-        >/dev/null 2>&1 || skip "no python3 3.10 or later: set CLUX_CLEF_PYTHON"
+    bash -c "source '$SCRIPTS_DIR/terminal.sh'; clef_python_ok" \
+        || skip "no python3 3.10 or later: set CLUX_CLEF_PYTHON"
 }
 
 # start_fake_clef [ANSWERS_JSON] — start fake-clef.py on a free loopback port.
