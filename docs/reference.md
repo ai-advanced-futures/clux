@@ -269,7 +269,7 @@ clux does not install, start or stop a model. You run one Clef server and name i
 
 ```bash
 hf download mlx-community/clef-4bit --revision b973b6f405d02f8e9b83208c7e82ddf43a742eb6 --local-dir ~/models/clef-4bit
-python ~/models/clef-4bit/clef_mlx.py serve --model ~/models/clef-4bit --host 100.117.159.16 --port 8765 --no-truncate --quiet
+python ~/models/clef-4bit/clef_mlx.py serve --model ~/models/clef-4bit --host <tailscale-address> --port 8765 --no-truncate --quiet
 ```
 
 Then, on each machine that uses that server, give that name or the Tailscale address:
@@ -281,7 +281,7 @@ export CLUX_CLEF_URL=http://mac-studio.<tailnet>.ts.net:8765
 - Clef 27B (`mlx-community/clef-4bit`) needs about 16 GB of memory and 16.3 GB of disk. The server runs one request at a time; other requests wait.
 - `clef_mlx.py serve` has no key check. Each device on your tailnet that the Tailscale ACL lets reach the port can send requests. It cannot read the requests of other devices. Limit the port with the ACL.
 - `clef_mlx.py` is code from the model repository. Read it before the first run.
-- With `--host 100.117.159.16`, a process on that machine uses the same tailnet URL, not `127.0.0.1`.
+- `<tailscale-address>` is the `100.x.y.z` address of that machine (`tailscale ip -4`). With that host, a process on the machine itself uses the same tailnet URL too, not `127.0.0.1`.
 - A `.ts.net` name goes through the resolver of that machine before each verb; give the Tailscale address in `CLUX_CLEF_URL` instead of the name to skip that lookup.
 - `CLUX_CLEF_URL` must use `http` and name a loopback host (`127.0.0.1`, `localhost`, `::1`), a Tailscale address (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`) or a `.ts.net` name that resolves only to Tailscale addresses. clux refuses each other host, so terminal text does not go out of your tailnet. The tailnet traffic is encrypted by Tailscale.
 - When a server with a key is in front of Clef (for example `llama-server --api-key`, or a proxy), set `CLUX_CLEF_KEY`. clux sends it as `Authorization: Bearer <key>`.

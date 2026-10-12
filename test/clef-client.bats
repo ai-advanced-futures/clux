@@ -48,7 +48,7 @@ setup() {
     # check-url prints the kind of the host, for open and clef status.
     run client check-url "http://127.0.0.1:$port"
     [ "$output" = loopback ]
-    run client check-url http://100.117.159.16:8765
+    run client check-url http://100.64.0.1:8765
     [ "$output" = tailscale ]
     run client check-url 'http://[fd7a:115c:a1e0::1]:8765'
     [ "$output" = tailscale ]
@@ -64,11 +64,11 @@ sys.path.insert(0, sys.argv[1])
 import clef_client as c
 url = "http://mac-studio.tail1234.ts.net:8765"
 c.RESOLVED.clear()
-c.lookup = lambda name: ["100.117.159.16"]
-assert c.host_kind(url) == ("tailscale", "100.117.159.16"), c.host_kind(url)
+c.lookup = lambda name: ["100.64.0.1"]
+assert c.host_kind(url) == ("tailscale", "100.64.0.1"), c.host_kind(url)
 # The request URL holds the address, and the Host header the name.
-assert c.connect_url(url, "100.117.159.16") == (
-    "http://100.117.159.16:8765", "mac-studio.tail1234.ts.net:8765"), c.connect_url(url, "100.117.159.16")
+assert c.connect_url(url, "100.64.0.1") == (
+    "http://100.64.0.1:8765", "mac-studio.tail1234.ts.net:8765"), c.connect_url(url, "100.64.0.1")
 assert c.connect_url("http://[fd7a:115c:a1e0::1]:8765", "fd7a:115c:a1e0::1")[0] == \
     "http://[fd7a:115c:a1e0::1]:8765"
 # One lookup for each process: the second call asks nothing.
@@ -78,7 +78,7 @@ c.lookup = boom
 assert c.host_kind(url)[0] == "tailscale"
 # A name that resolves to an address that is not on the tailnet is refused,
 # also when one of its addresses is.
-for addresses in (["93.184.216.34"], ["100.117.159.16", "93.184.216.34"], []):
+for addresses in (["93.184.216.34"], ["100.64.0.1", "93.184.216.34"], []):
     c.RESOLVED.clear()
     c.lookup = lambda name, a=addresses: a
     assert c.host_kind(url) is None, addresses
@@ -90,7 +90,7 @@ c.lookup = fails
 assert c.host_kind(url) is None
 # A name that is not .ts.net is refused whatever it resolves to.
 c.RESOLVED.clear()
-c.lookup = lambda name: ["100.117.159.16"]
+c.lookup = lambda name: ["100.64.0.1"]
 assert c.host_kind("http://mac-studio.local:8765") is None
 # The lookup is one function of the client, and no variable changes it.
 assert "CLUX_CLEF_RESOLVE" not in open(c.__file__).read()

@@ -644,7 +644,7 @@ STUB
     run env -u TMUX -u TMUX_PANE CLUX_CLEF_URL=http://example.com:1 "$TERMINAL" clef status
     [ "$output" = $'url=http://example.com:1\nkey=set\nhost=refused\nserver=not checked' ] \
         || { echo "$output"; false; }
-    run env -u TMUX -u TMUX_PANE CLUX_CLEF_URL=http://100.117.159.16:8765 "$TERMINAL" clef status
+    run env -u TMUX -u TMUX_PANE CLUX_CLEF_URL=http://100.64.0.1:9 "$TERMINAL" clef status
     [[ "$output" == *$'\nhost=tailscale\nserver=no answer' ]] || { echo "$output"; false; }
 }
 
@@ -1768,7 +1768,8 @@ rc_sum() { bash -c "source '$TERMINAL'; command_sum \"\$1\"" _ "$1"; }
     [ "$status" -eq 6 ]
     [ "$stderr" = 'clef not available: the server at CLUX_CLEF_URL refused CLUX_CLEF_KEY: set the key of that server' ]
     run --separate-stderr bash -c "source '$TERMINAL'; CLUX_CLEF_URL=http://127.0.0.1:9; S_CLEF_URL=http://127.0.0.1:9
-        clef_call() { [ \"\$1\" = health ] && return 0; cat >/dev/null; return 4; }; clef_reopen; echo SUCCESS"
+        clef_call() { [ \"\$1\" = check-url ] && { echo loopback; return 0; }
+            [ \"\$1\" = health ] && return 0; cat >/dev/null; return 4; }; clef_reopen; echo SUCCESS"
     [ "$status" -eq 6 ]
     [[ "$stderr" == *'refused CLUX_CLEF_KEY'* ]] || false
 }

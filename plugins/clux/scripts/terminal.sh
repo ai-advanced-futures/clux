@@ -59,8 +59,8 @@ OPEN_BUDGET_DEFAULT=120
 WATCH_INTERVAL=10
 # The directory lock (dir_lock). open and close wait at most DIR_LOCK_WAIT
 # seconds for a live holder: the time that one open can take
-# (OPEN_BUDGET_DEFAULT), so a second open does not fail while a cold first
-# open still starts its Clef server. The SessionEnd hook has 5 s, so it
+# (OPEN_BUDGET_DEFAULT), so a second open does not fail while a first open
+# still makes its pane and its Clef checks. The SessionEnd hook has 5 s, so it
 # waits DIR_LOCK_HOOK_WAIT, and then close_later waits DIR_LOCK_WAIT in a
 # separate process. CLUX_TERMINAL_LOCK_WAIT changes DIR_LOCK_WAIT (tests).
 DIR_LOCK_WAIT=$OPEN_BUDGET_DEFAULT
@@ -399,12 +399,20 @@ clef_open_failed() {
 
 # open on a live companion (spec section 6, step 5): the checks run again, and
 # the current CLUX_CLEF_URL replaces an older clef_url in the state. A
-# companion of 4.x has no clef_url.
+# companion of 4.x has no clef_url. A write needs the typing lock and the
+# state again (as owner_ensure does): a run writes the seq, and the checks
+# above take seconds, so the seq of this state_load can be old. With no
+# change to the url or the key there is nothing to write.
 clef_reopen() {
-    [ -n "$S_CLEF_URL" ] \
+    local old_url="$S_CLEF_URL" old_key="$S_CLEF_KEY" url key
+    [ -n "$old_url" ] \
         || fail 'clef not available: this companion has no Clef server: use close, then open' 6
     clef_open_check
-    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ" "$S_CLEF_URL" "$S_CLEF_KEY"
+    url="$S_CLEF_URL"; key="$S_CLEF_KEY"
+    [ "$url" != "$old_url" ] || [ "$key" != "$old_key" ] || return 0
+    lock_and_load || return 5
+    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ" "$url" "$key"
+    release_typing_lock
 }
 
 # open_abort PANE_MADE MESSAGE [CODE] — undo a failed open and exit CODE
@@ -2887,7 +2895,7 @@ add_seen_lines() {
 # wait_command. Sets FRESH_FOUND=1 on a match, and FRESH_LATE to the lines
 # that the time limit left not examined: they are not held, and the next
 # tick sends them again. Returns 6 when the guard fails, and 1 at the
-# DEADLINE: a guard can take 15 s, so none starts after the time limit of
+# DEADLINE: a guard can take 45 s, so none starts after the time limit of
 # the wait, and a guard gets at most the time that is left (spec section 11).
 FRESH_FOUND=0
 FRESH_LATE=
@@ -2986,7 +2994,7 @@ wait_command() {
                 clef_confirm_pending "$seq" && { refuse_confirm; return; }
                 # A secret run that another verb started during the wait.
                 last_run_secret "$seq" && { refuse_secret; return; }
-                # A probe can take 11 s: it gets at most the time that is
+                # A probe can take 15 s: it gets at most the time that is
                 # left, and none starts after the time limit.
                 [ "$SECONDS" -lt "$deadline" ] || return 1
                 PANE_LIMIT=$((deadline - SECONDS)) probe_pane
