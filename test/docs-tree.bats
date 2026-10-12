@@ -23,10 +23,10 @@ _tree_block() {
 }
 
 # Every shell and Python file a contributor could be looking for, and the
-# Laya policies. All are shipped, and the tree claims to describe them.
+# Clef policies. All are shipped, and the tree claims to describe them.
 _real_files() {
     for path in "$PLUGIN_DIR"/scripts/*.sh "$PLUGIN_DIR"/scripts/*.py "$PLUGIN_DIR"/hooks/*.sh \
-        "$PLUGIN_DIR"/config/laya/*; do
+        "$PLUGIN_DIR"/config/clef/*; do
         [ -f "$path" ] && printf '%s\n' "${path##*/}"
     done
 }

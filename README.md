@@ -77,11 +77,13 @@ The pane borrows the `app:toggleDiffPreSession` action, which Claude Code uses o
 
 ## Companion terminal
 
-The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A local model, Laya, examines each command before it runs. A dangerous command waits for your `y`. Install Laya one time. Claude asks you before it runs the install:
+The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A Clef model examines each command before it runs. A dangerous command waits for your `y`. You run one Clef server and name it with `CLUX_CLEF_URL`:
 
 ```bash
-<plugin>/scripts/terminal.sh laya install
+export CLUX_CLEF_URL=http://127.0.0.1:8765
 ```
+
+The [reference](docs/reference.md) gives the server command, the Tailscale setup for more than one machine, and `CLUX_CLEF_KEY`.
 
 **Background sessions.** A Claude Code session with no tmux pane (`claude --bg`, or a session that a `claude agents` dashboard starts) also gets a companion. It opens as a new window, `clux-terminal <id>`, in the tmux session of the dashboard. With no dashboard, it opens on a private tmux server, and Claude gives you the line to attach to it. The companion closes when the session ends, also after a crash.
 
@@ -89,7 +91,7 @@ For more detail, read the [reference](docs/reference.md).
 
 ## More
 
-- [Options, themes, agent view, Laya details, manual and TPM setup, troubleshooting](docs/reference.md)
+- [Options, themes, agent view, Clef details, manual and TPM setup, troubleshooting](docs/reference.md)
 - [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 MIT license.

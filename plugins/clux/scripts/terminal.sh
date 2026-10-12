@@ -7,9 +7,9 @@
 #
 # TWO poll loops here run every 0.2 s for the whole of a command's timeout
 # (wait_for_prompt, wait_for_run_files). Everything they touch is therefore
-# written fork-free, except the Laya pane probe on each fifth step, and the
+# written fork-free, except the Clef pane probe on each fifth step, and the
 # two caches below exist for them. wait --pattern polls each 1 s, because
-# each change of the screen goes through the Laya output guard:
+# each change of the screen goes through the Clef output guard:
 #
 #   1. The pattern files are parsed ONCE per process into two joined EREs
 #      (_load_patterns). A boolean "does any pattern match" answer is the same
@@ -32,42 +32,35 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 SHIPPED_PATTERNS="$SCRIPT_DIR/../config/credential-patterns.txt"
 source "$SCRIPT_DIR/path.sh"
 
-# Laya (spec 2026-09-28-clux-companion-laya-guard-design.md). laya_client.py
-# is the only code that speaks to Laya. The venv is not in the plugin cache,
-# because a plugin update deletes the cache.
-LAYA_CLIENT="$SCRIPT_DIR/laya_client.py"
-LAYA_VERSION=0.3.21
-LAYA_VENV="${XDG_DATA_HOME:-$HOME/.local/share}/clux/laya"
-LAYA_MARKER="$LAYA_VENV/.clux-installed"
-LAYA_PY="${CLUX_LAYA_PYTHON:-$LAYA_VENV/bin/python3}"
+# Clef (spec 2026-10-11-clux-companion-clef-design.md). clef_client.py is the
+# only code that speaks to the model. clux does not install, start or stop a
+# server: the user runs one, and CLUX_CLEF_URL names it.
+CLEF_CLIENT="$SCRIPT_DIR/clef_client.py"
+CLEF_PY="${CLUX_CLEF_PYTHON:-python3}"
 
-# The time budget of run. The sum of the gate with its retry (11 s), the
+# The time budget of run (spec section 8). The sum of the gate (15 s), the
 # prompt wait (2 s), the clear (5 s), this run limit, the last pane probe
-# (11 s), the report grace (1 s), one late SECONDS tick (1 s) and the guard
-# limit stays 10 s under the 120 s limit of the Bash tool. test/terminal.bats
-# checks the sum. test/laya-live.bats measures the guard time.
+# (15 s), the report grace (1 s), one late SECONDS tick (1 s) and the guard
+# limit is 148 s. The skill tells Claude to set the Bash tool timeout to
+# 180000 ms. test/terminal.bats checks the sum. test/clef-live.bats measures
+# the guard time.
 RUN_TIMEOUT_DEFAULT=64
-LAYA_GUARD_LIMIT=15
-# The guard gets at most this many bytes (the end of the text), so that a
-# large output does not use the full guard limit. About 55 blocks.
-LAYA_GUARD_BYTES=32768
-
-# laya install: venv, pip and the checkpoint download share one budget. The
-# skill runs the verb with a Bash tool timeout of 600 s.
-LAYA_INSTALL_BUDGET=540
+CLEF_GUARD_LIMIT=45
+# The guard gets at most this many bytes (the end of the text): clean output
+# needs about 2.5 ms for each character, so 16,384 bytes take about 40 s.
+CLEF_GUARD_BYTES=16384
 
 # [inferred] A session owner (spec 2026-09-30, section 9): the time that
-# open can take. It is more than laya_wait_ready (60 s) and
-# wait_for_prompt 5. The sessions reaper keeps a directory with no state,
-# or with no pane mark, while it is younger than this: an open can be at
-# work in it.
+# open can take. It is more than wait_for_prompt 5. The sessions reaper
+# keeps a directory with no state, or with no pane mark, while it is
+# younger than this: an open can be at work in it.
 OPEN_BUDGET_DEFAULT=120
 # The pause of the watchdog of a session owner (spec 2026-09-30, section 9).
 WATCH_INTERVAL=10
 # The directory lock (dir_lock). open and close wait at most DIR_LOCK_WAIT
 # seconds for a live holder: the time that one open can take
-# (OPEN_BUDGET_DEFAULT), so a second open does not fail while a cold first
-# open still starts its Laya server. The SessionEnd hook has 5 s, so it
+# (OPEN_BUDGET_DEFAULT), so a second open does not fail while a first open
+# still makes its pane and its Clef checks. The SessionEnd hook has 5 s, so it
 # waits DIR_LOCK_HOOK_WAIT, and then close_later waits DIR_LOCK_WAIT in a
 # separate process. CLUX_TERMINAL_LOCK_WAIT changes DIR_LOCK_WAIT (tests).
 DIR_LOCK_WAIT=$OPEN_BUDGET_DEFAULT
@@ -75,7 +68,7 @@ case "${CLUX_TERMINAL_LOCK_WAIT:-}" in ''|*[!0-9]*) ;; *) DIR_LOCK_WAIT="$CLUX_T
 DIR_LOCK_HOOK_WAIT=2
 
 usage() {
-    printf '%s\n' 'usage: terminal.sh open|run|send|read|wait|close|list|check-line|laya install|laya status' >&2
+    printf '%s\n' 'usage: terminal.sh open|run|send|read|wait|close|list|check-line|clef status' >&2
     exit 2
 }
 
@@ -342,260 +335,83 @@ refuse_credential() {
     return 3
 }
 
-refuse_laya() {
-    printf '%s\n' 'laya not available: close and open the companion' >&2
+refuse_clef() {
+    printf '%s\n' 'clef not available: the server does not answer: try the verb again later' >&2
     return 6
 }
 
 # The pane probes of a run failed. The command continues and the run keeps
 # the lock, so close would stop it.
-refuse_laya_run() {
-    printf 'laya not available: run %s continues in the pane; use wait --run %s again\n' "$1" "$1" >&2
+refuse_clef_run() {
+    printf 'clef not available: run %s continues in the pane; use wait --run %s again\n' "$1" "$1" >&2
     return 6
 }
 
 # Run the client with the server of this companion. The URL and the key come
 # from state, not from the environment, so all verbs of one companion use one
 # server. The client stderr has only fixed messages; each verb prints its own.
-# laya_pid_check — the server that open started is alive, and the first
-# check of a verb also finds that its pid is laya-serve (one ps): a new
-# process can get the pid. The callers that run the client in a subshell
-# (a command substitution or a pipe) call it first, in the verb, so the
-# mark stays and the wait loops fork no ps each second.
-LAYA_PID_CHECKED=
-laya_pid_check() {
-    [ -n "$S_LAYA_PID" ] || return 0
-    kill -0 "$S_LAYA_PID" 2>/dev/null || return 1
-    [ "$LAYA_PID_CHECKED" != "$S_LAYA_PID" ] || return 0
-    laya_pid_is_server "$S_LAYA_PID" || return 1
-    LAYA_PID_CHECKED="$S_LAYA_PID"
+clef_call() {
+    CLUX_CLEF_URL="$S_CLEF_URL" CLUX_CLEF_KEY="$S_CLEF_KEY" "$CLEF_PY" "$CLEF_CLIENT" "$@" 2>/dev/null
 }
 
-laya_call() {
-    # [inferred] When the server that open started ended, another process
-    # can take its port: that process must not get the key or the text.
-    laya_pid_check || return 1
-    CLUX_LAYA_URL="$S_LAYA_URL" CLUX_LAYA_KEY="$S_LAYA_KEY" "$LAYA_PY" "$LAYA_CLIENT" "$@" 2>/dev/null
+# The client makes the host check, so the rule is in one place. It prints the
+# kind of the host (loopback or tailscale) on success. check-url reads the URL
+# from its argument, so the server of clef_call does not apply.
+clef_host_kind() {
+    clef_call check-url "$1"
 }
 
-# The client makes the check (http, a loopback host, no user part), so the
-# rule is in one place.
-laya_url_is_loopback() {
-    "$LAYA_PY" "$LAYA_CLIENT" check-url "$1" >/dev/null 2>&1
+# The Clef server needs a client Python of 3.10 or later (spec section 6,
+# step 3).
+clef_python_ok() {
+    "$CLEF_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
+        >/dev/null 2>&1
 }
 
-# "Installed" is the marker of `laya install` and the English checkpoint in
-# the Hugging Face cache. open, laya install and laya status use this one
-# check (spec section 6).
-laya_checkpoint_present() {
-    [ -x "$LAYA_VENV/bin/python3" ] || return 1
-    "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" checkpoint >/dev/null 2>&1
+# The Clef checks of open, before it makes $D (spec section 6, steps 1 to 4).
+# Each refusal exits 6. They set S_CLEF_URL and S_CLEF_KEY, which clef_call
+# reads, so the health and the pane request go to the named server.
+clef_open_check() {
+    [ -n "${CLUX_CLEF_URL:-}" ] \
+        || fail 'clef not configured: set CLUX_CLEF_URL to the URL of your Clef server' 6
+    clef_python_ok || fail 'clef not available: the client needs python3 3.10 or later' 6
+    clef_host_kind "$CLUX_CLEF_URL" >/dev/null \
+        || fail 'clef not configured: the host of CLUX_CLEF_URL is not a loopback or Tailscale host' 6
+    S_CLEF_URL="$CLUX_CLEF_URL"
+    S_CLEF_KEY="${CLUX_CLEF_KEY:-}"
+    clef_call health >/dev/null || clef_open_failed $?
+    clef_probe
 }
 
-# One client process checks the checkpoint and the laya import of the venv.
-# A CLUX_LAYA_PYTHON that is not the venv python needs its own import check.
-laya_installed() {
-    [ -f "$LAYA_MARKER" ] && [ -x "$LAYA_VENV/bin/python3" ] || return 1
-    "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" ready >/dev/null 2>&1 || return 1
-    [ "$LAYA_PY" = "$LAYA_VENV/bin/python3" ] || laya_python_ready "$LAYA_PY"
+# One pane request with a fixed one-word state (spec section 6, step 4): a bad
+# key, or a server that is not Clef, fails at open. The state is not the pane:
+# this request runs before the pane opens. An empty state sends no request.
+clef_probe() {
+    printf '%s\n' 'clux$' | clef_call pane >/dev/null || clef_open_failed $?
 }
 
-# laya_python_ready PY — PY runs and can import the laya package that the
-# client uses. For the venv python: a Python upgrade (Homebrew) can break a
-# venv and keep its marker.
-laya_python_ready() {
-    [ -x "$1" ] || return 1
-    "$1" -c 'import laya.structured' >/dev/null 2>&1
-}
-
-# The Laya checks of open, before it makes $D. Each refusal exits 6.
-laya_open_check() {
-    if [ -n "${CLUX_LAYA_URL:-}" ]; then
-        # The client needs a Python that can import laya, also for a server
-        # that the user starts.
-        laya_python_ready "$LAYA_PY" || fail 'laya not installed: run terminal.sh laya install' 6
-        laya_url_is_loopback "$CLUX_LAYA_URL" \
-            || fail 'CLUX_LAYA_URL must name a loopback host: 127.0.0.1, localhost or ::1' 6
-        # A server that the user starts has no pid in state: a pid from the
-        # state of a dead companion must not stop laya_call.
-        S_LAYA_PID=
-        S_LAYA_URL="$CLUX_LAYA_URL"
-        S_LAYA_KEY="${CLUX_LAYA_KEY:-}"
-        laya_call health >/dev/null || fail 'laya not available at CLUX_LAYA_URL' 6
-        laya_key_check
-        return 0
-    fi
-    laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
-}
-
-# laya_key_check — /health of laya-serve does not check the API key, so one
-# POST (a pane request) tells whether the server takes CLUX_LAYA_KEY. The
-# client exits 4 when the server refuses the key (401 or 403).
-laya_key_check() {
-    printf '%s\n' 'clux$' | laya_call pane >/dev/null
-    case $? in
-        0) return 0 ;;
-        4) fail 'laya not available: the server at CLUX_LAYA_URL refused CLUX_LAYA_KEY: set the key of that server' 6 ;;
-        *) fail 'laya not available at CLUX_LAYA_URL' 6 ;;
+clef_open_failed() {
+    case "$1" in
+        4) fail 'clef not available: the server at CLUX_CLEF_URL refused CLUX_CLEF_KEY: set the key of that server' 6 ;;
+        *) fail 'clef not available: the server at CLUX_CLEF_URL does not answer' 6 ;;
     esac
 }
 
-# clux stops only a process whose pid is in state and whose command line
-# contains laya-serve, so a new process with a reused pid stays.
-laya_pid_is_server() {
-    local command
-    command=$(ps -o command= -p "$1" 2>/dev/null) || return 1
-    case "$command" in *laya-serve*) return 0 ;; esac
-    return 1
-}
-
-# laya_stop_server PID... — kill each server, then kill -9 each one that
-# still runs after 3 s. One wait for all, so the reaper of open does not
-# wait 3 s for each dead companion.
-laya_stop_server() {
-    local pid live=() left i=0
-    for pid in "$@"; do
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        laya_pid_is_server "$pid" || continue
-        kill "$pid" 2>/dev/null && live+=("$pid")
-    done
-    while [ "${#live[@]}" -gt 0 ] && [ "$i" -lt 15 ]; do
-        left=()
-        for pid in "${live[@]}"; do
-            ! laya_pid_is_server "$pid" || left+=("$pid")
-        done
-        live=(${left[@]+"${left[@]}"})
-        [ "${#live[@]}" -gt 0 ] || return 0
-        sleep .2
-        i=$((i + 1))
-    done
-    for pid in ${live[@]+"${live[@]}"}; do
-        ! laya_pid_is_server "$pid" || kill -9 "$pid" 2>/dev/null || true
-    done
-}
-
-# laya_stop_server_later PID — the same stop in a process that the hook does
-# not wait for. It ignores HUP and TERM, so the end of the session does not
-# stop it before its kill -9.
-laya_stop_server_later() {
-    ( trap '' HUP INT TERM; laya_stop_server "$1" ) < /dev/null > /dev/null 2>&1 3>&- &
-}
-
-# laya_start_server LOG OFFLINE — start laya-serve on a free loopback port
-# with a new key of 32 random bytes in hex (spec section 6, steps 3 and 4).
-# The server output goes to LOG. OFFLINE=1 sets HF_HUB_OFFLINE, so the
-# server does not download; laya install passes 0. Sets LAYA_PID, LAYA_URL
-# and LAYA_KEY.
-laya_start_server() {
-    local port key offline=
-    port=$("$LAYA_PY" "$LAYA_CLIENT" port 2>/dev/null) || return 1
-    case "$port" in ''|*[!0-9]*) return 1 ;; esac
-    key=$(random_hex 32)
-    [ "${#key}" -eq 64 ] || return 1
-    [ "$2" -eq 0 ] || offline=HF_HUB_OFFLINE=1
-    # The key goes in the environment of env, not in its arguments: ps
-    # shows the arguments of a process to each local user.
-    LAYA_API_KEY="$key" env LAYA_HOST=127.0.0.1 LAYA_PORT="$port" LAYA_LOG_LEVEL=warning \
-        LAYA_MODELS=english USE_TF=0 ${offline:+"$offline"} \
-        nohup "$LAYA_VENV/bin/laya-serve" >> "$1" 2>&1 < /dev/null 3>&- &
-    LAYA_PID=$!
-    LAYA_URL="http://127.0.0.1:$port"
-    LAYA_KEY="$key"
-}
-
-# laya_wait_health DEADLINE — health each 0.5 s until SECONDS reaches
-# DEADLINE, for the server of LAYA_PID and LAYA_URL. Returns 2 when the
-# server process ends, 1 when the time ends. health sends no key: the key
-# goes only to a server that laya_owns_port found.
-laya_wait_health() {
-    until S_LAYA_PID="$LAYA_PID" S_LAYA_URL="$LAYA_URL" S_LAYA_KEY= laya_call health >/dev/null; do
-        kill -0 "$LAYA_PID" 2>/dev/null || return 2
-        [ "$SECONDS" -lt "$1" ] || return 1
-        sleep .5
-    done
-    # [inferred] The port was free when the client found it, but another
-    # process can take it before laya-serve does. That process would get
-    # the key and the terminal text, so the answer must come from our
-    # server: our process must listen on the port.
-    kill -0 "$LAYA_PID" 2>/dev/null || return 2
-    laya_owns_port "$LAYA_PID" "${LAYA_URL##*:}" || return 2
-}
-
-# laya_owns_port PID PORT — PID listens on the loopback TCP PORT. It uses
-# lsof, else ss, else /proc. With none of them it cannot check, so it
-# returns 1: the key and the pane text do not go to a port that another
-# process can own.
-laya_owns_port() {
-    if command -v lsof >/dev/null 2>&1; then
-        lsof -nP -a -p "$1" -iTCP:"$2" -sTCP:LISTEN >/dev/null 2>&1
-    elif command -v ss >/dev/null 2>&1; then
-        ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1,"
-    elif [ -r "$PROC_ROOT/net/tcp" ]; then
-        laya_proc_owns_port "$1" "$2"
-    else
-        return 1
-    fi
-}
-
-# laya_proc_owns_port PID PORT — the Linux /proc form of laya_owns_port: a
-# socket that listens (state 0A) on PORT is a file of PID.
-PROC_ROOT=/proc
-laya_proc_owns_port() {
-    local hex inode fd
-    hex=$(printf '%04X' "$2")
-    for inode in $(awk -v p=":$hex" 'FNR > 1 && $4 == "0A" && substr($2, length($2) - 4) == p { print $10 }' \
-        "$PROC_ROOT/net/tcp" "$PROC_ROOT/net/tcp6" 2>/dev/null); do
-        for fd in "$PROC_ROOT/$1/fd/"*; do
-            [ "$(readlink "$fd" 2>/dev/null)" != "socket:[$inode]" ] || return 0
-        done
-    done
-    return 1
-}
-
-# Spec section 6, step 7: health for at most 60 s, then a warm-up request,
-# because the first call after a start takes about 1.4 s. The warm-up tries
-# again until the same 60 s end: on a cold machine the first request can
-# take more than the 5 s request limit.
-laya_wait_ready() {
-    local deadline=$((SECONDS + 60))
-    laya_wait_health "$deadline" || return 1
-    until printf '%s\n' 'clux$' | laya_call pane >/dev/null; do
-        kill -0 "$LAYA_PID" 2>/dev/null || return 1
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep .5
-    done
-}
-
-# laya_restart_if_down — open on a live companion: when the Laya server that
-# open started does not answer (it ended, or the user stopped it), start a
-# new one, so open again is enough after "close and open the companion". A
-# server that the user started (CLUX_LAYA_URL, no laya_pid) is not changed:
-# when it does not answer, open exits 6.
-laya_restart_if_down() {
-    # A companion that clux 3.x opened has no Laya server and an old rc.bash.
-    [ -n "$S_LAYA_URL" ] || fail 'laya not available: this companion has no Laya server: use close, then open' 6
-    if laya_call health >/dev/null; then
-        [ -n "$S_LAYA_PID" ] || laya_key_check
-        return 0
-    fi
-    [ -n "$S_LAYA_PID" ] || fail 'laya not available: the server at CLUX_LAYA_URL does not answer' 6
-    # The typing lock, so no run writes state (its seq) at the same time,
-    # then the state again: another open can have started a server.
+# open on a live companion (spec section 6, step 5): the checks run again, and
+# the current CLUX_CLEF_URL replaces an older clef_url in the state. A
+# companion of 4.x has no clef_url. A write needs the typing lock and the
+# state again (as owner_ensure does): a run writes the seq, and the checks
+# above take seconds, so the seq of this state_load can be old. With no
+# change to the url or the key there is nothing to write.
+clef_reopen() {
+    local old_url="$S_CLEF_URL" old_key="$S_CLEF_KEY" url key
+    [ -n "$old_url" ] \
+        || fail 'clef not available: this companion has no Clef server: use close, then open' 6
+    clef_open_check
+    url="$S_CLEF_URL"; key="$S_CLEF_KEY"
+    [ "$url" != "$old_url" ] || [ "$key" != "$old_key" ] || return 0
     lock_and_load || return 5
-    if laya_call health >/dev/null; then
-        release_typing_lock
-        return 0
-    fi
-    laya_installed || fail 'laya not installed: run terminal.sh laya install' 6
-    laya_stop_server "$S_LAYA_PID"
-    LAYA_PID=
-    laya_start_server "$D/laya.log" 1 || fail 'laya not available: the server did not start' 6
-    # laya_call reads the URL and the key from state, so write them first.
-    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ" "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
-    if ! laya_wait_ready; then
-        laya_stop_server "$LAYA_PID"
-        fail 'laya not available: the server did not answer' 6
-    fi
+    write_state "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ" "$url" "$key"
     release_typing_lock
 }
 
@@ -603,7 +419,6 @@ laya_restart_if_down() {
 # (default 6, spec section 6, step 8). PANE_MADE is 1 when the pane exists.
 # open holds the lock of $D (dir_lock), so $D is only what this open made.
 open_abort() {
-    laya_stop_server "$LAYA_PID"
     [ "$1" -eq 0 ] || kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
     fail "$2" "${3:-6}"
@@ -639,9 +454,8 @@ S_MODE=
 S_PANE=
 S_SOCKET=
 S_SEQ=
-S_LAYA_PID=
-S_LAYA_URL=
-S_LAYA_KEY=
+S_CLEF_URL=
+S_CLEF_KEY=
 S_TOKEN=
 # The fields of a session owner (spec 2026-09-30, section 6).
 S_SESSION=
@@ -659,12 +473,12 @@ CONT_MARK=
 # Clearing the globals first is load-bearing, not defensive: the two loops call
 # this once per directory, so a field missing from the second file would
 # otherwise keep the first file's value. Both loops run before any S_* is used
-# for tmux, so the clobber is safe. laya_pid is present only when open started
-# the server; laya_url and laya_key name the server of this companion.
+# for tmux, so the clobber is safe. clef_url and clef_key name the server of
+# this companion.
 state_load() {
     local dir="${1:-$D}" key value
     S_MODE=''; S_PANE=''; S_SOCKET=''; S_SEQ=''
-    S_LAYA_PID=''; S_LAYA_URL=''; S_LAYA_KEY=''; S_TOKEN=''
+    S_CLEF_URL=''; S_CLEF_KEY=''; S_TOKEN=''
     S_SESSION=''; S_OWNER_PID=''; S_OWNER_START=''; S_SERVER=''; S_WATCH_PID=''
     [ -f "$dir/state" ] || return 1
     while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -673,9 +487,8 @@ state_load() {
             pane) S_PANE="$value" ;;
             socket) S_SOCKET="$value" ;;
             seq) S_SEQ="$value" ;;
-            laya_pid) S_LAYA_PID="$value" ;;
-            laya_url) S_LAYA_URL="$value" ;;
-            laya_key) S_LAYA_KEY="$value" ;;
+            clef_url) S_CLEF_URL="$value" ;;
+            clef_key) S_CLEF_KEY="$value" ;;
             token) S_TOKEN="$value" ;;
             session) S_SESSION="$value" ;;
             owner_pid) S_OWNER_PID="$value" ;;
@@ -730,13 +543,12 @@ kill_companion() {
     esac
 }
 
-# remove_companion_dir DIR KILL_SPLIT — the reaper adds the server pid to
-# REAP_PIDS; reap_companions stops all of them with one wait.
-REAP_PIDS=()
+# remove_companion_dir DIR KILL_SPLIT — the reaper removes a dead
+# companion's directory. clux runs no server of its own, so there is
+# nothing of the companion's to stop beyond its pane.
 remove_companion_dir() {
     local dir="$1" kill_split="${2:-0}"
     state_load "$dir" || { rm -rf "$dir"; return; }
-    [ -z "$S_LAYA_PID" ] || REAP_PIDS+=("$S_LAYA_PID")
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" "$kill_split"
     rm -rf "$dir"
 }
@@ -760,7 +572,6 @@ reap_companions() {
     fi
     reap_session_dirs
     reap_stale_locks
-    stop_reaped_servers
 }
 
 # locked DIR COMMAND... — the reaper: run COMMAND under the lock of DIR, and
@@ -827,9 +638,9 @@ reap_pane_dirs() {
 #     whose SessionEnd hook did not run;
 #   - its pane does not hold the mark (section 8).
 # A directory with no state, or with no mark on its pane, stays while it is
-# younger than OPEN_BUDGET_DEFAULT. The Laya pid goes to REAP_PIDS, as in
-# reap_pane_dirs. The state is read and the decision made under the lock of
-# DIR (locked), so the state of an open or close at work does not count.
+# younger than OPEN_BUDGET_DEFAULT. The state is read and the decision made
+# under the lock of DIR (locked), so the state of an open or close at work
+# does not count.
 reap_session_dirs() {
     local dir now
     [ -d "$ROOT/sessions" ] || return 0
@@ -876,12 +687,6 @@ state_owner_is_caller() {
 # fail, so the directory counts as old.
 dir_mtime() {
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
-}
-
-# stop_reaped_servers — stop the servers that remove_companion_dir found.
-stop_reaped_servers() {
-    [ "${#REAP_PIDS[@]}" -eq 0 ] || laya_stop_server "${REAP_PIDS[@]}"
-    REAP_PIDS=()
 }
 
 list_command() {
@@ -1094,8 +899,8 @@ __clux_at_prompt() {
   [ "$BASH_SUBSHELL" -eq 0 ] && [ -z "${FUNCNAME[2]:-}" ]
 }
 # __clux_run N SUM MODE — run <n>.cmd. terminal.sh types this line after
-# the Laya gate. The line, not a file in the private directory, tells what
-# the gate decided: SUM is the sum of the command that Laya examined, MODE
+# the Clef gate. The line, not a file in the private directory, tells what
+# the gate decided: SUM is the sum of the command that Clef examined, MODE
 # is plain or confirm (dangerous: ask the user). A command that is not the
 # same is refused.
 #
@@ -1118,7 +923,7 @@ __clux_run() {
   { __clux_cmd=$(<"$__clux_d/$__clux_n.cmd"); } 2>/dev/null
   command -p rm -f "$__clux_d/$__clux_n.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
-    __clux_cmd='printf "%s\n" "refused: the command changed after Laya examined it"; (builtin exit 126)'
+    __clux_cmd='printf "%s\n" "refused: the command changed after Clef examined it"; (builtin exit 126)'
     __clux_m=plain
   elif [ "$__clux_m" != plain ] && [ "$__clux_m" != confirm ]; then
     __clux_cmd='printf "%s\n" "refused: the mode is not plain or confirm"; (builtin exit 126)'
@@ -1130,7 +935,7 @@ __clux_run() {
   if [ "$__clux_m" = confirm ]; then
     { __clux_reason=$(<"$__clux_d/$__clux_n.reason"); } 2>/dev/null
     # Control characters show as ?, so the question shows the full command.
-    printf 'laya: dangerous (%s)\n$ %s\n' "${__clux_reason//[[:cntrl:]]/?}" "${__clux_cmd//[[:cntrl:]]/?}"
+    printf 'clef: dangerous (%s)\n$ %s\n' "${__clux_reason//[[:cntrl:]]/?}" "${__clux_cmd//[[:cntrl:]]/?}"
     # The read is in a subshell: bash goes on with a read after a trapped
     # C-c, but C-c ends the subshell, so C-c (and C-d) declines. The pane
     # shell ignores the C-c, and C-z cannot stop the question.
@@ -1159,9 +964,9 @@ __clux_run() {
     && command -p mv -f "$__clux_d/$__clux_n.rc.tmp" "$__clux_d/$__clux_n.rc"
 }
 # __clux_line SUM — the line that send ends at the clux prompt. terminal.sh
-# writes it to line.cmd after the Laya gate and types this call, so no line
+# writes it to line.cmd after the Clef gate and types this call, so no line
 # from Claude runs in this shell: it runs in a subshell, on the terminal, as
-# a run command does. SUM is the sum of the line that Laya examined; a
+# a run command does. SUM is the sum of the line that Clef examined; a
 # line.cmd with a different sum, or none, runs nothing. line.cmd is deleted
 # when it is read.
 __clux_line() {
@@ -1174,7 +979,7 @@ __clux_line() {
   { __clux_cmd=$(<"$__clux_d/line.cmd"); } 2>/dev/null
   command -p rm -f "$__clux_d/line.cmd"
   if [ "$(__clux_sum "$__clux_cmd")" != "$__clux_s" ]; then
-    printf '%s\n' 'refused: the line changed after Laya examined it'
+    printf '%s\n' 'refused: the line changed after Clef examined it'
     return 1
   fi
   printf '$ %s\n' "${__clux_cmd//[[:cntrl:]]/?}"
@@ -1190,14 +995,15 @@ EOF
     } > "$D/rc.bash"
 }
 
-# The ONE state-file writer. After open, seq changes on each run, the laya
-# fields change when laya_restart_if_down starts a new server, and a session
-# owner gets watch_pid when open starts the watchdog. Each call writes all
-# the fields again from the S_* globals, also the session-owner fields.
-# write_state MODE PANE SOCKET SEQ [LAYA_PID LAYA_URL LAYA_KEY]: with four
-# arguments the laya fields keep the values that state_load read. mode,
-# pane, socket and seq are always written; each other field only when it is
-# not empty, so a pane owner has the same state as in 4.0.0.
+# The ONE state-file writer. After open, seq changes on each run, the clef
+# fields change when clef_reopen writes the current CLUX_CLEF_URL, and a
+# session owner gets watch_pid when open starts the watchdog. Each call
+# writes all the fields again from the S_* globals, also the session-owner
+# fields.
+# write_state MODE PANE SOCKET SEQ [CLEF_URL CLEF_KEY]: with four arguments
+# the clef fields keep the values that state_load read. mode, pane, socket
+# and seq are always written; each other field only when it is not empty,
+# so a pane owner has the same state as in 4.0.0.
 # [inferred] The write goes to a temporary file in $D, and mv renames it to
 # state, so a reader (the watchdog, the reaper) never sees a half-written
 # file.
@@ -1208,16 +1014,14 @@ write_state() {
     S_SOCKET="$3"
     S_SEQ="${4:-0}"
     if [ "$#" -ge 5 ]; then
-        S_LAYA_PID="$5"
-        S_LAYA_URL="${6:-}"
-        S_LAYA_KEY="${7:-}"
+        S_CLEF_URL="$5"
+        S_CLEF_KEY="${6:-}"
     fi
     {
         printf 'mode=%s\npane=%s\nsocket=%s\nseq=%s\n' "$S_MODE" "$S_PANE" "$S_SOCKET" "$S_SEQ"
         [ -z "$S_TOKEN" ] || printf 'token=%s\n' "$S_TOKEN"
-        [ -z "$S_LAYA_PID" ] || printf 'laya_pid=%s\n' "$S_LAYA_PID"
-        [ -z "$S_LAYA_URL" ] || printf 'laya_url=%s\n' "$S_LAYA_URL"
-        [ -z "$S_LAYA_KEY" ] || printf 'laya_key=%s\n' "$S_LAYA_KEY"
+        [ -z "$S_CLEF_URL" ] || printf 'clef_url=%s\n' "$S_CLEF_URL"
+        [ -z "$S_CLEF_KEY" ] || printf 'clef_key=%s\n' "$S_CLEF_KEY"
         [ -z "$S_SESSION" ] || printf 'session=%s\n' "$S_SESSION"
         [ -z "$S_OWNER_PID" ] || printf 'owner_pid=%s\n' "$S_OWNER_PID"
         [ -z "$S_OWNER_START" ] || printf 'owner_start=%s\n' "$S_OWNER_START"
@@ -1313,11 +1117,11 @@ PANE_RE='"state": "(credential|yes_no|menu|pager|shell_prompt|other)"'
 
 # pane_state — the prompt type on the cursor line (spec section 9). Sets
 # CURSOR_LINE, SCREEN_ABOVE (the 4 lines above it) and PANE_STATE. Returns 1
-# when the capture fails, 7 when the cursor line is too long for Laya
+# when the capture fails, 7 when the cursor line is too long for Clef
 # (client exit 3) and 6 when the client fails. The 3.9.0 regular
 # expressions (line_is_credential) can only add "credential". This call
 # forks the client, so the poll loops call it only on each fifth step, and
-# it sends no request when the window that goes to Laya (the last 5 lines)
+# it sends no request when the window that goes to Clef (the last 5 lines)
 # is the same as at the last answer: a program that changes only its top
 # rows (watch, top) sends no request on each probe. The cache keeps that
 # answer (PANE_TEXT_STATE): a probe that gave "other" for changed output
@@ -1371,9 +1175,8 @@ pane_state() {
     fi
     PANE_LAST="$key"
     PANE_STATE=
-    laya_pid_check || return 6
     # PANE_LIMIT: the seconds that are left before the deadline of a wait.
-    out=$(printf '%s\n' "$window" | laya_call pane ${PANE_LIMIT:+--limit "$PANE_LIMIT"})
+    out=$(printf '%s\n' "$window" | clef_call pane ${PANE_LIMIT:+--limit "$PANE_LIMIT"})
     case $? in 0) ;; 3) return 7 ;; *) return 6 ;; esac
     [[ "$out" =~ $PANE_RE ]] || return 6
     PANE_STATE="${BASH_REMATCH[1]}"
@@ -1408,7 +1211,7 @@ probe_pane() {
 
 # check_pane — pane_state for a verb that must not act on a credential
 # prompt. Returns 3 (with the message) on a credential prompt, 6 (with the
-# message) when Laya fails, else 0. A failed capture gets one more try, then
+# message) when Clef fails, else 0. A failed capture gets one more try, then
 # it is a refusal: with no cursor line, the gate cannot examine the line
 # (exit 4 when the pane is gone, else exit 5).
 check_pane() {
@@ -1428,10 +1231,10 @@ check_pane() {
             return 5
             ;;
         7)
-            printf '%s\n' 'laya: the cursor line is too long to examine: send --key C-c' >&2
+            printf '%s\n' 'clef: the cursor line is too long to examine: send --key C-c' >&2
             return 2
             ;;
-        *) refuse_laya; return ;;
+        *) refuse_clef; return ;;
     esac
     return 0
 }
@@ -1440,15 +1243,14 @@ GATE_LEVEL=
 GATE_REASON=
 LEVEL_RE='"level": "(safe|caution|dangerous)", "reason": "([^"]*)"'
 
-# laya_gate [--screen] < TEXT — the command gate of the
+# clef_gate [--screen] < TEXT — the command gate of the
 # client (spec section 7). Sets GATE_LEVEL and GATE_REASON. Returns 2 when
 # the client refuses the input (exit 2), 3 when the text is too long for
-# Laya (exit 3: Laya would examine only its start) and 6 when it fails. [inferred] terminal.sh reads the fixed JSON shape with a
+# Clef to examine (exit 3) and 6 when it fails. [inferred] terminal.sh reads the fixed JSON shape with a
 # bash regular expression, because jq is only recommended for clux.
-laya_gate() {
+clef_gate() {
     local out rc=0
-    laya_pid_check || return 6
-    out=$(laya_call command "$@") || rc=$?
+    out=$(clef_call command "$@") || rc=$?
     [ "$rc" -ne 2 ] || return 2
     [ "$rc" -ne 3 ] || return 3
     [ "$rc" -eq 0 ] || return 6
@@ -1462,16 +1264,16 @@ GUARD_LATE=0
 GUARD_TEXT=
 GUARD_CUT=0
 # A marker line that the guard puts in place of held text.
-HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
+HELD_MARK_RE='^\[held by clef: [a-z_]+(, [0-9]+ lines)?\]$'
 
-# laya_guard FILE [PIECES] [RUNS] — the output guard (spec section 8).
-# PIECES=1: no cut to LAYA_GUARD_BYTES; the client guards all of
-# the text in pieces of whole lines of at most LAYA_GUARD_BYTES, with one
+# clef_guard FILE [PIECES] [RUNS] — the output guard (spec section 8).
+# PIECES=1: no cut to CLEF_GUARD_BYTES; the client guards all of
+# the text in pieces of whole lines of at most CLEF_GUARD_BYTES, with one
 # time limit (wait --pattern). RUNS (with PIECES): the first line of each
 # run of lines that are next to each other (0,4,9). Sets GUARD_TEXT (the
 # guarded text), GUARD_HELD (the count of held lines), GUARD_LATE (the
 # count of held lines that the time limit left not examined: a later guard
-# can show them) and GUARD_CUT (1 when only the last LAYA_GUARD_BYTES went
+# can show them) and GUARD_CUT (1 when only the last CLEF_GUARD_BYTES went
 # to the guard, 2 when these bytes were one cut line, so nothing went; see
 # guard_cut_note). Returns 6 when the
 # client fails or its time limit ends. [inferred] The command substitution
@@ -1482,14 +1284,14 @@ HELD_MARK_RE='^\[held by laya: [a-z_]+(, [0-9]+ lines)?\]$'
 # ("output cut" tells Claude). When the byte before the cut is a newline,
 # the first line is whole and stays. A cut text with no newline is all one
 # cut line, so none of it goes (GUARD_CUT=2).
-laya_guard() {
+clef_guard() {
     local data size tmp args=(output --render)
     if [ "${2:-0}" -eq 1 ]; then
         GUARD_CUT=0
         data=$(LC_ALL=C tr -d '\000' 2>/dev/null < "$1" && printf x) || return 6
         data="${data%x}"
-        args+=(--pieces "$LAYA_GUARD_BYTES" --runs "${3:-0}")
-        laya_guard_call "$data" "${args[@]}"
+        args+=(--pieces "$CLEF_GUARD_BYTES" --runs "${3:-0}")
+        clef_guard_call "$data" "${args[@]}"
         return
     fi
     # A file, because $1 can be a pipe and is read two times: the size, then
@@ -1499,14 +1301,14 @@ laya_guard() {
     # LC_ALL=C on each command: tail and tr count bytes, not characters, and
     # tr does not stop on bytes that are not UTF-8.
     tmp=$(mktemp "$D/guard.XXXXXX") || return 6
-    LC_ALL=C tail -c "$((LAYA_GUARD_BYTES + 1))" "$1" > "$tmp" || { rm -f "$tmp"; return 6; }
+    LC_ALL=C tail -c "$((CLEF_GUARD_BYTES + 1))" "$1" > "$tmp" || { rm -f "$tmp"; return 6; }
     size=$(LC_ALL=C wc -c < "$tmp")
     # The x keeps the newlines at the end.
     data=$(LC_ALL=C tr -d '\000' < "$tmp" && printf x)
     rm -f "$tmp"
     data="${data%x}"
     GUARD_CUT=0
-    if [ "$((size + 0))" -gt "$LAYA_GUARD_BYTES" ]; then
+    if [ "$((size + 0))" -gt "$CLEF_GUARD_BYTES" ]; then
         GUARD_CUT=1
         # When the byte before the cut is a newline, only that byte goes.
         # Else all up to the first newline goes: that byte and the cut line.
@@ -1518,25 +1320,24 @@ laya_guard() {
             *) data= GUARD_CUT=2 ;;
         esac
     fi
-    laya_guard_call "$data" "${args[@]}"
+    clef_guard_call "$data" "${args[@]}"
 }
 
-# The note for a byte cut of laya_guard (GUARD_CUT), for each verb that
+# The note for a byte cut of clef_guard (GUARD_CUT), for each verb that
 # prints guarded text.
 guard_cut_note() {
     case "$GUARD_CUT" in
-        1) printf 'output cut: the last %s bytes, from the first full line\n' "$LAYA_GUARD_BYTES" ;;
-        2) printf 'output cut: the last %s bytes are one line with no start: nothing is shown\n' "$LAYA_GUARD_BYTES" ;;
+        1) printf 'output cut: the last %s bytes, from the first full line\n' "$CLEF_GUARD_BYTES" ;;
+        2) printf 'output cut: the last %s bytes are one line with no start: nothing is shown\n' "$CLEF_GUARD_BYTES" ;;
     esac
 }
 
-# laya_guard_call DATA ARGS... — send DATA to the client of laya_guard and
+# clef_guard_call DATA ARGS... — send DATA to the client of clef_guard and
 # read its answer.
-laya_guard_call() {
+clef_guard_call() {
     local out data="$1"
     shift
-    laya_pid_check || return 6
-    out=$(printf '%s' "$data" | laya_call "$@" --limit "$LAYA_GUARD_LIMIT") || return 6
+    out=$(printf '%s' "$data" | clef_call "$@" --limit "$CLEF_GUARD_LIMIT") || return 6
     case "$out" in held=*) ;; *) return 6 ;; esac
     GUARD_HELD="${out%%$'\n'*}"
     GUARD_LATE=0
@@ -1554,7 +1355,7 @@ laya_guard_call() {
 }
 
 # reserved_word TEXT — the functions of rc.bash start with __clux_. Only
-# run itself types them, so send and run refuse them with no Laya request.
+# run itself types them, so send and run refuse them with no Clef request.
 # Quotes and backslashes can split the name ("__clux"_run), so the test
 # reads the text with none. It is not complete (${a}ux_run): __clux_run and
 # __clux_line also refuse a call that the prompt did not type.
@@ -1614,7 +1415,7 @@ send_gate() {
     reserved_word "$line"
     # [inferred] A blank line at the clux$ prompt runs nothing, so it needs
     # no request. In a program a blank line can accept a default ([Y/n], a
-    # menu), so Laya gets the screen above it; only a blank screen too has
+    # menu), so Clef gets the screen above it; only a blank screen too has
     # nothing to examine.
     case "$line" in
         *[![:space:]]*) ;;
@@ -1625,42 +1426,42 @@ send_gate() {
     esac
     # At the clux prompt a line runs in a subshell (__clux_line), so it
     # cannot change the pane shell. In another shell process (a nested bash
-    # or zsh, with any prompt that Laya can call other) the line runs in
+    # or zsh, with any prompt that Clef can call other) the line runs in
     # that shell: a line that can change it for later lines is dangerous.
     # This is also true in ssh, docker or kubectl: the shell is on the other
-    # side. The process decides, not the Laya class of the prompt: only a
+    # side. The process decides, not the Clef class of the prompt: only a
     # known program that is not a shell (python3, psql, vim) has no rules.
     if [ "$prompt" -eq 0 ] && ! pane_runs_program; then
         shell=1
     fi
     if [ "$prompt" -eq 1 ]; then
         # At the clux prompt the line runs as run runs it (__clux_line), so
-        # Laya gets the line alone, as run gives it: output above the prompt
+        # Clef gets the line alone, as run gives it: output above the prompt
         # (cat notes.txt) must not lower the score of the line.
-        laya_gate < <(printf '%s' "$line")
+        clef_gate < <(printf '%s' "$line")
     elif [ "$shell" -eq 1 ]; then
         # The shell rule reads only the text that clux typed in this line,
         # not the prompt: the client gets the start of the line and the
-        # typed text as two lines, and Laya gets them as one line.
-        laya_gate --screen --shell < <(printf '%s\n%s\n%s\n' "$SCREEN_ABOVE" "$LINE_HEAD" "$LINE_TYPED")
+        # typed text as two lines, and Clef gets them as one line.
+        clef_gate --screen --shell < <(printf '%s\n%s\n%s\n' "$SCREEN_ABOVE" "$LINE_HEAD" "$LINE_TYPED")
     else
-        laya_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
+        clef_gate --screen < <(printf '%s\n%s\n' "$SCREEN_ABOVE" "$line")
     fi
     case $? in
         0) ;;
-        2) fail 'laya: bad input' 2 ;;
-        3) fail 'laya: the line is too long to examine: make it shorter' 2 ;;
-        *) refuse_laya; return ;;
+        2) fail 'clef: bad input' 2 ;;
+        3) fail 'clef: the line is too long to examine: make it shorter' 2 ;;
+        *) refuse_clef; return ;;
     esac
     case "$GATE_LEVEL" in
-        caution) printf 'laya: caution (%s)\n' "$GATE_REASON" >&2 ;;
+        caution) printf 'clef: caution (%s)\n' "$GATE_REASON" >&2 ;;
         dangerous)
             # run works only at the clux prompt. In a program (psql, a
             # nested shell, a [Y/n] question) only the user can type it.
             if [ "$prompt" -eq 1 ]; then
-                printf 'laya: dangerous (%s): use run, it asks the user\n' "$GATE_REASON" >&2
+                printf 'clef: dangerous (%s): use run, it asks the user\n' "$GATE_REASON" >&2
             else
-                printf 'laya: dangerous (%s): ask the user to type this line in the pane\n' "$GATE_REASON" >&2
+                printf 'clef: dangerous (%s): ask the user to type this line in the pane\n' "$GATE_REASON" >&2
             fi
             return 6
             ;;
@@ -1997,7 +1798,7 @@ wait_for_echo() {
 }
 
 # shell_line — the cursor line is a shell prompt: the clux$ prompt, or a
-# prompt that Laya calls shell_prompt (ssh, python3, psql).
+# prompt that Clef calls shell_prompt (ssh, python3, psql).
 shell_line() {
     prompt_input && return 0
     [ "$PANE_STATE" = shell_prompt ]
@@ -2022,7 +1823,7 @@ cursor_mid_line() {
         [ "${#RTRIM}" -gt "$x" ]
         return
     fi
-    rc=$(printf '%s\n' "$row" | "$LAYA_PY" "$LAYA_CLIENT" after-cursor "$x" 2>/dev/null) || return 2
+    rc=$(printf '%s\n' "$row" | clef_call after-cursor "$x") || return 2
     case "$rc" in
         mid) return 0 ;;
         end) return 1 ;;
@@ -2073,7 +1874,7 @@ refuse_hidden() {
 }
 
 # $2=1 adds the pane probe on each fifth step (each 1 s): a credential prompt
-# ends the wait with 3, a Laya confirmation with 8, a client failure with 6.
+# ends the wait with 3, a Clef confirmation with 8, a client failure with 6.
 # PANE_STATE keeps the last answer for the pane= line of wait --idle.
 wait_for_prompt() {
     local deadline probe="${2:-0}" tick=0
@@ -2083,7 +1884,7 @@ wait_for_prompt() {
             line_at_prompt && return 0
             tick=$(( (tick + 1) % 5 ))
             if [ "$probe" -eq 1 ] && [ "$tick" -eq 1 ]; then
-                ! laya_confirm_pending || return 8
+                ! clef_confirm_pending || return 8
                 probe_pane || return
             fi
         fi
@@ -2218,7 +2019,7 @@ open_command() {
     dir_lock "$D" "$DIR_LOCK_WAIT" || refuse_dir_lock
     reap_companions
     if current_companion_alive; then
-        laya_restart_if_down || return
+        clef_reopen || return
         owner_ensure || return 5
         # [inferred] The companion is alive and stays. With no watchdog, open
         # says so and exits 1; the next open tries again.
@@ -2232,14 +2033,13 @@ open_command() {
         && ! owner_gone "$S_OWNER_PID" "$S_OWNER_START"; then
         fail 'the companion directory belongs to another session' 2
     fi
-    laya_open_check
-    # [inferred] A dead companion of this owner can still own a Laya server,
-    # so its directory goes through remove_companion_dir, not rm -rf.
     if [ -d "$D" ]; then
         remove_companion_dir "$D" 0
         [ "$OWNER_KIND" != session ] || watch_stop "$S_WATCH_PID" "${D##*/}"
-        stop_reaped_servers
     fi
+    # After remove_companion_dir: its state_load clears S_CLEF_URL and
+    # S_CLEF_KEY, which clef_open_check sets.
+    clef_open_check
     umask 077; mkdir -p "$D"
     # The fields of a session owner (spec 2026-09-30, section 6). The old
     # state can have set them, so each one gets its value here.
@@ -2274,17 +2074,10 @@ open_command() {
         rm -rf "$D"
         fail 'the private tmux socket path is longer than 100 bytes' 2
     fi
-    LAYA_PID=
-    LAYA_URL="${CLUX_LAYA_URL:-}"
-    LAYA_KEY="${CLUX_LAYA_KEY:-}"
-    if [ -z "$LAYA_URL" ]; then
-        : > "$D/laya.log"
-        laya_start_server "$D/laya.log" 1 || open_abort 0 'laya not available: the server did not start'
-    fi
     # [inferred] A session owner writes a first state before the pane: a
-    # directory with a Laya server always has a record of its pid and its
-    # owner, also when open stops early, so the reaper can stop the server.
-    [ "$OWNER_KIND" != session ] || write_state "" "" "" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
+    # directory always has a record of its owner, also when open stops
+    # early, so the reaper can act on it.
+    [ "$OWNER_KIND" != session ] || write_state "" "" "" 0 "$S_CLEF_URL" "$S_CLEF_KEY"
     printf -v shell '%q --noprofile --rcfile %q -i' "$(command -v bash)" "$D/rc.bash"
     # [inferred] A pane or prompt failure keeps exit code 1, as in 3.9.0.
     case "$mode" in
@@ -2296,7 +2089,7 @@ open_command() {
                 -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
                 || open_abort 0 'cannot open companion' 1
             S_SERVER="$DASH_SERVER"
-            write_state window "$pane" "$DASH_SOCKET" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
+            write_state window "$pane" "$DASH_SOCKET" 0 "$S_CLEF_URL" "$S_CLEF_KEY"
             # [inferred] The clux window rename must not change the name.
             tmux_state set-option -w -t "$pane" automatic-rename off >/dev/null 2>&1 || true
             ;;
@@ -2304,13 +2097,13 @@ open_command() {
             pane=$(tmux -S "$socket" -f /dev/null new-session -d -P -F '#{pane_id}' -s clux-terminal \
                 -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
                 || open_abort 0 'cannot open private companion' 1
-            write_state socket "$pane" "$socket" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
+            write_state socket "$pane" "$socket" 0 "$S_CLEF_URL" "$S_CLEF_KEY"
             ;;
         *)
             pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$TMUX_PANE" -v -l "$size" \
                 -e "PATH=$PATH" -e BASH_SILENCE_DEPRECATION_WARNING=1 "$shell" 3>&-) \
                 || open_abort 0 'cannot open companion' 1
-            write_state split "$pane" "" 0 "$LAYA_PID" "$LAYA_URL" "$LAYA_KEY"
+            write_state split "$pane" "" 0 "$S_CLEF_URL" "$S_CLEF_KEY"
             ;;
     esac
     # The mark of a session owner (section 8): the verbs and the reaper take
@@ -2323,9 +2116,6 @@ open_command() {
         open_abort 1 'cannot mark the companion pane' 1
     fi
     tmux_state select-pane -t "$pane" -T clux-terminal
-    if [ -n "$S_LAYA_PID" ]; then
-        laya_wait_ready || open_abort 1 'laya not available: the server did not answer'
-    fi
     wait_for_prompt 5 || open_abort 1 'the companion shell did not reach its prompt' 1
     # The watchdog of a session owner (spec 2026-09-30, section 9).
     # [inferred] A new companion with no watchdog is not safe: open undoes it
@@ -2519,9 +2309,9 @@ lock_drop_all() {
     done <<< "$LOCKS"
 }
 
-# take_typing_lock — one verb at a time reads the cursor line, asks Laya
+# take_typing_lock — one verb at a time reads the cursor line, asks Clef
 # and types (spec section 7). Without it, two sends in parallel read the
-# same cursor line, Laya examines each piece alone, and the two pieces make
+# same cursor line, Clef examines each piece alone, and the two pieces make
 # one line that no gate examined. Returns 5 with the message when another
 # verb holds it.
 take_typing_lock() {
@@ -2592,7 +2382,7 @@ line_unchanged() {
     if capture_cursor_line && [ "$CURSOR_LINE" = "$gated" ]; then
         return 0
     fi
-    printf '%s\n' 'the line changed while Laya examined it: read, then send again' >&2
+    printf '%s\n' 'the line changed while Clef examined it: read, then send again' >&2
     return 5
 }
 
@@ -2637,14 +2427,14 @@ refuse_secret() {
 }
 
 # A dangerous run waits for the answer of the user in the pane.
-laya_confirm_pending() {
+clef_confirm_pending() {
     local n="${1:-}"
     [ -n "$n" ] || n=$(seq_now)
     [ "${n:-0}" -gt 0 ] && [ -e "$D/$n.confirm" ]
 }
 
 refuse_confirm() {
-    printf '%s\n' 'laya confirmation in the companion pane: the user must answer it there' >&2
+    printf '%s\n' 'clef confirmation in the companion pane: the user must answer it there' >&2
     return 3
 }
 
@@ -2661,7 +2451,7 @@ release_if_done() {
 #
 # <n>.rc can come before <n>.done: a background process of the command keeps
 # the tee pipe open. The grace here is one second, then the output that is
-# present is reported with a note. The output goes through the Laya output
+# present is reported with a note. The output goes through the Clef output
 # guard after the cut to --max-lines. When the guard fails, no output text
 # goes to Claude and the verb exits 6.
 report_run() {
@@ -2672,7 +2462,7 @@ report_run() {
         if [ -e "$D/$n.notstarted" ]; then
             printf 'run %s did not start: the typed line changed\nexit=%s\n' "$n" "$rc"
         else
-            printf 'laya: declined by the user\nexit=%s\n' "$rc"
+            printf 'clef: declined by the user\nexit=%s\n' "$rc"
         fi
         rm -f "$D/$n.out"
         release_run "$n"
@@ -2690,42 +2480,42 @@ report_run() {
         lines=$((lines + 0))
         [ -z "$last" ] || lines=$((lines + 1))
         if [ "$lines" -gt "$max" ]; then
-            laya_guard <(tail -n "$max" "$D/$n.out") || guard=6
+            clef_guard <(tail -n "$max" "$D/$n.out") || guard=6
         else
-            laya_guard "$D/$n.out" || guard=6
+            clef_guard "$D/$n.out" || guard=6
         fi
         if [ "$guard" -ne 0 ]; then
             # .out stays and the run keeps the lock, so wait --run gives the
-            # output when Laya answers, and no new run deletes it.
-            printf '%s\n' "output held: laya not available: use wait --run $n again" "exit=$rc"
+            # output when Clef answers, and no new run deletes it.
+            printf '%s\n' "output held: clef not available: use wait --run $n again" "exit=$rc"
             : > "$D/$n.held"
-            printf 'laya not available: the output stays; use wait --run %s when Laya answers, or wait --run %s --discard\n' "$n" "$n" >&2
+            printf 'clef not available: the output stays; use wait --run %s when Clef answers, or wait --run %s --discard\n' "$n" "$n" >&2
             lock_drop "$D/$n.reading"
             return 6
         fi
         [ "$lines" -le "$max" ] || printf 'output cut: the last %s of %s lines\n' "$max" "$lines"
         guard_cut_note
         [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
-        [ "$GUARD_HELD" -eq 0 ] || printf 'laya: held %s lines\n' "$GUARD_HELD"
+        [ "$GUARD_HELD" -eq 0 ] || printf 'clef: held %s lines\n' "$GUARD_HELD"
         [ "$GUARD_LATE" -eq 0 ] \
-            || printf 'laya: %s lines not examined in the time limit: use wait --run %s again\n' "$GUARD_LATE" "$n"
+            || printf 'clef: %s lines not examined in the time limit: use wait --run %s again\n' "$GUARD_LATE" "$n"
     fi
     [ -e "$D/$n.done" ] || printf '%s\n' 'output may be incomplete: a process still holds the output'
     if [ -s "$D/$n.caution" ]; then
         read -r reason 2>/dev/null < "$D/$n.caution"
-        printf 'laya: caution (%s)\n' "$reason"
+        printf 'clef: caution (%s)\n' "$reason"
     fi
     printf 'exit=%s\n' "$rc"
     if [ "$GUARD_LATE" -gt 0 ]; then
         # The time limit left lines not examined (they can be the last
-        # error). .out stays and the run keeps the lock, as when Laya
-        # fails: wait --run gives them when Laya examines them.
+        # error). .out stays and the run keeps the lock, as when Clef
+        # fails: wait --run gives them when Clef examines them.
         : > "$D/$n.held"
         # Limit: the guard starts at the last line, so the lines that are
         # not examined are the top lines, and a retry examines all lines
         # again from the bottom with the same time limit. A retry helps
-        # only when Laya was slow for a short time; the message says so.
-        printf 'laya did not examine all of the output in the time limit: it stays; use wait --run %s again (this helps only when Laya was slow for a short time), or wait --run %s --discard and run the command again with less output (for example | head -n 50): --max-lines keeps the last lines, which Laya examined\n' "$n" "$n" >&2
+        # only when Clef was slow for a short time; the message says so.
+        printf 'clef did not examine all of the output in the time limit: it stays; use wait --run %s again (this helps only when Clef was slow for a short time), or wait --run %s --discard and run the command again with less output (for example | head -n 50): --max-lines keeps the last lines, which Clef examined\n' "$n" "$n" >&2
         lock_drop "$D/$n.reading"
         return 0
     fi
@@ -2737,8 +2527,8 @@ report_run() {
 # The pane probe runs on each fifth step, not each step: the normal exit is
 # the .rc test, and a credential prompt waits on a human, so one second of
 # delay costs nothing. $3=0 skips the probe: wait --run on a secret run waits
-# for the user. While <n>.confirm is present, the user answers the Laya
-# question, so there is no probe. Returns 0 (done), 3 (credential), 6 (Laya
+# for the user. While <n>.confirm is present, the user answers the Clef
+# question, so there is no probe. Returns 0 (done), 3 (credential), 6 (Clef
 # failed) or 1.
 wait_for_run_files() {
     local n="$1" probe="${3:-1}" deadline tick=0
@@ -2807,12 +2597,12 @@ run_command() {
     # prompt a moment after the last run reports.
     wait_for_prompt 2 || { release_busy; fail 'the pane is not at the prompt: use wait --idle, send or read' 5; }
     # The command gate (spec section 7). When the client fails, nothing runs.
-    laya_gate < <(printf '%s' "$command")
+    clef_gate < <(printf '%s' "$command")
     case $? in
         0) ;;
-        2) release_busy; fail 'laya: bad input' 2 ;;
-        3) release_busy; fail 'laya: the command is too long to examine: make it shorter' 2 ;;
-        *) release_busy; refuse_laya; return ;;
+        2) release_busy; fail 'clef: bad input' 2 ;;
+        3) release_busy; fail 'clef: the command is too long to examine: make it shorter' 2 ;;
+        *) release_busy; refuse_clef; return ;;
     esac
     remove_stale_output
     if last_run_secret; then
@@ -2856,7 +2646,7 @@ run_command() {
     case $? in
         0) report_run "$n" "$max" ;;
         3) refuse_credential ;;
-        6) refuse_laya_run "$n" ;;
+        6) refuse_clef_run "$n" ;;
         *)
             printf 'time limit: run %s continues in the pane; use wait --run %s\n' "$n" "$n" >&2
             return 1
@@ -2886,14 +2676,14 @@ send_command() {
     # No text and no key is a usage error before any pane request.
     [ -n "$text" ] || [ -n "$key" ] || usage
     ensure_open
-    # An interrupt key cannot type a value, and it must work when Laya does
-    # not: it skips the Laya pane check. It also works while a Laya question
+    # An interrupt key cannot type a value, and it must work when Clef does
+    # not: it skips the Clef pane check. It also works while a Clef question
     # is open: C-c there declines the run, it cannot accept it.
     if [ -n "$key" ] && interrupt_key "$key"; then
         [ -z "$text" ] && [ "$enter" -eq 0 ] || usage
         # Escape and then a key is a Meta key: at the clux prompt, M-C-e
         # (shell-expand-line) runs $(...) of the line in the pane shell. The
-        # check needs tmux only, not Laya.
+        # check needs tmux only, not Clef.
         # tmux reads a key name with no case (ESCAPE is Escape). In a nested
         # shell, Escape and then a key that the user types there (C-e) is
         # M-C-e too. While a command of the pane shell runs, the pane shell
@@ -2911,7 +2701,7 @@ send_command() {
         return
     fi
     lock_and_load || return
-    laya_confirm_pending && { refuse_confirm; return; }
+    clef_confirm_pending && { refuse_confirm; return; }
     hidden_text && { refuse_hidden; return; }
     check_pane || return
     # A continuation line (PS2) adds to a command that the gate did not
@@ -2944,7 +2734,7 @@ send_command() {
     # for later lines. So clux does not end a line there: only the user
     # does (spec section 7). Text with no Enter, the edit keys and the
     # interrupt keys work. A pager or a menu is a program in front, not a
-    # shell: Laya can call a shell prompt a menu.
+    # shell: Clef can call a shell prompt a menu.
     if ! prompt_input; then
         if pane_nested_shell; then
             [ "$PANE_STATE" != pager ] && [ "$PANE_STATE" != menu ] || PANE_STATE=other
@@ -3020,11 +2810,11 @@ read_command() {
     positive_integer "$lines" || usage
     ensure_open
     release_if_done
-    laya_confirm_pending && { refuse_confirm; return; }
+    clef_confirm_pending && { refuse_confirm; return; }
     last_run_secret && { refuse_secret; return; }
     check_pane || return
     screen=$(tmux_state capture-pane -p -J -t "$S_PANE" -S "-$lines") || return 1
-    laya_guard <(printf '%s\n' "$screen") || { refuse_laya; return; }
+    clef_guard <(printf '%s\n' "$screen") || { refuse_clef; return; }
     guard_cut_note
     [ -z "$GUARD_TEXT" ] || printf '%s\n' "$GUARD_TEXT"
 }
@@ -3064,8 +2854,8 @@ held_lines() {
                 if (g[j] !~ ENVIRON["RE"]) break
                 k = 1
                 if (match(g[j], /, [0-9]+ lines\]$/)) k = substr(g[j], RSTART + 2) + 0
-                show = ENVIRON["KIND"] == "" || index(g[j], "[held by laya: " ENVIRON["KIND"] "]") == 1 \
-                    || index(g[j], "[held by laya: " ENVIRON["KIND"] ",") == 1
+                show = ENVIRON["KIND"] == "" || index(g[j], "[held by clef: " ENVIRON["KIND"] "]") == 1 \
+                    || index(g[j], "[held by clef: " ENVIRON["KIND"] ",") == 1
                 for (; k > 0 && i <= n; k--) { if (show) print t[i]; i++ }
             }
             if (ENVIRON["KIND"] == "") for (; i <= n; i++) print t[i]
@@ -3094,7 +2884,7 @@ add_seen_lines() {
 
 # guard_fresh FRESH DEADLINE RUNS — the guard of wait --pattern. One client
 # guards all of FRESH in pieces of whole lines that fit in
-# LAYA_GUARD_BYTES: a guard of a cut text starts inside a line, and
+# CLEF_GUARD_BYTES: a guard of a cut text starts inside a line, and
 # held_lines cannot line it up. RUNS (from new_screen_lines) are the first
 # lines of the runs of FRESH that are next to each other on the screen.
 # Adds the held lines to held and tests the
@@ -3102,7 +2892,7 @@ add_seen_lines() {
 # wait_command. Sets FRESH_FOUND=1 on a match, and FRESH_LATE to the lines
 # that the time limit left not examined: they are not held, and the next
 # tick sends them again. Returns 6 when the guard fails, and 1 at the
-# DEADLINE: a guard can take 15 s, so none starts after the time limit of
+# DEADLINE: a guard can take 45 s, so none starts after the time limit of
 # the wait, and a guard gets at most the time that is left (spec section 11).
 FRESH_FOUND=0
 FRESH_LATE=
@@ -3111,9 +2901,9 @@ guard_fresh() {
     FRESH_FOUND=0
     FRESH_LATE=
     [ "$left" -gt 0 ] || return 1
-    # The local value applies to laya_guard_call in this call only.
-    [ "$left" -ge "$LAYA_GUARD_LIMIT" ] || local LAYA_GUARD_LIMIT="$left"
-    laya_guard <(printf '%s\n' "$1") 1 "${3:-0}" || return 6
+    # The local value applies to clef_guard_call in this call only.
+    [ "$left" -ge "$CLEF_GUARD_LIMIT" ] || local CLEF_GUARD_LIMIT="$left"
+    clef_guard <(printf '%s\n' "$1") 1 "${3:-0}" || return 6
     lines=$(held_lines "$1" "$GUARD_TEXT")
     if [ "$GUARD_LATE" -gt 0 ]; then
         FRESH_LATE=$(held_lines "$1" "$GUARD_TEXT" not_examined)
@@ -3161,7 +2951,7 @@ wait_command() {
         take_reading_lock "$value"
         read -r rc 2>/dev/null < "$D/$value.rc"
         rm -f "$D/$value.out" "$D/$value.held"
-        printf 'output discarded: laya did not examine it\nexit=%s\n' "$rc"
+        printf 'output discarded: clef did not examine it\nexit=%s\n' "$rc"
         release_run "$value"
         return 0
     fi
@@ -3175,17 +2965,17 @@ wait_command() {
             case $? in
                 0) report_run "$value" "$max" ;;
                 3) refuse_credential ;;
-                6) refuse_laya_run "$value" ;;
+                6) refuse_clef_run "$value" ;;
                 *) return 1 ;;
             esac
             ;;
         idle)
-            laya_confirm_pending && { refuse_confirm; return; }
+            clef_confirm_pending && { refuse_confirm; return; }
             wait_for_prompt "$timeout" 1
             case $? in
                 0) return 0 ;;
                 3) refuse_credential ;;
-                6) refuse_laya ;;
+                6) refuse_clef ;;
                 8) refuse_confirm ;;
                 *) printf 'pane=%s\n' "${PANE_STATE:-other}"; return 1 ;;
             esac
@@ -3198,16 +2988,16 @@ wait_command() {
             while :; do
                 # One read of the seq for the two checks of this tick.
                 seq=$(seq_now)
-                laya_confirm_pending "$seq" && { refuse_confirm; return; }
+                clef_confirm_pending "$seq" && { refuse_confirm; return; }
                 # A secret run that another verb started during the wait.
                 last_run_secret "$seq" && { refuse_secret; return; }
-                # A probe can take 11 s: it gets at most the time that is
+                # A probe can take 15 s: it gets at most the time that is
                 # left, and none starts after the time limit.
                 [ "$SECONDS" -lt "$deadline" ] || return 1
                 PANE_LIMIT=$((deadline - SECONDS)) probe_pane
                 case $? in
                     3) refuse_credential; return ;;
-                    6) refuse_laya; return ;;
+                    6) refuse_clef; return ;;
                 esac
                 # The guard runs on each new screen, and the pattern sees
                 # only the guarded text. No test reads the raw screen: a
@@ -3217,7 +3007,7 @@ wait_command() {
                 # is not found.
                 # A failed guard counts as a failed probe: 3 in a row end
                 # the wait with exit 6. The same screen is guarded again.
-                # Only lines that no earlier guard examined go to Laya, each
+                # Only lines that no earlier guard examined go to Clef, each
                 # with the line above it for context: a progress bar sends
                 # 2 lines, not the full screen, each second. A line that
                 # an earlier guard examined did not match.
@@ -3274,7 +3064,7 @@ wait_command() {
                                 1) return 1 ;;
                                 *)
                                     guard_fails=$((guard_fails + 1))
-                                    [ "$guard_fails" -lt 3 ] || { refuse_laya; return; }
+                                    [ "$guard_fails" -lt 3 ] || { refuse_clef; return; }
                                     ;;
                             esac
                         fi
@@ -3323,10 +3113,10 @@ watch_stop() {
 
 # close_session_dir DIR [WHO] — the close steps for the companion of a
 # session owner in DIR (sessions/<short>). WHO is "watchdog" when the
-# watchdog calls it: it does not stop itself. WHO is "hook" when the
-# SessionEnd hook calls it: a separate process stops the Laya server,
-# because the hook has 5 s. The screen, the pane and DIR go first, as in
-# close_command. [inferred] clear-history goes only to a pane with the mark.
+# watchdog calls it: it does not stop itself. The screen, the pane and DIR
+# go first, as in close_command. [inferred] clear-history goes only to a
+# pane with the mark. clux runs no server of its own, so close has nothing
+# of the companion's left to stop beyond its pane.
 close_session_dir() {
     D="$1"
     state_load || { rm -rf "$D"; return 0; }
@@ -3336,18 +3126,6 @@ close_session_dir() {
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
     [ "${2:-}" = watchdog ] || watch_stop "$S_WATCH_PID" "${D##*/}"
-    close_stop_server "${2:-}"
-}
-
-# close_stop_server [WHO] — the last close step of the two owner kinds: stop
-# the Laya server of the loaded state. With WHO "hook" a separate process
-# stops it, because the hook has 5 s.
-close_stop_server() {
-    if [ "${1:-}" = hook ]; then
-        laya_stop_server_later "$S_LAYA_PID"
-    else
-        laya_stop_server "$S_LAYA_PID"
-    fi
 }
 
 # watch_start — start the watchdog of this directory and write its pid to
@@ -3415,7 +3193,7 @@ watch_ensure() {
 # renames it). No state, or another watch_pid: a close or a new open came
 # first, so it exits. When the owner process is gone or has another start
 # time, it runs the close steps for its directory, then exits. It never
-# reads the Laya key. It does not use require_owner: the owner is gone.
+# reads the Clef key. It does not use require_owner: the owner is gone.
 watch_command() {
     local short dir
     [ "$#" -eq 2 ] && [ "$1" = --session ] || usage
@@ -3489,15 +3267,12 @@ close_session_locked() {
 }
 
 # close_pane_locked [WHO] — the close steps of a pane owner, with the lock
-# and the state of $D loaded. The screen, the pane and $D (with the key) go
-# first: the SessionEnd hook has 5 s, and the server can be slow to stop.
-# With WHO "hook" a separate process stops the server (kill -9 after 3 s),
-# because $D with the pid is gone and the reaper cannot find it again.
+# and the state of $D loaded. clux runs no server of its own, so the screen,
+# the pane and $D go, and close is done.
 close_pane_locked() {
     tmux_state clear-history -t "$S_PANE" >/dev/null 2>&1 || true
     kill_companion "$S_MODE" "$S_PANE" "$S_SOCKET" 1
     rm -rf "$D"
-    close_stop_server "${1:-}"
 }
 
 # close_later STEPS [ARG] — the SessionEnd hook did not get the lock of $D
@@ -3595,143 +3370,25 @@ close_command() {
     close_pane_locked
 }
 
-# Install step 1. [inferred] The first of these names that is Python 3.10 or
-# later. PyTorch wheels come later than new Python releases, so 3.12 is first.
-laya_find_python() {
-    local name
-    for name in python3.12 python3.13 python3.11 python3.10 python3; do
-        command -v "$name" >/dev/null 2>&1 || continue
-        "$name" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1 || continue
-        LAYA_BASE_PY="$name"
-        return 0
-    done
-    return 1
-}
-
-LAYA_INSTALL_PID=
-LAYA_INSTALL_LOG=
-
-laya_install_cleanup() {
-    laya_stop_server "$LAYA_INSTALL_PID"
-    LAYA_INSTALL_PID=
-    [ -z "$LAYA_INSTALL_LOG" ] || rm -f "$LAYA_INSTALL_LOG"
-    LAYA_INSTALL_LOG=
-}
-
-# Print the failure and the end of the server output less each line that
-# matches secret-values.txt, then stop the server and exit 1. The venv stays,
-# so the next install goes straight to the download.
-laya_download_failed() {
-    printf 'laya install: the checkpoint download failed: %s\n' "$1" >&2
-    [ -z "$LAYA_INSTALL_LOG" ] \
-        || tail -n 20 "$LAYA_INSTALL_LOG" | "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" scrub >&2
-    laya_install_cleanup
-    trap - EXIT INT TERM HUP
-    exit 1
-}
-
-# Install step 3: one start of laya-serve without HF_HUB_OFFLINE downloads
-# the English checkpoint. The server output goes to a temp file. The traps
-# stop the server and delete the file when the verb ends early.
-laya_download() {
-    local deadline=$(($1 + LAYA_INSTALL_BUDGET))
-    [ "$SECONDS" -lt "$deadline" ] || laya_download_failed 'the time limit ended'
-    trap laya_install_cleanup EXIT
-    trap 'laya_install_cleanup; exit 1' INT TERM HUP
-    LAYA_INSTALL_LOG=$(mktemp "${TMPDIR:-/tmp}/clux-laya-install.XXXXXX") \
-        || laya_download_failed 'cannot make a temp file'
-    laya_start_server "$LAYA_INSTALL_LOG" 0 || laya_download_failed 'no free port'
-    LAYA_INSTALL_PID=$LAYA_PID
-    laya_wait_health "$deadline"
-    case $? in
-        2) laya_download_failed 'laya-serve ended before it answered' ;;
-        1) laya_download_failed 'the time limit ended' ;;
-    esac
-    laya_install_cleanup
-    trap - EXIT INT TERM HUP
-    # [inferred] A server that answers with no checkpoint in the cache is a
-    # failed download too.
-    laya_checkpoint_present || laya_download_failed 'the checkpoint is not in the Hugging Face cache'
-}
-
-laya_install() {
-    local start=$SECONDS version
-    # open uses the client Python: install cannot make CLUX_LAYA_PYTHON
-    # ready, so it says so, and open and install do not send the user in a
-    # circle.
-    if [ -n "${CLUX_LAYA_PYTHON:-}" ] && ! laya_python_ready "$LAYA_PY"; then
-        fail "CLUX_LAYA_PYTHON cannot import laya: install laya $LAYA_VERSION in that Python, or unset CLUX_LAYA_PYTHON" 2
-    fi
-    # A venv that does not run is made again: its marker goes.
-    [ ! -f "$LAYA_MARKER" ] || laya_python_ready "$LAYA_VENV/bin/python3" || rm -f "$LAYA_MARKER"
-    # An installed venv needs no base python3.
-    if [ -f "$LAYA_MARKER" ] && laya_checkpoint_present; then
-        version=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" version 2>/dev/null) || version=unknown
-        printf 'laya %s is already installed\nvenv=%s\n' "$version" "$LAYA_VENV"
-        return 0
-    fi
-    if [ ! -f "$LAYA_MARKER" ]; then
-        # Only a new venv needs a base python3: with the marker, only the
-        # checkpoint download remains, and it uses the venv python.
-        laya_find_python || fail 'laya install needs python3 3.10 or later' 2
-        # [inferred] A venv with no marker is partial: make it again.
-        rm -rf "$LAYA_VENV"
-        mkdir -p "${LAYA_VENV%/*}"
-        "$LAYA_BASE_PY" -m venv "$LAYA_VENV" || { rm -rf "$LAYA_VENV"; fail 'laya install: python3 -m venv failed' 1; }
-        "$LAYA_VENV/bin/python3" "$LAYA_CLIENT" pip-install \
-            "$((LAYA_INSTALL_BUDGET - (SECONDS - start)))" "laya[serve]==$LAYA_VERSION"
-        case $? in
-            0)
-                # [inferred] laya-serve needs fastapi and uvicorn, which come
-                # only from the serve extra; check them before the marker.
-                "$LAYA_VENV/bin/python3" -c 'import fastapi, uvicorn' >/dev/null 2>&1 \
-                    || { rm -rf "$LAYA_VENV"; fail 'laya install: pip install failed' 1; }
-                : > "$LAYA_MARKER"
-                ;;
-            124) rm -rf "$LAYA_VENV"; fail 'laya install: the time limit ended during pip install' 1 ;;
-            *) rm -rf "$LAYA_VENV"; fail 'laya install: pip install failed' 1 ;;
-        esac
-    fi
-    laya_download "$start"
-    printf 'venv=%s\n' "$LAYA_VENV"
-    printf 'disk=%s\n' "$(du -sh "$LAYA_VENV" 2>/dev/null | cut -f1)"
-}
-
-# The server of the companion of this owner: none, or "owned" or "external"
-# with the health answer. A subshell, because require_owner and
-# terminal_init can exit. With no owner, the subshell prints nothing and
-# laya_status gives none.
-laya_status_server() {
-    (
-        require_owner 2>/dev/null
-        terminal_init 2>/dev/null
-        state_load && state_is_ours && [ -n "$S_LAYA_URL" ] || { echo none; exit 0; }
-        owner=external
-        [ -z "$S_LAYA_PID" ] || owner=owned
-        if laya_call health >/dev/null; then
-            echo "$owner health=ok"
-        else
-            echo "$owner health=failed"
+# clef status (spec section 9). It sends one health request when the URL is
+# set and the host is allowed. It never prints the key.
+clef_status() {
+    local url="${CLUX_CLEF_URL:-}" key=none host=refused server='not checked'
+    [ -z "${CLUX_CLEF_KEY:-}" ] || key=set
+    if [ -n "$url" ]; then
+        host=$(clef_host_kind "$url") || host=refused
+        if [ "$host" != refused ]; then
+            server='no answer'
+            ! S_CLEF_URL="$url" S_CLEF_KEY="${CLUX_CLEF_KEY:-}" clef_call health >/dev/null || server=answers
         fi
-    )
-}
-
-laya_status() {
-    local version=none checkpoint=missing server=none
-    if [ -f "$LAYA_MARKER" ]; then
-        version=$("$LAYA_VENV/bin/python3" "$LAYA_CLIENT" version 2>/dev/null) || version=unknown
     fi
-    laya_checkpoint_present && checkpoint=present
-    server=$(laya_status_server 2>/dev/null) || server=none
-    [ -n "$server" ] || server=none
-    printf 'venv=%s\nversion=%s\ncheckpoint=%s\nserver=%s\n' "$LAYA_VENV" "$version" "$checkpoint" "$server"
+    printf 'url=%s\nkey=%s\nhost=%s\nserver=%s\n' "${url:-none}" "$key" "$host" "$server"
 }
 
-laya_command() {
+clef_command() {
     [ "$#" -eq 1 ] || usage
     case "$1" in
-        install) laya_install ;;
-        status) laya_status ;;
+        status) clef_status ;;
         *) usage ;;
     esac
 }
@@ -3740,8 +3397,8 @@ main() {
     [ "$#" -gt 0 ] || usage
     case "$1" in
         check-line) shift; check_line_command "$@"; return $? ;;
-        # No require_owner: install and status operate outside tmux too.
-        laya) shift; laya_command "$@"; return $? ;;
+        # No require_owner: status operates outside tmux too.
+        clef) shift; clef_command "$@"; return $? ;;
         # The hidden verbs find the owner from their arguments and from
         # state, not from CLAUDE_PID (spec 2026-09-30, section 5).
         watch) shift; watch_command "$@"; return $? ;;

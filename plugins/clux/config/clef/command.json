@@ -20,6 +20,5 @@
       }
     }
   },
-  "model": "english",
   "thresholds": { "destructive": 0.8, "exposes_secrets": 0.8, "remote_effect": 0.8 }
 }
