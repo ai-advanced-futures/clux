@@ -378,27 +378,44 @@ clux_ansi() {
             bg=*) key='bg'; val="${part#bg=}" ;;
             *)    key='fg'; val="$part" ;;
         esac
-        out="${out}$(_clux_ansi_color "$key" "$val")"
+        _clux_color "$key" "$val"
+        out="${out}${_CLUX_SGR}"
     done
     [ -n "$_reset_glob" ] && set +f
     [ -n "$out" ] || return 0
     printf '\033[%sm' "${out#;}"
 }
 
-# Colour half of clux_ansi. Prints a leading ";" on every value it emits, and
-# nothing at all for a term it does not recognise.
-_clux_ansi_color() {
-    local key="$1" val="$2" base idx r g b
-    [ "$key" = "bg" ] && base=40 || base=30
+# _clux_color fg|bg TERM — read one term of a tmux style as a colour. This is
+# the one place that knows which terms are colours, for clux_ansi and for
+# clux_fzf_color: with two copies, one style can give two colours. It prints
+# nothing (a $( ) for each term costs one process) and sets:
+#
+#   _CLUX_SGR  the ANSI form, for fg or bg, with a leading ";"
+#   _CLUX_FZF  the form that fzf's --color takes: -1, #rrggbb, 0-255 or a
+#              name. tmux spells the bright names `brightblack`, and fzf
+#              spells them `bright-black`.
+#
+# Both are empty when TERM is not a colour (an attribute such as blink, `us=`,
+# a word that this does not know). The caller then skips the term.
+_clux_color() {
+    local base idx val="$2"
+    _CLUX_SGR=""
+    _CLUX_FZF=""
+    [ "$1" = "bg" ] && base=40 || base=30
     case "$val" in
-        default) printf ';%s' "$((base + 9))" ; return 0 ;;
+        default)
+            _CLUX_SGR=";$((base + 9))"
+            _CLUX_FZF="-1"
+            return 0 ;;
         # Six HEX digits, not six of anything: `\#??????` also matched
         # `#GGHHII`, and `$((16#GG))` then printed a bash arithmetic error on
         # stderr — straight onto the popup screen, which is the one failure
         # this whole function is written to avoid.
         \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
-            r=$((16#${val:1:2})); g=$((16#${val:3:2})); b=$((16#${val:5:2}))
-            printf ';%s;2;%s;%s;%s' "$((base + 8))" "$r" "$g" "$b" ; return 0 ;;
+            _CLUX_SGR=";$((base + 8));2;$((16#${val:1:2}));$((16#${val:3:2}));$((16#${val:5:2}))"
+            _CLUX_FZF="$val"
+            return 0 ;;
     esac
     # `colourN`, `colorN` and a bare `N` are one case: strip the prefix tmux
     # allows, then let the single numeric test below emit the 256-colour form.
@@ -408,7 +425,15 @@ _clux_ansi_color() {
     esac
     case "$val" in
         ''|*[!0-9]*) ;;
-        *) printf ';%s;5;%s' "$((base + 8))" "$val" ; return 0 ;;
+        *)
+            _CLUX_SGR=";$((base + 8));5;$val"
+            # fzf stops with an error on a number over 255, so fzf gets the
+            # terminal's own colour for it.
+            _CLUX_FZF="-1"
+            case "$val" in
+                [0-9]|[0-9][0-9]|[0-9][0-9][0-9]) [ "$val" -le 255 ] && _CLUX_FZF="$val" ;;
+            esac
+            return 0 ;;
     esac
     case "$val" in
         black)   idx=0 ;; red)     idx=1 ;; green)  idx=2 ;; yellow)  idx=3 ;;
@@ -421,19 +446,22 @@ _clux_ansi_color() {
     esac
     # The bright names carry idx 60-67 on purpose: base+60 is exactly where the
     # bright range starts for both foreground (90) and background (100).
-    printf ';%s' "$((base + idx))"
+    _CLUX_SGR=";$((base + idx))"
+    case "$val" in
+        bright*) _CLUX_FZF="bright-${val#bright}" ;;
+        *)       _CLUX_FZF="$val" ;;
+    esac
 }
 
 # clux_fzf_color <tmux-style> — the foreground of one tmux style in the form
-# fzf's --color takes: `-1`, `#rrggbb`, `0`-`255`, or a base name, with
-# `:bold` when the style is bold. tmux spells the bright names `brightblack`
-# and fzf spells them `bright-black`, so a name cannot pass through as is.
-# A colour this does not understand gives `-1`, the terminal's own colour.
+# fzf's --color takes (see _clux_color), with `:bold` when the style is bold.
+# A style with no colour that _clux_color knows gives `-1`, the terminal's
+# own colour.
 #
 # Only the foreground: each fzf colour slot is one colour, and the prefix + A
 # box uses these for text (prompt, pointer, rows), never for a fill.
 clux_fzf_color() {
-    local spec="$1" part val="" bold=""
+    local spec="$1" part val="-1" bold=""
     local IFS=,
     local _reset_glob=""
     case "$-" in *f*) ;; *) _reset_glob=1; set -f ;; esac
@@ -442,27 +470,14 @@ clux_fzf_color() {
         part="${part%"${part##*[![:space:]]}"}"
         case "$part" in
             bold) bold=":bold" ;;
-            bg=*|dim|italics|italic|underscore|underline|reverse|'') ;;
-            fg=*) val="${part#fg=}" ;;
-            *) val="$part" ;;
+            # Only a colour sets the value. Each other term (bg=, us=, an
+            # attribute such as blink or nobold) is skipped, as clux_ansi
+            # skips it, so it cannot replace the colour.
+            *) _clux_color fg "${part#fg=}"
+               [ -n "$_CLUX_FZF" ] && val="$_CLUX_FZF" ;;
         esac
     done
     [ -n "$_reset_glob" ] && set +f
-    case "$val" in
-        colour*) val="${val#colour}" ;;
-        color*)  val="${val#color}" ;;
-    esac
-    case "$val" in
-        \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
-        black|red|green|yellow|blue|magenta|cyan|white) ;;
-        bright*)
-            case "${val#bright}" in
-                black|red|green|yellow|blue|magenta|cyan|white) val="bright-${val#bright}" ;;
-                *) val="-1" ;;
-            esac ;;
-        ''|*[!0-9]*) val="-1" ;;
-        *) [ "$val" -le 255 ] || val="-1" ;;
-    esac
     printf '%s%s' "$val" "$bold"
 }
 

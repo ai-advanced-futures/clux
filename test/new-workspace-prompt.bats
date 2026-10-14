@@ -65,12 +65,18 @@ STUB
 # a Homebrew machine) and the system tools.
 _pane_path() { printf '%s:/usr/bin:/bin' "$(dirname "$REAL_TMUX")"; }
 
-# _nofzf_path — a PATH with the real tmux and NO fzf, wherever fzf lives.
+# _nofzf_path — a PATH with the real tmux, the tools that the prompt runs,
+# and NO fzf, wherever fzf lives. "/usr/bin:/bin" is not enough: Debian and
+# Ubuntu put fzf in /usr/bin (see _make_nofzf_bin in session-picker.bats).
 _nofzf_path() {
-    local dir="$BATS_TEST_TMPDIR/nofzf-bin"
+    local dir="$BATS_TEST_TMPDIR/nofzf-bin" t src
     mkdir -p "$dir"
     ln -sf "$REAL_TMUX" "$dir/tmux"
-    printf '%s:/usr/bin:/bin' "$dir"
+    for t in env bash sh dirname basename cat sed grep awk cut tr head tail \
+        mktemp rm rmdir mkdir mv chmod stty ps sleep touch wc sort id date uname; do
+        src="$(PATH=/usr/bin:/bin command -v "$t" 2>/dev/null)" && [ -n "$src" ] && ln -sf "$src" "$dir/$t"
+    done
+    printf '%s' "$dir"
 }
 
 # Run the staged prompt in a real pane on a throwaway server, type $@ as
@@ -84,8 +90,10 @@ _run_in_pty() {
     # assertions below have something to read. It is reached even though the
     # script ends in `exec`: tmux runs this string through `sh -c`, the script
     # is a forked child of that shell, and `exec` replaces only the child.
+    # TMPDIR: the script's temporary files stay in the test's own folder.
+    mkdir -p "$BATS_TEST_TMPDIR/tmp"
     "$REAL_TMUX" -L "$SOCKET" -f /dev/null new-session -d -x 80 -y 24 \
-        "RECORD='$RECORD' PATH='${RUN_PATH:-$(_pane_path)}' '$STAGE/new-workspace-prompt.sh'; sleep 30"
+        "TMPDIR='$BATS_TEST_TMPDIR/tmp' RECORD='$RECORD' PATH='${RUN_PATH:-$(_pane_path)}' '$STAGE/new-workspace-prompt.sh'; sleep 30" 3>&-
     sleep 1
     local line
     for line in "$@"; do
@@ -141,9 +149,14 @@ _start_box() {
     local cols="${1:-70}" rows="${2:-8}" path="${3:-$(_pane_path)}"
     BSOCK="clux-box-$$-${BATS_TEST_NUMBER}"
     "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    # BOX_LIVE="NAME:FOLDER" — one more live session, there before the box.
+    [ -z "${BOX_LIVE:-}" ] || "$REAL_TMUX" -L "$BSOCK" -f /dev/null \
+        new-session -d -s "${BOX_LIVE%%:*}" -c "${BOX_LIVE#*:}" 3>&-
+    # TMPDIR: the rows file stays in the test's own folder.
+    mkdir -p "$BATS_TEST_TMPDIR/tmp"
     "$REAL_TMUX" -L "$BSOCK" -f /dev/null new-session -d -s live1 -x "$cols" -y "$rows" \
         -c "$BATS_TEST_TMPDIR" \
-        "RECORD='$RECORD' PATH='$path' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
+        "TMPDIR='$BATS_TEST_TMPDIR/tmp' RECORD='$RECORD' PATH='$path' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20" 3>&-
     _wait_for_screen "$BSOCK" "${BOX_READY:-recents}" >/dev/null \
         || { echo "the box never drew:"; "$REAL_TMUX" -L "$BSOCK" capture-pane -p; return 1; }
 }
@@ -179,8 +192,33 @@ _end() {
     "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
 }
 
+# The box needs fzf 0.66 or later (--gutter). An older fzf gets the plain
+# prompt (see "old fzf" below), so a box test cannot run with it.
 _need_fzf() {
-    PATH="$(_pane_path)" command -v fzf >/dev/null 2>&1 || skip "fzf is not installed beside tmux"
+    local v major minor
+    v="$(PATH="$(_pane_path)" fzf --version 2>/dev/null)" || skip "fzf is not installed beside tmux"
+    v="${v%% *}"
+    major="${v%%.*}"
+    minor="${v#*.}"
+    minor="${minor%%.*}"
+    { [ "$major" -gt 0 ] || [ "$minor" -ge 66 ]; } 2>/dev/null || skip "fzf $v is older than 0.66"
+}
+
+# A test that fails before _end leaves its server, and the box in it,
+# running. This stops both servers on each exit path. The servers start with
+# fd 3 closed (3>&-, as in terminal-e2e.bats): bats waits for each holder of
+# fd 3, so a server that kept it made the whole run wait.
+teardown() {
+    local s
+    for s in "${BSOCK:-}" "${SOCKET:-}"; do
+        [ -n "$s" ] || continue
+        "$REAL_TMUX" -L "$s" kill-server >/dev/null 2>&1 || true
+        # kill-server does not remove the socket file.
+        rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"
+    done
+    stop_fake_clef
+    stop_holders
+    rm -rf "$BATS_TEST_TMPDIR"
 }
 
 # ===========================================================================
@@ -227,6 +265,19 @@ _fzf() {
     [[ "$output" == *'change-prompt(new       ▸ )'* ]] || { echo "prefix: $output"; false; }
 }
 
+@test "helper: a name that looks like a number is compared as text" {
+    # awk compares two values that look like numbers as numbers: "1" was the
+    # exact name of a saved "01", so the prompt said open for a new name.
+    ROWS="$BATS_TEST_TMPDIR/rows"
+    printf '01\t/a\t01\t/a\tsaved\n' > "$ROWS"
+    Q=1 _fzf change
+    [[ "$output" == *'change-prompt(new       ▸ )'* ]] || { echo "1: $output"; false; }
+    Q=1.0 _fzf change
+    [[ "$output" == *'change-prompt(new       ▸ )'* ]] || { echo "1.0: $output"; false; }
+    Q=01 _fzf change
+    [[ "$output" == *'change-prompt(open      ▸ )'* ]] || { echo "01: $output"; false; }
+}
+
 @test "helper: the first Down picks the top row and does not move" {
     PTR=' ' _fzf down live
     [ "$output" = 'change-pointer(▸)+change-prompt(switch to ▸ )' ] || { echo "got: $output"; false; }
@@ -251,11 +302,26 @@ _fzf() {
     [ -z "$output" ] || { echo "un-picked: $output"; false; }
 }
 
+@test "helper: Page Up moves a page from a lower row and un-picks from the top row" {
+    _rows
+    PTR='▸' POS=3 _fzf up page-up
+    [ "$output" = 'page-up' ] || { echo "lower: $output"; false; }
+    PTR='▸' POS=1 Q=zz _fzf up page-up
+    [ "$output" = 'change-pointer( )+change-prompt(new       ▸ )' ] || { echo "top: $output"; false; }
+}
+
 @test "helper: focus follows the picked row, and leaves an un-picked prompt alone" {
     PTR='▸' _fzf focus live
     [ "$output" = 'change-prompt(switch to ▸ )' ] || { echo "got: $output"; false; }
     PTR=' ' _fzf focus live
     [ -z "$output" ] || { echo "got: $output"; false; }
+}
+
+@test "helper: a cursor that moved with no Down picks its row" {
+    # fzf's own keys (Ctrl-N, PgDn) move the cursor with no Down. The row
+    # under the cursor then gets the pointer, so Enter opens the row it is on.
+    PTR=' ' POS=2 _fzf focus saved
+    [ "$output" = 'change-pointer(▸)+change-prompt(open      ▸ )' ] || { echo "got: $output"; false; }
 }
 
 @test "helper: Enter is OPEN when a row is picked, NEW when not" {
@@ -281,6 +347,18 @@ _fzf() {
     [ -z "$output" ] || { echo "empty box printed: $(printf '%s' "$output" | cat -v)"; false; }
     Q=cl _fzf ghost ''
     [ -z "$output" ] || { echo "no row printed: $(printf '%s' "$output" | cat -v)"; false; }
+}
+
+@test "helper: the gray completion shows no other row when the typed text is an exact name" {
+    # "api" typed, the newer "api-v2" on top: the prompt said open for api,
+    # and a gray "-v2" named a workspace that Enter does not open.
+    ROWS="$BATS_TEST_TMPDIR/rows"
+    printf 'api-v2\t/b\tapi-v2\t/b\tsaved\napi\t/a\tapi\t/a\tsaved\n' > "$ROWS"
+    Q=api _fzf ghost api-v2
+    [ -z "$output" ] || { echo "un-picked: $(printf '%s' "$output" | cat -v)"; false; }
+    # When api-v2 is picked, Enter opens it, so the rest of its name shows.
+    Q=api PTR='▸' _fzf ghost api-v2
+    [ "$output" = $'<g>-v2\033[0m' ] || { echo "picked: $(printf '%s' "$output" | cat -v)"; false; }
 }
 
 @test "helper: runs no tmux command (it runs on every key)" {
@@ -483,6 +561,29 @@ _fzf() {
     grep -qxF 'NAME=on' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
+@test "box: each fzf key that moves up un-picks from the top row, as Up does" {
+    # On the top row, fzf's own up keys do not move the cursor, so no focus
+    # event came and the row stayed picked: Enter opened it.
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/one"
+    "$HIST" add one "$BATS_TEST_TMPDIR/one"
+    _start_box || false
+    _t on
+    local key p bad=""
+    for key in C-k C-p M-Up BTab PPage; do
+        _k Down
+        p="$(_prompt)"
+        [[ "$p" == "open      ▸"* ]] || bad="$bad $key:no-pick($p)"
+        _k "$key"
+        p="$(_prompt)"
+        [[ "$p" == "new       ▸"* ]] || bad="$bad $key($p)"
+    done
+    _k Escape
+    _end
+    [ -z "$bad" ] || { echo "still picked after:$bad"; false; }
+}
+
 @test "box: the prompt says switch to for a live session, open for a saved one, new otherwise" {
     _need_fzf
     _stage
@@ -526,6 +627,54 @@ _fzf() {
     _end
     grep -qxF "FOLDER=$BATS_TEST_TMPDIR/b" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
     grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: a typed name that looks like a number is a new name, not a saved one" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/z"
+    "$HIST" add 01 "$BATS_TEST_TMPDIR/z"
+    _start_box || false
+    _t 1
+    local p; p="$(_prompt)"
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Enter
+    _end
+    [[ "$p" == "new       ▸ 1"* ]] || { echo "prompt: $p"; false; }
+    grep -qxF 'NAME=1' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+    grep -qxF 'FOLDER=1' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: a long name matches by its end too" {
+    # The list showed the name cut to 18 characters, and fzf finds a row by
+    # the shown text only: "terraform" did not find infrastructure-terraform.
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/t"
+    "$HIST" add infrastructure-terraform "$BATS_TEST_TMPDIR/t"
+    _start_box || false
+    _t terraform
+    local screen; screen="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Down Enter
+    _end
+    [[ "$screen" == *"infrastructure-terraform"* ]] || { echo "no match:"; echo "$screen"; false; }
+    grep -qxF 'NAME=infrastructure-terraform' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/t" "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Ctrl-J is Enter, so an Enter typed before the box is up still counts" {
+    # The terminal turns an Enter that comes before fzf starts into Ctrl-J,
+    # and fzf's own Ctrl-J moves down: the typed name went nowhere.
+    _need_fzf
+    _stage
+    _start_box || false
+    _t zebra
+    _k C-j
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question:"; "$REAL_TMUX" -L "$BSOCK" capture-pane -p; false; }
+    _k Enter
+    _end
+    grep -qxF 'NAME=zebra' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
 @test "box: Tab puts the current row's name in the box, and Enter then opens it" {
@@ -589,6 +738,48 @@ _fzf() {
     [[ "$screen" == *"folder is gone"* ]] || { echo "$screen"; false; }
     grep -qxF "FOLDER=$BATS_TEST_TMPDIR/new-home" "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
     grep -qxF 'NAME=old' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: a session that ends while the box is open is not switched to" {
+    # The box read the live sessions once, at the start. When the session of
+    # a picked row ended in the meantime, and its folder was gone too, the
+    # row opened in the gone folder with no folder question.
+    _need_fzf
+    _stage
+    local gone="$BATS_TEST_TMPDIR/gone"
+    mkdir -p "$gone" "$BATS_TEST_TMPDIR/new-home"
+    "$HIST" add w "$gone"
+    BOX_LIVE="w:$gone" _start_box || false
+    _k Down
+    local p; p="$(_prompt)"
+    local picked; picked="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p -t '=live1:')"
+    "$REAL_TMUX" -L "$BSOCK" kill-session -t '=w'
+    rm -rf "$gone"
+    _k Enter
+    local screen; screen="$(_wait_for_screen "$BSOCK" "folder is gone")" || true
+    "$REAL_TMUX" -L "$BSOCK" send-keys -t '=live1:' -l "$BATS_TEST_TMPDIR/new-home"
+    _k Enter
+    _end
+    [[ "$p" == "switch to ▸"* ]] || { echo "not live at the start: $p"; false; }
+    [[ "$picked" == *"▸ w "* ]] || { echo "w is not picked:"; echo "$picked"; false; }
+    [[ "$screen" == *"folder is gone"* ]] || { echo "$screen"; false; }
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/new-home" "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+    grep -qxF 'NAME=w' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: on a narrow terminal the folder is cut from the left and the ✗ still shows" {
+    # On a client of less than 72 columns the popup takes the full width
+    # (render-clux-conf.sh), so a row must fit a narrower box. The end of a
+    # folder tells the most, so the cut takes the start.
+    _need_fzf
+    _stage
+    "$HIST" add old "$BATS_TEST_TMPDIR/a/very/long/path/to/the/project/folder/old"
+    _start_box 58 8 || false
+    local screen; screen="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Escape
+    _end
+    local row; row="$(printf '%s\n' "$screen" | grep -F '✗')" || { echo "no ✗:"; echo "$screen"; false; }
+    [[ "$row" == *"/folder/old ✗"* ]] || { echo "the end of the folder is cut: $row"; false; }
 }
 
 @test "box: a renamed workspace switches to the live session and the row takes its name" {
@@ -676,6 +867,23 @@ _fzf() {
     [ ! -s "$RECORD" ] || { echo "a cancelled folder question still handed over:"; cat "$RECORD"; false; }
 }
 
+@test "box: the rows file is removed when the terminal closes at the folder question" {
+    # kill-server closes the pane: the script gets a hangup, and one more
+    # hangup when the pane's shell ends. The second one stopped the clean-up
+    # before it removed the rows file.
+    _need_fzf
+    _stage
+    _start_box || false
+    local tmpd="$BATS_TEST_TMPDIR/tmp" tries=30
+    [ -n "$(ls "$tmpd")" ] || { echo "no rows file while the box is open"; false; }
+    _t brandnew
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    while [ "$tries" -gt 0 ] && [ -n "$(ls "$tmpd")" ]; do sleep 0.1; tries=$((tries - 1)); done
+    [ -z "$(ls "$tmpd")" ] || { echo "left behind:"; ls -l "$tmpd"; false; }
+}
+
 @test "box: the folder question states the default it falls back to" {
     # Enter alone reuses the session name. bash 3.2 has no `read -i`, so the
     # default cannot be prefilled — stating it is the only way a user can know
@@ -722,6 +930,39 @@ _fzf() {
     _stage
     RUN_PATH="$(_nofzf_path)" _run_in_pty "bad:name"
     [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "no fzf: the exact name of a saved workspace opens it in its folder" {
+    # Without fzf there is no list, so this is the one way to reopen a saved
+    # workspace. It asked for a folder and made the workspace again there.
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    BOX_READY="New workspace" _start_box 70 8 "$(_nofzf_path)" || false
+    _t two
+    _k Enter
+    _end
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/b" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "old fzf: the plain prompt asks instead, says why, and hands on" {
+    # An fzf older than 0.66 does not know --gutter and stops with status 2
+    # before it draws. The popup closed with no word: prefix + A did nothing.
+    _stage
+    local dir="$BATS_TEST_TMPDIR/oldfzf-bin"
+    mkdir -p "$dir"
+    printf '#!/bin/sh\necho "unknown option: --gutter" >&2\nexit 2\n' > "$dir/fzf"
+    chmod +x "$dir/fzf"
+    BOX_READY="fzf 0.66" _start_box 70 8 "$dir:$(_nofzf_path)" || false
+    _t work
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    "$REAL_TMUX" -L "$BSOCK" send-keys -t '=live1:' -l "projects/work"
+    _k Enter
+    _end
+    grep -qxF 'NAME=work' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'FOLDER=projects/work' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
 @test "no fzf: Esc cancels the name prompt instead of typing ^[" {

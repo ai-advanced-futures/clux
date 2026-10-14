@@ -75,7 +75,7 @@ plugins/clux/
 │   ├── session-picker.sh        # Session picker with pane preview
 │   ├── session-follow.sh        # Mirror mode: all clients show one session
 │   ├── new-workspace.sh         # Creates an editor + agents window pair
-│   ├── new-workspace-prompt.sh  # The prefix + A popup: saved list, then name + folder
+│   ├── new-workspace-prompt.sh  # The prefix + A popup: a name box over the saved list
 │   ├── workspace-history.sh     # The saved workspaces that prefix + A lists
 │   │                            # Status-line helper (opt-in)
 │   ├── throttle.sh              # Memoizes any #() status job

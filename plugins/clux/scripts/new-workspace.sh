@@ -24,11 +24,11 @@
 #   (no flag)  build or switch to the workspace, switch the client to it, and
 #              save it on top of the prefix + A list (workspace-history.sh)
 #   --restore  build the workspace, but do not switch the client and do not
-#              change the list. "Open all" in the prefix + A list uses it, so
-#              the list keeps its order after a restore
+#              change the list. No clux script uses it since 5.1.0 (it was
+#              "Open all" in the old prefix + A list)
 #   --resolve  print the absolute folder <folder-name> resolves to, and build
-#              nothing. Space in the prefix + A list uses it to set a folder
-#              with the same rules a new workspace uses
+#              nothing. No clux script uses it since 5.1.0 (it was Space in
+#              the old prefix + A list); it stays for scripts of your own
 # The workspace (session) name is NOT an argument here — it is read back from
 # the transient @clux-new-workspace-name option (written by
 # new-workspace-prompt.sh) and unset immediately, before any other work, so a

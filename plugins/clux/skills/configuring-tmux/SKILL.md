@@ -808,7 +808,7 @@ Call the renderer — never write `clux.tmux.conf` by hand. It emits the six sec
 ```
 
 - Pass `--agent-refresh-command` **only** when 3.5 was "Yes".
-- Pass a `--bar-*`, `--agent-*` or `--notify-bg/-fg` flag **only** for a value detection actually found.
+- Pass a `--bar-*`, `--agent-*`, `--workspace-text-color` or `--notify-bg/-fg` flag **only** for a value detection actually found.
 - Pass a `--notify-visual` / `--notify-sound` pair **only** for a 3.6 answer that differs from its default. The renderer refuses a type outside `notification stop failure quota prompt teammate sessionend` and a value other than `on` / `off`, and writes nothing on a refusal.
 - `$PWD` inside the agents command must reach the option **unexpanded**; the renderer single-quotes the value for exactly that reason, so pass it through verbatim and do not pre-expand it.
 - The renderer writes no `@clux-session-order`, `@clux_session_bar` or `@clux_status` line. Those three are live server state, and a `set -g` for any of them would reset it on every reload — which for `@clux-session-order` is exactly the failure the reorder keys exist to prevent.
@@ -1000,6 +1000,7 @@ Show the user:
   prefix + g       session picker with pane preview
   prefix + A       workspace box: type a name (⏎ new, then folder), or
                    ↓ pick a saved one, ⇥ fill its name, ⏎ open / switch to
+                   (the list needs fzf 0.66 or later)
   prefix + m       jump to the notifying agent
   prefix + M       notification picker
   prefix + ` /DC   dismiss notification

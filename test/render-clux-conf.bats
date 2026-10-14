@@ -114,7 +114,7 @@ _make_fake_scripts_dir() {
     [ "$status" -ne 0 ] || { echo "command-prompt is back:"; grep -n 'command-prompt' "$out"; false; }
 
     # And the A key still exists — the point is a safe prompt, not no prompt.
-    grep -qF 'bind-key A display-popup' "$out" \
+    grep -q '^bind-key A .*display-popup' "$out" \
         || { echo "the A binding is gone entirely"; grep -n 'bind-key A' "$out"; false; }
     grep -qF 'new-workspace-prompt.sh' "$out" || false
 }
@@ -313,19 +313,83 @@ _make_fake_scripts_dir() {
     "
     [ "$status" -eq 0 ]
 
-    local line; line="$(grep -F 'bind-key A display-popup' "$out")"
+    local line; line="$(grep '^bind-key A ' "$out")"
 
-    # A percentage height grew this popup to fifteen rows on a tall terminal;
-    # it has the same size on each terminal: 8 rows inside the border, for
-    # the header, the text box, the "recents" line and 5 saved workspaces.
-    [[ "$line" != *"-h 30%"* ]] || { echo "still a percentage height: $line"; false; }
-    [[ "$line" == *"-h 10 "* ]] || { echo "no fixed height: $line"; false; }
-    [[ "$line" == *"-w 72 "* ]] || { echo "not wide enough for name + folder: $line"; false; }
+    # The line is: bind-key A if-shell -F 'TEST' 'NARROW POPUP' 'WIDE POPUP'.
+    local test narrow wide
+    test="$(printf '%s\n' "$line" | awk -F"'" '{ print $2 }')"
+    narrow="$(printf '%s\n' "$line" | awk -F"'" '{ print $4 }')"
+    wide="$(printf '%s\n' "$line" | awk -F"'" '{ print $6 }')"
+    [ "$test" = '#{e|<:#{client_width},72}' ] || { echo "no client width test: $line"; false; }
 
-    # -x 0 -y S pins it to the top-left, clear of the status line, and S
-    # follows status-position rather than needing a second setting.
-    [[ "$line" == *"-x 0"* ]] || { echo "not pinned to the left: $line"; false; }
-    [[ "$line" == *"-y S"* ]] || { echo "not pinned to the status line: $line"; false; }
+    local popup
+    for popup in "$narrow" "$wide"; do
+        [[ "$popup" == "display-popup "* ]] || { echo "not a popup: $popup"; false; }
+        [[ "$popup" == *'/new-workspace-prompt.sh"' ]] || { echo "not the prompt: $popup"; false; }
+        # A percentage height grew this popup to fifteen rows on a tall
+        # terminal; it has the same height on each terminal: 8 rows inside
+        # the border, for the header, the text box, the "recents" line and
+        # 5 saved workspaces.
+        [[ "$popup" != *"-h 30%"* ]] || { echo "still a percentage height: $popup"; false; }
+        [[ "$popup" == *"-h 10 "* ]] || { echo "no fixed height: $popup"; false; }
+        # -x 0 -y S pins it to the top-left, clear of the status line, and S
+        # follows status-position rather than needing a second setting.
+        [[ "$popup" == *"-x 0"* ]] || { echo "not pinned to the left: $popup"; false; }
+        [[ "$popup" == *"-y S"* ]] || { echo "not pinned to the status line: $popup"; false; }
+    done
+    [[ "$wide" == *"-w 72 "* ]] || { echo "not wide enough for name + folder: $wide"; false; }
+    # tmux opens no popup wider than the client, so a narrow client gets
+    # the full width (the next test opens both in a real tmux).
+    [[ "$narrow" == *"-w 100% "* ]] || { echo "a narrow client gets no popup: $narrow"; false; }
+}
+
+# Attach a client COLS wide to a server that has the rendered A binding, push
+# prefix + A, and print the size the popup's command sees ("" if none opened).
+_a_popup_size() {
+    local cols="$1" conf="$2" size="$BATS_TEST_TMPDIR/popup.size.$1"
+    local in="clux-render-a-in-$$-$1" outer="clux-render-a-out-$$-$1"
+    rm -f "$size"
+    PATH="$(dirname "$REAL_TMUX"):/usr/bin:/bin" CLUX_A_SIZE="$size" bash -c "
+        trap 'tmux -L \"$outer\" kill-server; tmux -L \"$in\" kill-server' EXIT
+        tmux -L '$in' -f /dev/null new-session -d -s inner -x 200 -y 40
+        tmux -L '$in' set-environment -g CLUX_A_SIZE \"\$CLUX_A_SIZE\"
+        tmux -L '$in' source-file '$conf' || exit 1
+        tmux -L '$outer' -f /dev/null new-session -d -x '$cols' -y 20 \
+            \"'$REAL_TMUX' -L '$in' attach -t inner\"
+        i=0
+        until [ -n \"\$(tmux -L '$in' list-clients 2>/dev/null)\" ] || [ \$i -ge 50 ]; do sleep 0.1; i=\$((i + 1)); done
+        tmux -L '$outer' send-keys C-b
+        sleep 0.2
+        tmux -L '$outer' send-keys A
+        i=0
+        until [ -s '$size' ] || [ \$i -ge 50 ]; do sleep 0.1; i=\$((i + 1)); done
+    " >/dev/null 2>&1 3>&-
+    # kill-server does not remove the socket file.
+    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$in" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$outer"
+    cat "$size" 2>/dev/null
+}
+
+@test "render-clux-conf: A opens the popup on a client narrower than 72 columns, full width" {
+    # tmux does not open a popup wider than its client ("width too large"),
+    # so a fixed -w 72 made prefix + A do nothing on a 60-column terminal.
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    # shellcheck disable=SC2016  # $CLUX_A_SIZE expands in the popup, not here
+    printf '#!/bin/sh\nstty size > "$CLUX_A_SIZE"\n' > "$scripts_dir/new-workspace-prompt.sh"
+    chmod +x "$scripts_dir/new-workspace-prompt.sh"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    grep '^bind-key A ' "$out" > "$BATS_TEST_TMPDIR/a.conf"
+
+    # The popup's inside is its size less the border: 2 columns, 2 rows.
+    run _a_popup_size 60 "$BATS_TEST_TMPDIR/a.conf"
+    [ "$output" = "8 58" ] || { echo "60 columns: popup inside is '$output', not 8 58"; false; }
+    run _a_popup_size 100 "$BATS_TEST_TMPDIR/a.conf"
+    [ "$output" = "8 70" ] || { echo "100 columns: popup inside is '$output', not 8 70"; false; }
 }
 
 # ---------------------------------------------------------------------------
@@ -458,6 +522,20 @@ _make_fake_scripts_dir() {
     grep -qF 'set -g "@claude-notify-fg" "#2E3440"' "$out" || false
     grep -qF 'set -g "@clux-agent-fail-color" "#BF616A"' "$out" || false
     grep -qF 'set -g "@clux-agent-glyph-fail" "!"' "$out" || false
+}
+
+@test "render-clux-conf: --workspace-text-color is a theming line like the others" {
+    # The setup skill lists @clux-workspace-text-color in its theming table.
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --workspace-text-color colour250 \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ] || { echo "$output"; false; }
+    grep -qF 'set -g "@clux-workspace-text-color" "colour250"' "$out" || false
 }
 
 @test "render-clux-conf: a conf carrying notification preferences parses on a throwaway real tmux server" {

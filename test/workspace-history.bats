@@ -89,6 +89,20 @@ setup() {
     [ "${lines[0]}" = $'p\t/x\\new' ]
 }
 
+@test "workspace-history: a name that looks like a number is compared as text" {
+    # awk compares two values that look like numbers as numbers, so "1" was
+    # equal to "01" and to "1.0": `add 1` removed the saved 01.
+    "$HIST" add 01 /a
+    "$HIST" add api /b
+    "$HIST" add 1 /c
+    run "$HIST" list
+    [ "$output" = $'1\t/c\napi\t/b\n01\t/a' ] || { echo "after add: $output"; false; }
+    "$HIST" remove 1.0
+    "$HIST" set-dir 1e0 /x
+    run "$HIST" list
+    [ "$output" = $'1\t/c\napi\t/b\n01\t/a' ] || { echo "after remove and set-dir: $output"; false; }
+}
+
 @test "workspace-history: a TAB or a newline in a value is refused" {
     run "$HIST" add $'a\tb' /a
     [ "$status" -eq 1 ]
