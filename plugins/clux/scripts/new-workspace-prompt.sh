@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 
-# prefix + A, both steps: asks for the workspace (session) name and for the
-# folder, then hands both to new-workspace.sh. Runs inside
-# `tmux display-popup -E`, so BOTH answers are read here, by this shell, and
-# neither one ever reaches a tmux command string.
+# prefix + A: one text box for the workspace (session) name. Type a name, and
+# the saved workspaces that match show under it:
+#
+#   Enter              go: a new workspace with the typed name (then the
+#                      folder question), or the workspace of that exact name
+#   Down               pick the top match; Down again moves down the list
+#   Up from the top    no row picked again; typing also un-picks
+#   Tab                put the name of the current row in the box
+#   Esc / Ctrl-C       cancel
+#
+# The prompt always says what Enter does: "new", "open" (a saved workspace
+# that does not run) or "switch to" (a session that runs on this server).
+# While you type, the rest of the current row's name shows in gray after the
+# typed text. Without fzf, the box is a plain name prompt with no list.
+#
+# Runs inside `tmux display-popup -E`, so every answer is read here, by this
+# shell (or by fzf, whose output this shell reads), and no answer ever reaches
+# a tmux command string.
 #
 # That is the entire reason this is a popup rather than two command-prompts.
 # `command-prompt` substitutes the typed answer into its command template
@@ -35,6 +49,80 @@
 # never re-parses an option value, and new-workspace.sh reads it back and
 # unsets it before doing any other work.
 
+# --- fzf helper mode -------------------------------------------------------
+#
+# fzf runs "new-workspace-prompt.sh --fzf EVENT [FIELD]" on each key, and does
+# the actions this prints. It reads fzf's state from $FZF_* and the rows from
+# $CLUX_WS_ROWS only — no tmux call and no helpers.sh — so it stays fast, and
+# it sits above everything else so nothing else runs first.
+#
+# The POINTER holds the state: " " = no row picked, "▸" = a row picked. That
+# leaves the PROMPT free to say what Enter does.
+#
+# Each row is "<shown name>\t<shown folder>\t<name>\t<folder>\t<live|saved>";
+# FIELD is field 5 (focus, down) or field 3 (ghost) of the current row.
+if [ "${1:-}" = --fzf ]; then
+    P_NEW='new       ▸ '
+    P_OPEN='open      ▸ '
+    P_SWITCH='switch to ▸ '
+    _row_prompt() {
+        if [ "$1" = live ]; then printf '%s' "$P_SWITCH"; else printf '%s' "$P_OPEN"; fi
+    }
+    # "new", unless the typed text is exactly the name of a row.
+    _typed_prompt() {
+        local st=""
+        if [ -n "${FZF_QUERY:-}" ]; then
+            st="$(awk -F'\t' '$3 == ENVIRON["FZF_QUERY"] { print $5; exit }' "${CLUX_WS_ROWS:-/dev/null}" 2>/dev/null)"
+        fi
+        if [ -n "$st" ]; then _row_prompt "$st"; else printf '%s' "$P_NEW"; fi
+    }
+    _picked() { [ "${FZF_POINTER:-}" = '▸' ]; }
+    case "${2:-}" in
+        change)
+            label=' recents '
+            [ -n "${FZF_QUERY:-}" ] && label=' matches '
+            printf 'first+change-pointer( )+change-prompt(%s)+change-list-label(%s)' "$(_typed_prompt)" "$label"
+            ;;
+        focus)
+            _picked && printf 'change-prompt(%s)' "$(_row_prompt "${3:-}")"
+            ;;
+        down)
+            if _picked; then
+                printf 'down'
+            elif [ "${FZF_MATCH_COUNT:-0}" -gt 0 ]; then
+                # The first Down picks the top row; it does not move past it.
+                printf 'change-pointer(▸)+change-prompt(%s)' "$(_row_prompt "${3:-}")"
+            fi
+            ;;
+        up)
+            if _picked; then
+                if [ "${FZF_POS:-1}" -le 1 ]; then
+                    printf 'change-pointer( )+change-prompt(%s)' "$(_typed_prompt)"
+                else
+                    printf 'up'
+                fi
+            fi
+            ;;
+        enter)
+            if _picked; then printf 'print(OPEN)+accept'; else printf 'print(NEW)+accept'; fi
+            ;;
+        ghost)
+            # The rest of the row's name after the typed text, or "→ name" when
+            # the name does not start with it. NOTHING when nothing is left:
+            # an empty colour sequence is drawn as text by fzf's info line.
+            q="${FZF_QUERY:-}"
+            n="${3:-}"
+            [ -n "$q" ] && [ -n "$n" ] || exit 0
+            case "$n" in
+                "$q") ;;
+                "$q"*) printf '%s%s\033[0m' "${CLUX_WS_GHOST:-}" "${n#"$q"}" ;;
+                *) printf '%s  → %s\033[0m' "${CLUX_WS_GHOST:-}" "$n" ;;
+            esac
+            ;;
+    esac
+    exit 0
+fi
+
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./helpers.sh
 # shellcheck disable=SC1091
@@ -52,6 +140,9 @@ BAD="$(clux_ansi "$(get_agent_needs_color)")"
 RESET=$'\033[0m'
 OPEN="$(get_tmux_option "@clux-bar-window-open" "❰")"
 CLOSE="$(get_tmux_option "@clux-bar-window-close" "❱")"
+TAB=$'\t'
+NL=$'\n'
+HISTORY="$CURRENT_DIR/workspace-history.sh"
 
 # A tty means the popup. No tty means a `run-shell` started this the old way,
 # from a clux.tmux.conf written before the binding changed — `read` would hit
@@ -63,7 +154,10 @@ if [ ! -t 0 ]; then
     exit 0
 fi
 
-# --- Esc and Ctrl-C both cancel --------------------------------------------
+# --- Esc and Ctrl-C both cancel the plain prompts --------------------------
+#
+# fzf reads its own keys, so this is for the `read` prompts: the name prompt
+# without fzf, and the folder question.
 #
 # `read -r` cannot see Esc: in the terminal's canonical mode it is just another
 # character in the line, which is why Esc used to echo "^[" and wait. Rather
@@ -77,39 +171,39 @@ fi
 # signals. Both keys cancel, and the key `quit` gave up (Ctrl-\) has no use in
 # a two-field prompt.
 #
-# No raw mode, and the line keeps its normal editing.
-#
-# The cost is that every escape SEQUENCE starts with Esc, so an arrow key
-# cancels too. In a two-field prompt with no cursor movement that is a fair
-# trade for not hand-rolling a key decoder; the alternative needs a sub-second
-# wait to tell Esc from an arrow, and bash 3.2 — what macOS ships and what
-# runs this — rejects a fractional `read -t`.
+# No raw mode, and the line keeps its normal editing. The cost is that every
+# escape SEQUENCE starts with Esc, so an arrow key cancels too; bash 3.2 —
+# what macOS ships and what runs this — rejects the fractional `read -t` that
+# telling the two apart would need.
 _CLUX_STTY_SAVED=""
+_CLUX_WS_ROWS=""
 
-# Restores the terminal on EVERY exit path, including the `exec` at the end.
-# The popup's pty dies with the popup anyway; this is for the case where the
-# script is run from an ordinary terminal.
-_clux_term_restore() {
+# Restores the terminal and removes the rows file on EVERY exit path. The
+# `exec`s below skip the EXIT trap, so each one calls _clux_cleanup first.
+_clux_cleanup() {
     [ -n "$_CLUX_STTY_SAVED" ] && stty "$_CLUX_STTY_SAVED" 2>/dev/null
     _CLUX_STTY_SAVED=""
+    [ -n "$_CLUX_WS_ROWS" ] && rm -f "$_CLUX_WS_ROWS"
+    _CLUX_WS_ROWS=""
 }
-trap '_clux_term_restore' EXIT TERM
+trap '_clux_cleanup' EXIT TERM
 # A cancel is not an error: the popup closes and nothing is created. `exit`
-# from inside a trap handler still runs the EXIT trap, so the restore above is
-# the only one needed here (checked on bash 3.2).
+# from inside a trap handler still runs the EXIT trap (checked on bash 3.2).
 trap 'exit 0' INT QUIT
 
-_CLUX_STTY_SAVED="$(stty -g 2>/dev/null)"
-# A terminal that takes neither keeps the old behaviour rather than none: Esc
-# cannot cancel, and Ctrl-C is untouched because `intr` never moved.
-stty intr '^[' 2>/dev/null || :
-stty quit '^C' 2>/dev/null || :
+_clux_plain_keys() {
+    [ -n "$_CLUX_STTY_SAVED" ] && return 0
+    _CLUX_STTY_SAVED="$(stty -g 2>/dev/null)"
+    # A terminal that takes neither keeps the old behaviour rather than none:
+    # Esc cannot cancel, and Ctrl-C is untouched because `intr` never moved.
+    stty intr '^[' 2>/dev/null || :
+    stty quit '^C' 2>/dev/null || :
+}
 
 # The guard for a terminal that took `intr` but not `quit`: Ctrl-C would then
 # be a literal \003 in the line, and the reject list below names no control
-# character, so the workspace would be created under a name carrying one. A
-# control character is never part of a name anybody typed on purpose, so it is
-# read as the cancel the user meant.
+# character. A control character is never part of a name anybody typed on
+# purpose, so it is read as the cancel the user meant.
 _clux_cancelled_line() {
     case "$1" in
         *[[:cntrl:]]*) return 0 ;;
@@ -117,82 +211,83 @@ _clux_cancelled_line() {
     esac
 }
 
-# --- The saved workspaces ------------------------------------------------
-#
-# When workspace-history.sh holds a workspace, the popup opens on that list,
-# newest first, before it asks for a name:
-#
-#   1-9      open that row now          j / k    move down / up
-#   Enter    open the selected row      Space    set the folder of the row
-#   x        delete the row             a        open all saved workspaces
-#   n        type a new workspace       q        cancel (Esc and Ctrl-C too)
-#
-# Any other letter or digit starts a new workspace with that character as the
-# first character of the name, so a user who types a name at once still can.
-# Backspace cannot remove that character (bash 3.2 has no `read -i`); Esc and
-# a new start can.
-#
-# To open a row is to hand its name and folder to new-workspace.sh, the same
-# path a typed name takes: a live session gets a switch, a gone one is built
-# again in its saved folder. A row whose session is gone, while a live session
-# that is NOT in the list has the same folder, is a renamed workspace (prefix +
-# $): the client switches to that session, and the row takes its name.
-#
-# Keys are read one at a time with `IFS= read -rsn1 -d ''`. Each part counts:
-# without IFS= and -d '', Enter AND Space both read as an empty string, so
-# Space would open the row. Esc stays the interrupt character set above, so
-# Esc and every arrow key (which starts with Esc) cancel here as well.
-
-HISTORY="$CURRENT_DIR/workspace-history.sh"
-NL=$'\n'
-PRESET=""
-WS_MSG=""
-WS_SEL=0
-WS_TOP=0
-
-_ws_load() {
-    WS_NAMES=()
-    WS_DIRS=()
-    local n d
-    while IFS=$'\t' read -r n d; do
-        [ -n "$n" ] || continue
-        WS_NAMES+=("$n")
-        WS_DIRS+=("$d")
-    done < <("$HISTORY" list 2>/dev/null)
-    WS_COUNT=${#WS_NAMES[@]}
-    [ "$WS_SEL" -lt "$WS_COUNT" ] || WS_SEL=$((WS_COUNT - 1))
-    [ "$WS_SEL" -ge 0 ] || WS_SEL=0
-    _ws_read_live
+# The header the plain prompts draw: the same chip and brackets the bar draws.
+_clux_header() {
+    printf '\033[H\033[2J'
+    printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · esc cancel%s\n\n' \
+        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
+        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
 }
 
-# Name and folder of each live session. Read at each load and again when a
-# row opens, so a session made or closed while the popup is open counts.
-_ws_read_live() {
-    WS_LIVE="$NL$(tmux list-sessions -F '#{session_name}' 2>/dev/null)$NL"
-    WS_LIVE_PATHS="$(tmux list-sessions -F "#{session_path}"$'\t'"#{session_name}" 2>/dev/null)"
+# _clux_ask_folder NAME — the folder question, with NAME as the stated
+# default. Sets FOLDER_NAME, or exits on a cancel.
+_clux_ask_folder() {
+    _clux_plain_keys
+    # Enter alone means "same as the session name", which is exactly what
+    # new-workspace.sh already does with an empty folder. The default is
+    # STATED, not prefilled — bash 3.2 has no `read -i` — and the dim suffix is
+    # the whole reason Enter alone is usable here.
+    printf '  %s▸%s folder  %s[%s]%s ' "$MARK" "$RESET" "$DIM" "$1" "$RESET"
+    IFS= read -r FOLDER_NAME || exit 0
+    if _clux_cancelled_line "$FOLDER_NAME"; then
+        exit 0
+    fi
+    [ -n "$FOLDER_NAME" ] || FOLDER_NAME="$1"
 }
 
+# _clux_go NAME FOLDER — hand both to new-workspace.sh. Never returns.
+_clux_go() {
+    # Overwritten on every A press, so a cancelled folder prompt never leaves a
+    # stale name that a later, unrelated new-workspace.sh run could pick up.
+    tmux set-option -g "@clux-new-workspace-name" "$1"
+    _clux_cleanup
+    exec "$CURRENT_DIR/new-workspace.sh" "$2"
+}
+
+# _clux_reject NAME — refuse a name tmux cannot address. Exits when refused.
+#
+# `read -r` stops at a newline and fzf's query is one line, so a name cannot
+# contain one. ":" is rejected for a different reason than the quoting
+# characters: tmux ACCEPTS it in a session name but reads it as the
+# session/window separator in every target. `has-session -t "=a:b"` reports
+# "can't find session: a", so new-workspace.sh never sees the existing
+# workspace; `new-window -t "a:b"` reports "can't find window: b"; and
+# `move-window -t "a:b:0"` fails the same way. The result is a half-built
+# workspace the user cannot reach. Refusing the name up front is the only place
+# this can be stopped.
+_clux_reject() {
+    case "$1" in
+        *\'*|*\"*|*\\*|*';'*|*'#'*|*:*|*[[:cntrl:]]*)
+            # Both, on purpose: display-message is what a caller outside a
+            # popup sees, and the popup covers the status line it writes to, so
+            # the same text is printed here as well. The pause is what keeps
+            # `-E` from closing the popup before the reason can be read.
+            tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, colon, or #"
+            # One SHORT line: the popup is sixty columns wide inside its
+            # border, and a longer sentence wraps and pushes the header off.
+            printf '  %s!%s a name cannot hold  '"'"' " \\ ; : or #\n' "$BAD" "$RESET"
+            printf '  %spress any key%s' "$DIM" "$RESET"
+            read -rsn1
+            exit 0
+            ;;
+    esac
+}
+
+# --- The saved workspaces --------------------------------------------------
+
+LIVE="$NL$(tmux list-sessions -F '#{session_name}' 2>/dev/null)$NL"
 _ws_is_live() {
-    case "$WS_LIVE" in *"$NL$1$NL"*) return 0 ;; esac
+    case "$LIVE" in *"$NL$1$NL"*) return 0 ;; esac
     return 1
 }
 
-_ws_in_list() {
-    local n
-    for n in "${WS_NAMES[@]}"; do [ "$n" = "$1" ] && return 0; done
-    return 1
-}
-
-# _ws_short PATH WIDTH — ~ for the home folder, cut from the left to WIDTH.
+# _ws_short PATH — ~ for the home folder.
 _ws_short() {
-    local p="$1" w="$2"
+    local p="$1"
     case "$p" in
         "$HOME") p="~" ;;
         "$HOME"/*) p="~/${p#"$HOME"/}" ;;
     esac
-    if [ "${#p}" -gt "$w" ]; then
-        p="…${p:$((${#p} - w + 1))}"
-    fi
     printf '%s' "$p"
 }
 
@@ -207,236 +302,128 @@ _ws_pad() {
     printf '%s' "$t"
 }
 
-_ws_draw() {
-    local rows cols vis i n d mark state path_w size
-    size="$(stty size 2>/dev/null)"
-    rows="${size% *}"
-    cols="${size#* }"
-    case "$rows" in ''|*[!0-9]*) rows=13 ;; esac
-    case "$cols" in ''|*[!0-9]*) cols=60 ;; esac
-    # Header, blank, message, keys: the rows that stay are for the list. A
-    # popup from a clux.tmux.conf before 4.3.0 is 5 rows high, so this can be
-    # 1, and the list scrolls to keep the selected row on the screen.
-    vis=$((rows - 4))
-    [ "$vis" -ge 1 ] || vis=1
-    [ "$WS_SEL" -ge "$WS_TOP" ] || WS_TOP=$WS_SEL
-    [ "$WS_SEL" -lt $((WS_TOP + vis)) ] || WS_TOP=$((WS_SEL - vis + 1))
-    path_w=$((cols - 24))
-    [ "$path_w" -ge 10 ] || path_w=10
-
-    printf '\033[H\033[2J'
-    printf '%s Workspaces %s %s%s%s %srecent%s %s%s%s   %s1-9 · j/k · esc%s\n' \
-        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
-        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
-    printf '\n'
-    i=$WS_TOP
-    while [ "$i" -lt "$WS_COUNT" ] && [ "$i" -lt $((WS_TOP + vis)) ]; do
-        n="${WS_NAMES[$i]}"
-        d="${WS_DIRS[$i]}"
-        mark=" "
-        [ "$i" -eq "$WS_SEL" ] && mark="${MARK}▸${RESET}"
-        if _ws_is_live "$n"; then
-            state="${MARK}●${RESET}"
-        elif [ ! -d "$d" ]; then
-            state="${BAD}✗${RESET}"
-        else
-            state=" "
-        fi
-        printf '%s %s%d%s %s %s%s%s %s\n' "$mark" "$DIM" $((i + 1)) "$RESET" \
-            "$(_ws_pad "$n" 16)" "$DIM" "$(_ws_pad "$(_ws_short "$d" "$path_w")" "$path_w")" "$RESET" "$state"
-        i=$((i + 1))
-    done
-    printf '%s\n' "$WS_MSG"
-    printf '%s⏎ open · ␣ folder · x delete · a open all · n new%s' "$DIM" "$RESET"
+# _ws_rows — one row per workspace (the shape the helper mode documents):
+# the saved ones newest first, then the live sessions the list does not hold.
+# A ✗ marks a saved folder that is gone.
+_ws_rows() {
+    local n d m st seen="$NL"
+    while IFS="$TAB" read -r n d; do
+        [ -n "$n" ] || continue
+        seen="$seen$n$NL"
+        st=saved
+        _ws_is_live "$n" && st=live
+        m=" "
+        [ "$st" = saved ] && [ ! -d "$d" ] && m="${BAD}✗${RESET}"
+        printf '%s\t%s %s\t%s\t%s\t%s\n' "$(_ws_pad "$n" 18)" "$(_ws_pad "$(_ws_short "$d")" 40)" "$m" "$n" "$d" "$st"
+    done < <("$HISTORY" list 2>/dev/null)
+    while IFS="$TAB" read -r n d; do
+        [ -n "$n" ] || continue
+        case "$seen" in *"$NL$n$NL"*) continue ;; esac
+        printf '%s\t%s  \t%s\t%s\tlive\n' "$(_ws_pad "$n" 18)" "$(_ws_pad "$(_ws_short "$d")" 40)" "$n" "$d"
+    done < <(tmux list-sessions -F "#{session_name}${TAB}#{session_path}" 2>/dev/null)
 }
 
-# _ws_open — open the selected row. Returns only when the row cannot open.
+# _ws_open NAME DIR — open a workspace from the list. Never returns.
+#
+# A live session gets a switch (new-workspace.sh does that); a gone one is
+# built again in its saved folder. A row whose session is gone, while a live
+# session that is NOT in the list has the same folder, is a renamed workspace
+# (prefix + $): the client switches to that session, and the row takes its
+# name. A row whose folder is gone asks for a folder first.
 _ws_open() {
-    local n="${WS_NAMES[$WS_SEL]}" d="${WS_DIRS[$WS_SEL]}" p other
-    _ws_read_live
+    local n="$1" d="$2" p other
     if ! _ws_is_live "$n"; then
-        # A renamed workspace: a live session that the list does not know,
-        # with the folder of this row.
-        while IFS=$'\t' read -r p other; do
-            if [ "$p" = "$d" ] && [ -n "$other" ] && ! _ws_in_list "$other"; then
+        while IFS="$TAB" read -r p other; do
+            if [ "$p" = "$d" ] && [ -n "$other" ] \
+                && ! "$HISTORY" list 2>/dev/null | cut -f1 | grep -qxF -- "$other"; then
                 "$HISTORY" remove "$n"
                 "$HISTORY" add "$other" "$d"
                 tmux switch-client -t "=$other"
                 exit 0
             fi
-        done <<EOF
-$WS_LIVE_PATHS
-EOF
+        done < <(tmux list-sessions -F "#{session_path}${TAB}#{session_name}" 2>/dev/null)
         if [ ! -d "$d" ]; then
-            WS_MSG="  ${BAD}!${RESET} the folder is gone: press space to set one"
-            return 1
+            _clux_header
+            printf '  %s!%s the folder is gone: %s\n' "$BAD" "$RESET" "$(_ws_short "$d")"
+            _clux_ask_folder "$n"
+            d="$FOLDER_NAME"
         fi
     fi
-    tmux set-option -g "@clux-new-workspace-name" "$n"
-    _clux_term_restore
-    exec "$CURRENT_DIR/new-workspace.sh" "$d"
+    _clux_go "$n" "$d"
 }
 
-# _ws_set_folder — Space: ask for a folder, resolve it the way a new
-# workspace does (new-workspace.sh --resolve), and save it on the row.
-_ws_set_folder() {
-    local n="${WS_NAMES[$WS_SEL]}" answer dir
-    printf '\033[H\033[2J'
-    printf '%s Folder %s %s%s%s %s%s%s %s%s%s   %s⏎ save · esc cancel%s\n\n' \
-        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$n" "$RESET" \
-        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
-    printf '  %snow%s     %s\n' "$DIM" "$RESET" "$(_ws_short "${WS_DIRS[$WS_SEL]}" 48)"
-    printf '  %s▸%s folder  ' "$MARK" "$RESET"
-    IFS= read -r answer || exit 0
-    if [ -z "$answer" ] || _clux_cancelled_line "$answer"; then
-        return 0
+# _ws_box — the text box. Sets SESSION_NAME for a new workspace, or opens a
+# picked one and does not return.
+_ws_box() {
+    local out rc mode row
+    _CLUX_WS_ROWS="$(mktemp "${TMPDIR:-/tmp}/clux-ws.XXXXXX")" || exit 0
+    _ws_rows > "$_CLUX_WS_ROWS"
+    export CLUX_WS_ROWS="$_CLUX_WS_ROWS"
+    CLUX_WS_GHOST="$DIM"
+    export CLUX_WS_GHOST
+
+    local h text
+    h="'$CURRENT_DIR/new-workspace-prompt.sh' --fzf"
+    text="$(clux_fzf_color "$(get_workspace_text_color)")"
+    # The user's own FZF_DEFAULT_OPTS (a border, a preview, a height) would
+    # change this box; it is built to fit the popup exactly, so none apply.
+    out="$(FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' fzf --ansi --layout=reverse --height=100% --no-scrollbar \
+        --print-query --delimiter="$TAB" --with-nth=1,2 --nth=1 --tabstop=1 \
+        --no-separator --tiebreak=index --with-shell 'sh -c' \
+        --list-border=top --list-label=' recents ' \
+        --info='inline:' --info-command="$h ghost {3}" \
+        --header "${CHIP} Workspace ${RESET}" --header-first \
+        --pointer ' ' --gutter ' ' --prompt 'new       ▸ ' \
+        --color "fg:$text,fg+:$text,bg+:-1,hl:-1:bold,hl+:-1:bold,header:-1" \
+        --color "prompt:$(clux_fzf_color "$(get_agent_done_color),bold")" \
+        --color "pointer:$(clux_fzf_color "$(get_agent_busy_color)")" \
+        --color "list-border:$(clux_fzf_color "$(get_bar_separator_style)"),list-label:$text" \
+        --bind "change:transform:$h change" \
+        --bind "focus:transform:$h focus {5}" \
+        --bind 'tab:transform-query:[ "$FZF_MATCH_COUNT" -gt 0 ] && printf %s {3} || printf %s {q}' \
+        --bind "down:transform:$h down {5}" \
+        --bind "up:transform:$h up" \
+        --bind "enter:transform:$h enter" < "$_CLUX_WS_ROWS")"
+    rc=$?
+    # fzf exits 1 when no row matches, even after Enter: that is a new name.
+    # 130 is Esc or Ctrl-C, 2 is an error.
+    case "$rc" in 0|1) ;; *) exit 0 ;; esac
+
+    SESSION_NAME="$(printf '%s\n' "$out" | sed -n 1p)"
+    mode="$(printf '%s\n' "$out" | sed -n 2p)"
+    row="$(printf '%s\n' "$out" | sed -n 3p)"
+    if [ "$mode" = OPEN ] && [ -n "$row" ]; then
+        _ws_open "$(printf '%s' "$row" | cut -f3)" "$(printf '%s' "$row" | cut -f4)"
     fi
-    if dir="$("$CURRENT_DIR/new-workspace.sh" --resolve "$answer" 2>/dev/null)" && [ -n "$dir" ]; then
-        "$HISTORY" set-dir "$n" "$dir"
-        WS_MSG="  folder set"
-        _ws_is_live "$n" && WS_MSG="  folder set: the live session keeps its folder"
-    else
-        WS_MSG="  ${BAD}!${RESET} no folder for $(_ws_short "$answer" 36)"
-    fi
 }
 
-# _ws_open_all — a: build each saved workspace that is not live, in the
-# background (new-workspace.sh --restore: no switch, the list keeps its order).
-# It asks first: each workspace starts its own agents command.
-_ws_open_all() {
-    local i todo=0 key done_n=0
-    for ((i = 0; i < WS_COUNT; i++)); do
-        _ws_is_live "${WS_NAMES[$i]}" && continue
-        [ -d "${WS_DIRS[$i]}" ] && todo=$((todo + 1))
-    done
-    if [ "$todo" -eq 0 ]; then
-        WS_MSG="  all saved workspaces are open"
-        return 0
-    fi
-    WS_MSG="  open $todo workspaces? y/n"
-    _ws_draw
-    IFS= read -rsn1 -d '' key || exit 0
-    case "$key" in
-        y|Y) ;;
-        *) WS_MSG=""; return 0 ;;
-    esac
-    for ((i = 0; i < WS_COUNT; i++)); do
-        _ws_is_live "${WS_NAMES[$i]}" && continue
-        [ -d "${WS_DIRS[$i]}" ] || continue
-        tmux set-option -g "@clux-new-workspace-name" "${WS_NAMES[$i]}"
-        "$CURRENT_DIR/new-workspace.sh" --restore "${WS_DIRS[$i]}" >/dev/null 2>&1 \
-            && done_n=$((done_n + 1))
-    done
-    tmux display-message "clux: opened $done_n of $todo workspaces"
-    exit 0
-}
+# --- Main ------------------------------------------------------------------
 
-# _ws_list — the key loop. Returns 0 to go on to the name prompt.
-_ws_list() {
-    local key
-    _ws_load
-    [ "$WS_COUNT" -gt 0 ] || return 0
-    while :; do
-        _ws_draw
-        IFS= read -rsn1 -d '' key || exit 0
-        WS_MSG=""
-        case "$key" in
-            [1-9])
-                if [ "$key" -le "$WS_COUNT" ]; then
-                    WS_SEL=$((key - 1))
-                    _ws_open
-                fi
-                ;;
-            j) [ "$WS_SEL" -lt $((WS_COUNT - 1)) ] && WS_SEL=$((WS_SEL + 1)) ;;
-            k) [ "$WS_SEL" -gt 0 ] && WS_SEL=$((WS_SEL - 1)) ;;
-            "$NL"|$'\r') _ws_open ;;
-            ' ') _ws_set_folder; _ws_load ;;
-            x)
-                "$HISTORY" remove "${WS_NAMES[$WS_SEL]}"
-                _ws_load
-                [ "$WS_COUNT" -gt 0 ] || { printf '\033[H\033[2J'; return 0; }
-                ;;
-            a) _ws_open_all; _ws_load ;;
-            n) printf '\033[H\033[2J'; return 0 ;;
-            q) exit 0 ;;
-            [[:alnum:]]|-|_|.)
-                PRESET="$key"
-                printf '\033[H\033[2J'
-                return 0
-                ;;
-        esac
-    done
-}
-
-_ws_list
-
-# Header: the same chip and brackets the bar draws, then the key hints.
-printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · esc cancel%s\n\n' \
-    "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
-    "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
-
-printf '  %s▸%s name    %s' "$MARK" "$RESET" "$PRESET"
-IFS= read -r SESSION_NAME || exit 0
-SESSION_NAME="$PRESET$SESSION_NAME"
-
-# Empty means the prompt was cancelled — not an error. So does a control
-# character: on a terminal that took the stty above, that is the Ctrl-C the
-# user pressed to get out.
-if [ -z "$SESSION_NAME" ] || _clux_cancelled_line "$SESSION_NAME"; then
-    exit 0
-fi
-
-# `read -r` stops at a newline, so a name can no longer contain one and the
-# old newline arm of this case is unreachable — dropped rather than left in
-# as dead reassurance.
-#
-# ":" is rejected for a different reason than the quoting characters: tmux
-# ACCEPTS it in a session name but reads it as the session/window separator in
-# every target. `has-session -t "=a:b"` reports "can't find session: a", so
-# new-workspace.sh never sees the existing workspace; `new-window -t "a:b"`
-# reports "can't find window: b"; and `move-window -t "a:b:0"` fails the same
-# way. The result is a half-built workspace the user cannot reach. Refusing
-# the name up front is the only place this can be stopped.
-case "$SESSION_NAME" in
-    *\'*|*\"*|*\\*|*';'*|*'#'*|*:*)
-        # Both, on purpose: display-message is what a caller outside a popup
-        # sees, and the popup covers the status line it writes to, so the same
-        # text is printed here as well. The pause is what keeps `-E` from
-        # closing the popup before the reason can be read.
-        tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, colon, or #"
-        # One SHORT line, and no blank line before it: `-h 7` minus the popup
-        # border leaves five rows of sixty columns, and the sentence this used
-        # to be was sixty-seven — it wrapped, which pushed the header off the
-        # top. Header, blank, name, this, and the pause are exactly five.
-        printf '  %s!%s a name cannot hold  '"'"' " \\ ; : or #\n' "$BAD" "$RESET"
-        printf '  %spress any key%s' "$DIM" "$RESET"
-        read -rsn1
+SESSION_NAME=""
+if command -v fzf >/dev/null 2>&1; then
+    _ws_box
+    [ -n "$SESSION_NAME" ] || exit 0
+    # Exactly the name of a saved or live workspace: open it, no folder
+    # question. The prompt said "open" or "switch to" for this name. ENVIRON,
+    # not `awk -v`: -v would read a backslash in the name as an escape.
+    dir="$(_N="$SESSION_NAME" awk -F'\t' '$3 == ENVIRON["_N"] { print $4; exit }' "$_CLUX_WS_ROWS")"
+    [ -n "$dir" ] && _ws_open "$SESSION_NAME" "$dir"
+    _clux_header
+    printf '  %s▸%s name    %s\n' "$MARK" "$RESET" "$SESSION_NAME"
+    _clux_reject "$SESSION_NAME"
+else
+    _clux_plain_keys
+    _clux_header
+    printf '  %s▸%s name    ' "$MARK" "$RESET"
+    IFS= read -r SESSION_NAME || exit 0
+    # Empty means the prompt was cancelled — not an error. So does a control
+    # character: on a terminal that took the stty above, that is the Ctrl-C
+    # the user pressed to get out.
+    if [ -z "$SESSION_NAME" ] || _clux_cancelled_line "$SESSION_NAME"; then
         exit 0
-        ;;
-esac
-
-# Enter alone means "same as the session name", which is exactly what
-# new-workspace.sh already does with an empty folder. The old second prompt
-# prefilled "<name>/" for the user to complete; bash 3.2 (macOS) has no
-# `read -i`, and a stated default reads better than a prefill nobody can edit.
-# The default is STATED, not prefilled — that is what the comment above is
-# about, and a bare "folder" prompt hides it. The dim suffix is the whole
-# reason Enter alone is usable here.
-printf '  %s▸%s folder  %s[%s]%s ' "$MARK" "$RESET" "$DIM" "$SESSION_NAME" "$RESET"
-IFS= read -r FOLDER_NAME || exit 0
-if _clux_cancelled_line "$FOLDER_NAME"; then
-    exit 0
-fi
-if [ -z "$FOLDER_NAME" ]; then
-    FOLDER_NAME="$SESSION_NAME"
+    fi
+    _clux_reject "$SESSION_NAME"
 fi
 
-# Overwritten on every A press, so a cancelled folder prompt never leaves a
-# stale name that a later, unrelated new-workspace.sh run could pick up.
-tmux set-option -g "@clux-new-workspace-name" "$SESSION_NAME"
-
-# `exec` replaces this process, so the EXIT trap above never runs on the
-# success path. Put the interrupt character back before handing over.
-_clux_term_restore
-
-exec "$CURRENT_DIR/new-workspace.sh" "$FOLDER_NAME"
+_clux_ask_folder "$SESSION_NAME"
+_clux_go "$SESSION_NAME" "$FOLDER_NAME"

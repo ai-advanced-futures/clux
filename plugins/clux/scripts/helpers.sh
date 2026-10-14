@@ -334,6 +334,9 @@ get_agent_fail_color()      { get_tmux_option "@clux-agent-fail-color"  "red"; }
 get_bar_name_attached_style() { get_tmux_option "@clux-bar-name-attached-style" "bg=magenta,fg=black,bold"; }
 get_bar_bracket_style()       { get_tmux_option "@clux-bar-bracket-style"       "fg=magenta"; }
 get_bar_separator_style()     { get_tmux_option "@clux-bar-separator-style"     "fg=brightblack"; }
+# The rows of the prefix + A list. A light gray, so the letters the typed text
+# matches (drawn in the terminal's own colour, bold) stand out.
+get_workspace_text_color()    { get_tmux_option "@clux-workspace-text-color"    "colour245"; }
 
 # clux_ansi <tmux-style> — translate one tmux style string into an ANSI escape
 # sequence, so a popup (a real terminal, not a tmux format string) can draw in
@@ -419,6 +422,48 @@ _clux_ansi_color() {
     # The bright names carry idx 60-67 on purpose: base+60 is exactly where the
     # bright range starts for both foreground (90) and background (100).
     printf ';%s' "$((base + idx))"
+}
+
+# clux_fzf_color <tmux-style> — the foreground of one tmux style in the form
+# fzf's --color takes: `-1`, `#rrggbb`, `0`-`255`, or a base name, with
+# `:bold` when the style is bold. tmux spells the bright names `brightblack`
+# and fzf spells them `bright-black`, so a name cannot pass through as is.
+# A colour this does not understand gives `-1`, the terminal's own colour.
+#
+# Only the foreground: each fzf colour slot is one colour, and the prefix + A
+# box uses these for text (prompt, pointer, rows), never for a fill.
+clux_fzf_color() {
+    local spec="$1" part val="" bold=""
+    local IFS=,
+    local _reset_glob=""
+    case "$-" in *f*) ;; *) _reset_glob=1; set -f ;; esac
+    for part in $spec; do
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        case "$part" in
+            bold) bold=":bold" ;;
+            bg=*|dim|italics|italic|underscore|underline|reverse|'') ;;
+            fg=*) val="${part#fg=}" ;;
+            *) val="$part" ;;
+        esac
+    done
+    [ -n "$_reset_glob" ] && set +f
+    case "$val" in
+        colour*) val="${val#colour}" ;;
+        color*)  val="${val#color}" ;;
+    esac
+    case "$val" in
+        \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+        black|red|green|yellow|blue|magenta|cyan|white) ;;
+        bright*)
+            case "${val#bright}" in
+                black|red|green|yellow|blue|magenta|cyan|white) val="bright-${val#bright}" ;;
+                *) val="-1" ;;
+            esac ;;
+        ''|*[!0-9]*) val="-1" ;;
+        *) [ "$val" -le 255 ] || val="-1" ;;
+    esac
+    printf '%s%s' "$val" "$bold"
 }
 
 # Resolve the agent session's display name — the name shown in the `claude agents`

@@ -316,10 +316,11 @@ _make_fake_scripts_dir() {
     local line; line="$(grep -F 'bind-key A display-popup' "$out")"
 
     # A percentage height grew this popup to fifteen rows on a tall terminal;
-    # it has the same size on each terminal: 13 rows inside the border, for
-    # the header, a blank line, the 9 saved workspaces, a message and the keys.
+    # it has the same size on each terminal: 8 rows inside the border, for
+    # the header, the text box, the "recents" line and 5 saved workspaces.
     [[ "$line" != *"-h 30%"* ]] || { echo "still a percentage height: $line"; false; }
-    [[ "$line" == *"-h 15 "* ]] || { echo "no fixed height: $line"; false; }
+    [[ "$line" == *"-h 10 "* ]] || { echo "no fixed height: $line"; false; }
+    [[ "$line" == *"-w 72 "* ]] || { echo "not wide enough for name + folder: $line"; false; }
 
     # -x 0 -y S pins it to the top-left, clear of the status line, and S
     # follows status-position rather than needing a second setting.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # workspace-history.bats — workspace-history.sh: the saved workspaces that
-# prefix + A lists. One "<name><TAB><folder>" line each, newest first, 9 at
+# prefix + A lists. One "<name><TAB><folder>" line each, newest first, 50 at
 # most, under XDG_STATE_HOME.
 
 load test_helper
@@ -43,13 +43,13 @@ setup() {
     [ "${lines[1]}" = $'two\t/b' ]
 }
 
-@test "workspace-history: the list keeps 9 workspaces, so 1-9 reach each row" {
+@test "workspace-history: the list keeps the 50 newest workspaces" {
     local i
-    for i in 1 2 3 4 5 6 7 8 9 10 11; do "$HIST" add "w$i" "/d$i"; done
+    for i in $(seq 1 52); do "$HIST" add "w$i" "/d$i"; done
     run "$HIST" list
-    [ "${#lines[@]}" -eq 9 ]
-    [ "${lines[0]}" = $'w11\t/d11' ]
-    [ "${lines[8]}" = $'w3\t/d3' ]
+    [ "${#lines[@]}" -eq 50 ]
+    [ "${lines[0]}" = $'w52\t/d52' ]
+    [ "${lines[49]}" = $'w3\t/d3' ]
 }
 
 @test "workspace-history: remove deletes one line and keeps the order" {

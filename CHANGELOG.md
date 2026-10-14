@@ -2,6 +2,27 @@
 
 All notable changes to clux are documented here.
 
+## [5.1.0]
+
+### Changed
+
+- **`prefix + A` is one text box.** Type a name. The list under the box shows the saved workspaces and the live sessions that match, newest first. Before you type, the list has the title `recents`; after, `matches`
+- Enter makes a new workspace with the typed name, then asks for the folder. Down picks the top match, and Enter then opens it in its saved folder, with no folder question. Up from the top row goes back to a new name. Typing also goes back to a new name
+- Tab puts the name of the current row in the box. Enter then opens it, or you can type more for a new name
+- When the typed name is exactly the name of a saved workspace or a live session, Enter opens it
+- The prompt tells what Enter does: `new`, `open` (a saved workspace) or `switch to` (a live session). After the typed text, the rest of the current row's name shows in gray
+- The popup is 72 × 10 and shows 5 rows. The list scrolls
+- The saved list keeps 50 workspaces (was 9)
+- Without fzf, the popup asks for the name and the folder as before
+
+### Added
+
+- `@clux-workspace-text-color` (default `colour245`): the color of the rows in the `prefix + A` list
+
+### Removed
+
+- The keys of the old list: `1`-`9`, `j`, `k`, `x`, Space, `a` and `n`. To remove a saved workspace, run `~/.config/clux/scripts/workspace-history.sh remove NAME`
+
 ## [5.0.0]
 
 ### Changed

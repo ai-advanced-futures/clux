@@ -3,7 +3,8 @@
 # workspace-history.sh — the saved workspaces prefix + A lists.
 #
 # One line per workspace, "<name><TAB><absolute folder>", newest first, at
-# most CLUX_WORKSPACE_MAX (9) lines, so the keys 1-9 reach every row.
+# most CLUX_WORKSPACE_MAX (50) lines. The prefix + A box filters the list as
+# the user types, so it can hold more rows than fit on the screen.
 #
 #   workspace-history.sh path              print the file path
 #   workspace-history.sh list              print the lines, newest first
@@ -23,7 +24,7 @@
 # reader never sees half a file. Two writes at the same moment can lose one of
 # the two changes; for a list that prefix + A writes, that is acceptable.
 
-CLUX_WORKSPACE_MAX=9
+CLUX_WORKSPACE_MAX=50
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/clux/workspaces"
 
 _usage() {

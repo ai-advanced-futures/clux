@@ -1,28 +1,34 @@
 #!/usr/bin/env bats
-# new-workspace-prompt.bats — new-workspace-prompt.sh: both steps of prefix + A.
+# new-workspace-prompt.bats — new-workspace-prompt.sh: prefix + A.
 #
-# The script now runs inside `tmux display-popup -E` and reads BOTH answers
-# itself, so neither one ever reaches a tmux command string. The tests match:
-# the happy path is driven through a real pty (a pane on a throwaway tmux
-# server) with real keystrokes, because a `read` from a pipe would not exercise
-# the code path the popup actually takes.
+# The script runs inside `tmux display-popup -E`: an fzf text box for the name
+# (or a plain name prompt without fzf), then a plain folder question for a new
+# name. It reads every answer itself, so no answer ever reaches a tmux command
+# string. Three layers of tests:
+#
+#   1. the --fzf helper mode, alone: fzf's state in, fzf actions out. This is
+#      where the box's state lives (new / open / switch to, picked or not), so
+#      each event is checked here with no tmux and no fzf;
+#   2. the box through a real pty (a pane on a throwaway tmux server) with real
+#      keys, because a `read` or an fzf from a pipe would not take the path
+#      the popup takes;
+#   3. the plain prompts, on a PATH that holds no fzf.
 #
 # REAL_TMUX is captured at file-load time, before test_helper's setup()
 # prepends the stub directory to PATH — the same pattern REAL_JQ uses.
 #
-# The test this file exists for is the injection one at the bottom. Before the
-# change, `bind-key A` handed the typed name to tmux's command-prompt, which
+# The test this file exists for is the injection one. Before the popup,
+# `bind-key A` handed the typed name to tmux's command-prompt, which
 # substitutes into its command template BEFORE parsing it; typing
-# `ws" ; touch FILE ; "` created FILE. That could not be tested here at all,
-# because the fault lived in the binding and fired before this script started.
-# It is now testable from two sides: this file proves the script rejects the
-# name, and render-clux-conf.bats proves no emitted binding carries a `%1`
-# substitution for anything to break out of.
+# `ws" ; touch FILE ; "` created FILE. It is testable from two sides: this file
+# proves the script rejects the name, and render-clux-conf.bats proves no
+# emitted binding carries a `%1` substitution for anything to break out of.
 
 load test_helper
 
 REAL_TMUX="$(command -v tmux)"
 PROMPT_SCRIPT="$SCRIPTS_DIR/new-workspace-prompt.sh"
+HIST="$SCRIPTS_DIR/workspace-history.sh"
 
 # Stage the script with a recording stand-in for new-workspace.sh beside it:
 # the prompt resolves its sibling through $CURRENT_DIR and `exec`s it, so a
@@ -39,14 +45,6 @@ _stage() {
     cat > "$STAGE/new-workspace.sh" <<'STUB'
 #!/usr/bin/env bash
 # Records what the prompt handed over, then exits so the popup would close.
-# --resolve answers with a fixed form, so a test can see the answer was used.
-case "$1" in
-    --resolve) printf '/resolved/%s\n' "$2"; exit 0 ;;
-    --restore)
-        printf 'RESTORE=%s %s\n' "$(tmux show-option -gqv @clux-new-workspace-name)" "$2" >> "$RECORD"
-        exit 0
-        ;;
-esac
 printf 'FOLDER=%s\n' "$1" >> "$RECORD"
 printf 'NAME=%s\n' "$(tmux show-option -gqv @clux-new-workspace-name)" >> "$RECORD"
 STUB
@@ -63,6 +61,18 @@ STUB
     rm -rf "$XDG_STATE_HOME"
 }
 
+# The PATH the pane runs with: the real tmux (and fzf, which sits beside it on
+# a Homebrew machine) and the system tools.
+_pane_path() { printf '%s:/usr/bin:/bin' "$(dirname "$REAL_TMUX")"; }
+
+# _nofzf_path — a PATH with the real tmux and NO fzf, wherever fzf lives.
+_nofzf_path() {
+    local dir="$BATS_TEST_TMPDIR/nofzf-bin"
+    mkdir -p "$dir"
+    ln -sf "$REAL_TMUX" "$dir/tmux"
+    printf '%s:/usr/bin:/bin' "$dir"
+}
+
 # Run the staged prompt in a real pane on a throwaway server, type $@ as
 # separate lines, and wait for the pane to finish. Uses the REAL tmux: the
 # point is a genuine tty and a genuine option round-trip.
@@ -74,8 +84,8 @@ _run_in_pty() {
     # assertions below have something to read. It is reached even though the
     # script ends in `exec`: tmux runs this string through `sh -c`, the script
     # is a forked child of that shell, and `exec` replaces only the child.
-    "$REAL_TMUX" -L "$SOCKET" new-session -d -x 80 -y 24 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 30"
+    "$REAL_TMUX" -L "$SOCKET" -f /dev/null new-session -d -x 80 -y 24 \
+        "RECORD='$RECORD' PATH='${RUN_PATH:-$(_pane_path)}' '$STAGE/new-workspace-prompt.sh'; sleep 30"
     sleep 1
     local line
     for line in "$@"; do
@@ -106,23 +116,6 @@ _wait_for_screen() {
     return 1
 }
 
-# The mirror of the above: waits for the pane to stop showing something, and
-# treats a server that has exited as success — a cancelled prompt takes the
-# whole pane with it, so "gone" is the expected end state either way.
-_wait_for_gone() {
-    local sock="$1" needle="$2" tries="${3:-40}"
-    while [ "$tries" -gt 0 ]; do
-        "$REAL_TMUX" -L "$sock" has-session >/dev/null 2>&1 || return 0
-        case "$("$REAL_TMUX" -L "$sock" capture-pane -p 2>/dev/null)" in
-            *"$needle"*) ;;
-            *) return 0 ;;
-        esac
-        sleep 0.1
-        tries=$((tries - 1))
-    done
-    return 1
-}
-
 # A cancelled prompt has to STOP. Which way it stops depends on the signal:
 # SIGINT reaches the whole foreground process group and takes the pane with it,
 # while SIGQUIT leaves the pane's trailing command to run, so the script's own
@@ -141,10 +134,173 @@ _assert_cancelled() {
     return 1
 }
 
+# _start_box [COLS ROWS [PATH]] — start the staged popup in a session named
+# "live1" (so a row named live1 is a live session) and wait for the box. The
+# default size is the popup's INNER size: -w 72 -h 10 less the border.
+_start_box() {
+    local cols="${1:-70}" rows="${2:-8}" path="${3:-$(_pane_path)}"
+    BSOCK="clux-box-$$-${BATS_TEST_NUMBER}"
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    "$REAL_TMUX" -L "$BSOCK" -f /dev/null new-session -d -s live1 -x "$cols" -y "$rows" \
+        -c "$BATS_TEST_TMPDIR" \
+        "RECORD='$RECORD' PATH='$path' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
+    _wait_for_screen "$BSOCK" "${BOX_READY:-recents}" >/dev/null \
+        || { echo "the box never drew:"; "$REAL_TMUX" -L "$BSOCK" capture-pane -p; return 1; }
+}
+
+# _k KEY... — send each tmux key name, one at a time, with time to redraw.
+_k() {
+    local k
+    for k in "$@"; do
+        "$REAL_TMUX" -L "$BSOCK" send-keys -t '=live1:' "$k"
+        sleep 0.3
+    done
+}
+
+# _t TEXT — type TEXT and wait for it to show in the box.
+_t() {
+    "$REAL_TMUX" -L "$BSOCK" send-keys -t '=live1:' -l "$1"
+    _wait_for_screen "$BSOCK" "$1" >/dev/null || true
+    sleep 0.3
+}
+
+# _prompt — the text box line (row 2: the header is row 1).
+_prompt() {
+    "$REAL_TMUX" -L "$BSOCK" capture-pane -p -t '=live1:' 2>/dev/null | sed -n 2p
+}
+
+# _end — wait for the popup script to end (or 2 s), keep the last screen in
+# SCREEN, and stop the server.
+_end() {
+    local tries=20
+    while [ "$tries" -gt 0 ] && [ ! -e "$DONE" ]; do sleep 0.1; tries=$((tries - 1)); done
+    # Esc or Ctrl-C can take the pane, and the server, with it.
+    SCREEN="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p 2>/dev/null)" || true
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+}
+
+_need_fzf() {
+    PATH="$(_pane_path)" command -v fzf >/dev/null 2>&1 || skip "fzf is not installed beside tmux"
+}
+
+# ===========================================================================
+# 1. The --fzf helper mode
+# ===========================================================================
+
+# _rows — a rows file: one saved workspace, one live session.
+_rows() {
+    ROWS="$BATS_TEST_TMPDIR/rows"
+    printf 'one\t/a\tone\t/a\tsaved\nlive1\t/b\tlive1\t/b\tlive\n' > "$ROWS"
+}
+
+# _fzf EVENT [FIELD] — run the helper mode with the FZF_* values set by the
+# caller in Q (query), PTR (pointer), POS and N (match count).
+_fzf() {
+    run env FZF_QUERY="${Q:-}" FZF_POINTER="${PTR:- }" FZF_POS="${POS:-1}" \
+        FZF_MATCH_COUNT="${N:-2}" CLUX_WS_ROWS="${ROWS:-/dev/null}" CLUX_WS_GHOST='<g>' \
+        "$PROMPT_SCRIPT" --fzf "$@"
+}
+
+@test "helper: typing un-picks, goes to the first row and says new for an unknown name" {
+    _rows
+    Q=zz _fzf change
+    [ "$status" -eq 0 ]
+    [ "$output" = 'first+change-pointer( )+change-prompt(new       ▸ )+change-list-label( matches )' ] \
+        || { echo "got: $output"; false; }
+}
+
+@test "helper: an empty box shows the recents label" {
+    _rows
+    Q='' _fzf change
+    [[ "$output" == *'change-list-label( recents )'* ]] || { echo "got: $output"; false; }
+    [[ "$output" == *'change-prompt(new       ▸ )'* ]] || { echo "got: $output"; false; }
+}
+
+@test "helper: the exact name of a saved workspace says open, of a live one says switch to" {
+    _rows
+    Q=one _fzf change
+    [[ "$output" == *'change-prompt(open      ▸ )'* ]] || { echo "saved: $output"; false; }
+    Q=live1 _fzf change
+    [[ "$output" == *'change-prompt(switch to ▸ )'* ]] || { echo "live: $output"; false; }
+    # A prefix of a name is not the name.
+    Q=on _fzf change
+    [[ "$output" == *'change-prompt(new       ▸ )'* ]] || { echo "prefix: $output"; false; }
+}
+
+@test "helper: the first Down picks the top row and does not move" {
+    PTR=' ' _fzf down live
+    [ "$output" = 'change-pointer(▸)+change-prompt(switch to ▸ )' ] || { echo "got: $output"; false; }
+    PTR=' ' _fzf down saved
+    [ "$output" = 'change-pointer(▸)+change-prompt(open      ▸ )' ] || { echo "got: $output"; false; }
+}
+
+@test "helper: Down with no match picks nothing, Down when picked moves down" {
+    PTR=' ' N=0 _fzf down saved
+    [ -z "$output" ] || { echo "got: $output"; false; }
+    PTR='▸' _fzf down saved
+    [ "$output" = 'down' ] || { echo "got: $output"; false; }
+}
+
+@test "helper: Up from the top row un-picks; Up lower moves up; Up un-picked does nothing" {
+    _rows
+    PTR='▸' POS=1 Q=one _fzf up
+    [ "$output" = 'change-pointer( )+change-prompt(open      ▸ )' ] || { echo "top: $output"; false; }
+    PTR='▸' POS=2 _fzf up
+    [ "$output" = 'up' ] || { echo "lower: $output"; false; }
+    PTR=' ' _fzf up
+    [ -z "$output" ] || { echo "un-picked: $output"; false; }
+}
+
+@test "helper: focus follows the picked row, and leaves an un-picked prompt alone" {
+    PTR='▸' _fzf focus live
+    [ "$output" = 'change-prompt(switch to ▸ )' ] || { echo "got: $output"; false; }
+    PTR=' ' _fzf focus live
+    [ -z "$output" ] || { echo "got: $output"; false; }
+}
+
+@test "helper: Enter is OPEN when a row is picked, NEW when not" {
+    PTR='▸' _fzf enter
+    [ "$output" = 'print(OPEN)+accept' ] || { echo "got: $output"; false; }
+    PTR=' ' _fzf enter
+    [ "$output" = 'print(NEW)+accept' ] || { echo "got: $output"; false; }
+}
+
+@test "helper: the gray completion is the rest of the name, or → name for a fuzzy match" {
+    Q=cl _fzf ghost clux
+    [ "$output" = $'<g>ux\033[0m' ] || { echo "got: $output"; false; }
+    Q=ht _fzf ghost hotel
+    [ "$output" = $'<g>  → hotel\033[0m' ] || { echo "got: $output"; false; }
+}
+
+# The bug this pins: the exact name left nothing to show, and the colour
+# sequence printed for it was drawn by fzf as the text "[38;2;...m[0m".
+@test "helper: the gray completion prints NOTHING when the name is typed in full or the box is empty" {
+    Q=clux _fzf ghost clux
+    [ -z "$output" ] || { echo "exact name printed: $(printf '%s' "$output" | cat -v)"; false; }
+    Q='' _fzf ghost clux
+    [ -z "$output" ] || { echo "empty box printed: $(printf '%s' "$output" | cat -v)"; false; }
+    Q=cl _fzf ghost ''
+    [ -z "$output" ] || { echo "no row printed: $(printf '%s' "$output" | cat -v)"; false; }
+}
+
+@test "helper: runs no tmux command (it runs on every key)" {
+    local log="$BATS_TEST_TMPDIR/stub.log"
+    : > "$log"
+    _rows
+    local ev
+    for ev in change focus down up enter ghost; do
+        STUB_LOG="$log" Q=on PTR='▸' _fzf "$ev" saved
+    done
+    [ ! -s "$log" ] || { echo "the helper called:"; cat "$log"; false; }
+}
+
+# ===========================================================================
+# 2. The box, through a real pty
+# ===========================================================================
+
 @test "new-workspace-prompt: with no tty it refuses to run and says to re-run setup" {
     # The shape a stale clux.tmux.conf produces: the old binding called this
-    # through run-shell, which has no tty. `read` would hit EOF at once and the
-    # key would look silently broken.
+    # through run-shell, which has no tty.
     local log="$BATS_TEST_TMPDIR/stub.log"
     run bash -c "
         export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
@@ -158,7 +314,8 @@ _assert_cancelled() {
     [ "$status" -ne 0 ]
 }
 
-@test "new-workspace-prompt: name then folder are both read from the popup and handed on" {
+@test "new-workspace-prompt: a new name, then the folder, are both handed on" {
+    _need_fzf
     _stage
     _run_in_pty "work" "projects/work"
     grep -qF 'FOLDER=projects/work' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "pane: $PANE_TEXT"; false; }
@@ -166,12 +323,14 @@ _assert_cancelled() {
 }
 
 @test "new-workspace-prompt: an empty folder falls back to the session name" {
+    _need_fzf
     _stage
     _run_in_pty "solo" ""
     grep -qF 'FOLDER=solo' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "pane: $PANE_TEXT"; false; }
 }
 
-@test "new-workspace-prompt: an empty name cancels without storing anything" {
+@test "new-workspace-prompt: Enter in an empty box creates nothing" {
+    _need_fzf
     _stage
     _run_in_pty ""
     [ ! -s "$RECORD" ] || { echo "record should be empty: $(cat "$RECORD")"; false; }
@@ -179,6 +338,7 @@ _assert_cancelled() {
 }
 
 @test "new-workspace-prompt: a name carrying a shell command runs nothing — the injection regression" {
+    _need_fzf
     _stage
     local marker="$BATS_TEST_TMPDIR/PWNED"
     rm -f "$marker"
@@ -191,15 +351,15 @@ _assert_cancelled() {
 }
 
 @test "new-workspace-prompt: a name containing a single quote is rejected, not truncated" {
+    _need_fzf
     _stage
-    # The old binding created a workspace called "bad" for this input, silently
-    # dropping everything from the quote on.
     _run_in_pty "bad'name"
     [ ! -s "$RECORD" ] || { echo "a workspace was created: $(cat "$RECORD")"; false; }
     [ -z "$OPT_AFTER" ] || { echo "the rejected name was stored: $OPT_AFTER"; false; }
 }
 
 @test "new-workspace-prompt: a name containing a semicolon or a # is rejected" {
+    _need_fzf
     _stage
     _run_in_pty "bad;name"
     [ ! -s "$RECORD" ] || { echo "semicolon accepted: $(cat "$RECORD")"; false; }
@@ -210,10 +370,9 @@ _assert_cancelled() {
 }
 
 # tmux ACCEPTS a colon in a session name but reads it as the session/window
-# separator in every target, so "a:b" builds a workspace nothing can address:
-# has-session says "can't find session: a", new-window says "can't find
-# window: b". The name has to be refused here, before new-workspace.sh runs.
+# separator in every target, so "a:b" builds a workspace nothing can address.
 @test "new-workspace-prompt: a name containing a colon is rejected" {
+    _need_fzf
     _stage
     _run_in_pty "bad:name"
     [ ! -s "$RECORD" ] || { echo "colon accepted: $(cat "$RECORD")"; false; }
@@ -221,338 +380,376 @@ _assert_cancelled() {
 
 @test "new-workspace-prompt: no printf carries a \u escape bash 3.2 cannot expand" {
     # bash 3.2 is what macOS ships, and its printf has no \u — it prints the
-    # six characters verbatim, so the popup showed "\u25b8 name". Literal UTF-8
-    # is the only form every supported bash renders.
+    # six characters verbatim. Literal UTF-8 is the only form every supported
+    # bash renders.
     run grep -n '\\u[0-9a-fA-F]\{4\}' "$PROMPT_SCRIPT"
     [ "$status" -ne 0 ] \
         || { echo "a \\u escape survives, and bash 3.2 will print it literally:"; echo "$output"; false; }
 }
 
-@test "new-workspace-prompt: the popup draws its markers, not escape text" {
-    # Drives the real script through a pty the way the popup does, and reads
-    # back what landed on screen. This is the check that would have caught the
-    # \u regression from the user's side rather than from the source's.
-    _stage
-    local sock="clux-test-$$-draw"
-    "$REAL_TMUX" -L "$sock" -f /dev/null new-session -d -x 62 -y 7 \
-        "$STAGE/new-workspace-prompt.sh" 2>/dev/null
-    local screen
-    screen="$(_wait_for_screen "$sock" "New workspace")" || true
-    "$REAL_TMUX" -L "$sock" kill-server 2>/dev/null || true
-
-    [[ "$screen" != *'\u'* ]] \
-        || { echo "an unexpanded escape reached the screen:"; echo "$screen"; false; }
-    [[ "$screen" == *"New workspace"* ]] \
-        || { echo "the header never drew:"; echo "$screen"; false; }
-    [[ "$screen" == *"name"* ]] \
-        || { echo "the name prompt never drew:"; echo "$screen"; false; }
-}
-
-@test "new-workspace-prompt: Esc cancels the prompt instead of typing ^[" {
-    # Esc used to be an ordinary character in the line: it echoed "^[" and the
-    # prompt kept waiting, so the only way out of the popup was Ctrl-C. The
-    # terminal now carries Esc as its interrupt character, so Esc takes the
-    # same path Ctrl-C did.
-    _stage
-    local sock="clux-test-$$-esc-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
-    _wait_for_screen "$sock" "New workspace" >/dev/null \
-        || { echo "the prompt never drew, so Esc was never the thing under test"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys -l "partial"
-    _wait_for_screen "$sock" "partial" >/dev/null \
-        || { echo "the typed text never echoed, so nothing was waiting for Esc"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys Escape
-
-    local cancelled=0
-    _assert_cancelled "$sock" && cancelled=1
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    [ "$cancelled" -eq 1 ] || false
-
-    # And nothing was created or stored on the way out.
-    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
-}
-
-@test "new-workspace-prompt: Ctrl-C still cancels after Esc took the interrupt key" {
-    # `stty intr` names ONE character. Handing it to Esc TAKES it from Ctrl-C,
-    # which then stops raising SIGINT and lands in the line as a literal \003 —
-    # the prompt keeps waiting, and the name it hands on carries a control
-    # character the reject list does not name. Ctrl-C is moved onto `quit` so
-    # both keys still cancel.
-    _stage
-    local sock="clux-test-$$-ctrlc-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
-    _wait_for_screen "$sock" "New workspace" >/dev/null \
-        || { echo "the prompt never drew, so Ctrl-C was never the thing under test"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys -l "partial"
-    _wait_for_screen "$sock" "partial" >/dev/null \
-        || { echo "the typed text never echoed, so nothing was waiting for Ctrl-C"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys C-c
-
-    local cancelled=0
-    _assert_cancelled "$sock" && cancelled=1
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    [ "$cancelled" -eq 1 ] || false
-    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
-}
-
-@test "new-workspace-prompt: the folder prompt states the default it falls back to" {
-    # Enter alone reuses the session name. bash 3.2 has no `read -i`, so the
-    # default cannot be prefilled — stating it is the only way a user can know
-    # the empty answer does anything.
-    _stage
-    local sock="clux-test-$$-default-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$sock" new-session -d -x 62 -y 10 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
-    _wait_for_screen "$sock" "New workspace" >/dev/null || { echo "the prompt never drew"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys -l "myws"
-    "$REAL_TMUX" -L "$sock" send-keys Enter
-    local screen
-    screen="$(_wait_for_screen "$sock" "folder")" || true
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-
-    [[ "$screen" == *"[myws]"* ]] \
-        || { echo "the folder prompt never states its default:"; echo "$screen"; false; }
-}
-
-@test "new-workspace-prompt: the rejection fits the popup without scrolling the header away" {
-    # The popup is `-w 62 -h 7`; tmux draws a single-line border by default, so
-    # the script really gets 60x5. The reject path has to fit in that: header,
-    # blank, name, reason, pause. It did not — the reason ran to 67 columns,
-    # wrapped, and pushed the header off the top. The pane here is sized to the
-    # popup's INNER size on purpose; at 62x7 this test cannot see the fault.
-    _stage
-    local sock="clux-test-$$-fit-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$sock" new-session -d -x 60 -y 5 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
-    _wait_for_screen "$sock" "New workspace" >/dev/null || { echo "the prompt never drew"; false; }
-    "$REAL_TMUX" -L "$sock" send-keys -l "bad:name"
-    "$REAL_TMUX" -L "$sock" send-keys Enter
-    local screen
-    screen="$(_wait_for_screen "$sock" "press any key")" || true
-    "$REAL_TMUX" -L "$sock" kill-server >/dev/null 2>&1 || true
-
-    [[ "$screen" == *"press any key"* ]] \
-        || { echo "the reject path never finished drawing:"; echo "$screen"; false; }
-    [[ "$screen" == *"New workspace"* ]] \
-        || { echo "the reason scrolled the header off the popup:"; echo "$screen"; false; }
-}
-
-# --- The saved workspaces list ---------------------------------------------
-#
-# The popup opens on the list when workspace-history.sh holds a workspace.
-# Each test saves its rows, starts the popup in a pane the size of the popup
-# inside its border (60x13), and types single keys into it.
-
-HIST="$SCRIPTS_DIR/workspace-history.sh"
-
-# _start_list — start the staged popup in a session named "live1", so a row
-# named live1 is a live session.
-_start_list() {
-    LSOCK="clux-list-$$-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$LSOCK" -f /dev/null new-session -d -s live1 -x 60 -y 13 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; touch '$DONE'; sleep 20"
-    _wait_for_screen "$LSOCK" "Workspaces" >/dev/null \
-        || { echo "the list never drew:"; "$REAL_TMUX" -L "$LSOCK" capture-pane -p; return 1; }
-}
-
-# _keys K... — send each tmux key name, one at a time, with time to redraw.
-_keys() {
-    local k
-    for k in "$@"; do
-        "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' "$k"
-        sleep 0.3
-    done
-}
-
-# _end_list — wait for the popup script to end (or 2 s), keep the last
-# screen in SCREEN, and stop the server.
-_end_list() {
-    local tries=20
-    while [ "$tries" -gt 0 ] && [ ! -e "$DONE" ]; do sleep 0.1; tries=$((tries - 1)); done
-    SCREEN="$("$REAL_TMUX" -L "$LSOCK" capture-pane -p 2>/dev/null)"
-    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
-}
-
-@test "workspace list: draws each saved row, newest first, and marks a live session" {
-    _stage
-    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
-    "$HIST" add gone "$BATS_TEST_TMPDIR/b"
-    "$HIST" add live1 "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _end_list
-    [[ "$SCREEN" == *"1 live1"* ]] || { echo "$SCREEN"; false; }
-    [[ "$SCREEN" == *"2 gone"* ]] || { echo "$SCREEN"; false; }
-    local live_line; live_line="$(printf '%s\n' "$SCREEN" | grep 'live1')"
-    [[ "$live_line" == *"●"* ]] || { echo "no live mark: $live_line"; false; }
-    local gone_line; gone_line="$(printf '%s\n' "$SCREEN" | grep 'gone')"
-    [[ "$gone_line" != *"●"* ]] || { echo "a gone session is marked live: $gone_line"; false; }
-}
-
-@test "workspace list: a number opens that row at once" {
+@test "box: draws the header, an un-picked new prompt, and the recents, newest first" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
     "$HIST" add two "$BATS_TEST_TMPDIR/b"
     "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys 2
-    _end_list
+    # Wait for the last row: the label draws before the rows do.
+    BOX_READY="two" _start_box || false
+    local screen; screen="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Escape
+    _end
+    [[ "$screen" == *"Workspace"* ]] || { echo "$screen"; false; }
+    [[ "$(printf '%s\n' "$screen" | sed -n 2p)" == "new       ▸"* ]] || { echo "$screen"; false; }
+    # one is newer than two, so it is the first row.
+    [[ "$(printf '%s\n' "$screen" | sed -n 4p)" == *"one"* ]] || { echo "$screen"; false; }
+    [[ "$(printf '%s\n' "$screen" | sed -n 5p)" == *"two"* ]] || { echo "$screen"; false; }
+    [[ "$screen" != *"▸ one"* ]] || { echo "a row is picked before any key:"; echo "$screen"; false; }
+    [[ "$screen" != *'\u'* ]] || { echo "an unexpanded escape reached the screen:"; echo "$screen"; false; }
+}
+
+@test "box: typing narrows the list, and the label says matches" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add beta "$BATS_TEST_TMPDIR/b"
+    "$HIST" add alpha "$BATS_TEST_TMPDIR/a"
+    _start_box || false
+    _t bet
+    local screen; screen="$(_wait_for_screen "$BSOCK" "matches")" || true
+    _k Escape
+    _end
+    [[ "$screen" == *"matches"* ]] || { echo "$screen"; false; }
+    [[ "$screen" == *"beta"* ]] || { echo "$screen"; false; }
+    [[ "$screen" != *"alpha"* ]] || { echo "a row that does not match stays:"; echo "$screen"; false; }
+}
+
+@test "box: Enter on a typed name that matches a row is still a NEW workspace" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/clux"
+    "$HIST" add clux "$BATS_TEST_TMPDIR/clux"
+    _start_box || false
+    _t cl
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Enter
+    _end
+    grep -qxF 'NAME=cl' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'FOLDER=cl' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Down picks the top match and Enter opens it in its saved folder" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_box || false
+    _k Down
+    local p; p="$(_prompt)"
+    _k Enter
+    _end
+    [[ "$p" == "open      ▸"* ]] || { echo "prompt after Down: $p"; false; }
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/a" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    grep -qxF 'NAME=one' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Down Down opens the second row" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_box || false
+    _k Down Down Enter
+    _end
+    grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+}
+
+@test "box: Up from the top row un-picks, so Enter is a new name again" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/one"
+    "$HIST" add one "$BATS_TEST_TMPDIR/one"
+    _start_box || false
+    _t on
+    _k Down Up
+    local p; p="$(_prompt)"
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Enter
+    _end
+    [[ "$p" == "new       ▸"* ]] || { echo "prompt after Up: $p"; false; }
+    grep -qxF 'NAME=on' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: the prompt says switch to for a live session, open for a saved one, new otherwise" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/s"
+    "$HIST" add saved1 "$BATS_TEST_TMPDIR/s"
+    _start_box || false
+    _t live1
+    local p_live; p_live="$(_prompt)"
+    _k C-u
+    _t saved1
+    local p_saved; p_saved="$(_prompt)"
+    _k C-u
+    _t zz
+    local p_new; p_new="$(_prompt)"
+    _k Escape
+    _end
+    [[ "$p_live" == "switch to ▸ live1"* ]] || { echo "live: $p_live"; false; }
+    [[ "$p_saved" == "open      ▸ saved1"* ]] || { echo "saved: $p_saved"; false; }
+    [[ "$p_new" == "new       ▸ zz"* ]] || { echo "new: $p_new"; false; }
+}
+
+@test "box: the exact name of a live session switches to it, with no folder question" {
+    _need_fzf
+    _stage
+    _start_box || false
+    _t live1
+    _k Enter
+    _end
+    grep -qxF 'NAME=live1' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    [[ "$SCREEN" != *"folder"* ]] || { echo "asked for a folder:"; echo "$SCREEN"; false; }
+}
+
+@test "box: the exact name of a saved workspace opens it in its folder" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    _start_box || false
+    _t two
+    _k Enter
+    _end
     grep -qxF "FOLDER=$BATS_TEST_TMPDIR/b" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
     grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
-@test "workspace list: j moves down, k moves up, and Enter opens the selected row" {
-    _stage
-    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b" "$BATS_TEST_TMPDIR/c"
-    "$HIST" add three "$BATS_TEST_TMPDIR/c"
-    "$HIST" add two "$BATS_TEST_TMPDIR/b"
-    "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys j j k Enter
-    _end_list
-    grep -qxF 'NAME=two' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
-}
-
-@test "workspace list: Space sets the folder of the row and opens nothing" {
+@test "box: Tab puts the current row's name in the box, and Enter then opens it" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/a"
     "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys Space
-    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "elsewhere"
-    _keys Enter
-    _wait_for_screen "$LSOCK" "folder set" >/dev/null || { "$REAL_TMUX" -L "$LSOCK" capture-pane -p; false; }
-    _keys q
-    _end_list
-    [ ! -s "$RECORD" ] || { echo "Space opened the row: $(cat "$RECORD")"; false; }
-    run "$HIST" list
-    [ "$output" = $'one\t/resolved/elsewhere' ] || { echo "list: $output"; false; }
+    _start_box || false
+    _t on
+    _k Tab
+    local p; p="$(_prompt)"
+    _k Enter
+    _end
+    [[ "$p" == "open      ▸ one"* ]] || { echo "prompt after Tab: $p"; false; }
+    grep -qxF 'NAME=one' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
-@test "workspace list: x deletes the selected row" {
-    _stage
-    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
-    "$HIST" add two "$BATS_TEST_TMPDIR/b"
-    "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys x q
-    _end_list
-    [ ! -s "$RECORD" ] || { echo "x opened a row: $(cat "$RECORD")"; false; }
-    run "$HIST" list
-    [ "$output" = "two"$'\t'"$BATS_TEST_TMPDIR/b" ] || { echo "list: $output"; false; }
-}
-
-@test "workspace list: a then y opens each saved workspace that is not live and has its folder" {
-    _stage
-    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b" "$BATS_TEST_TMPDIR/c"
-    "$HIST" add g2 "$BATS_TEST_TMPDIR/c"
-    "$HIST" add missing "$BATS_TEST_TMPDIR/no-such-folder"
-    "$HIST" add g1 "$BATS_TEST_TMPDIR/b"
-    "$HIST" add live1 "$BATS_TEST_TMPDIR/a"
-    local before; before="$("$HIST" list)"
-    _start_list || false
-    _keys a
-    _wait_for_screen "$LSOCK" "open 2 workspaces? y/n" >/dev/null || { "$REAL_TMUX" -L "$LSOCK" capture-pane -p; false; }
-    _keys y
-    _end_list
-    [ "$(grep -c '^RESTORE=' "$RECORD")" -eq 2 ] || { echo "record: $(cat "$RECORD")"; false; }
-    grep -qxF "RESTORE=g1 $BATS_TEST_TMPDIR/b" "$RECORD" || { cat "$RECORD"; false; }
-    grep -qxF "RESTORE=g2 $BATS_TEST_TMPDIR/c" "$RECORD" || { cat "$RECORD"; false; }
-    [ "$("$HIST" list)" = "$before" ] || { echo "open all changed the list"; false; }
-}
-
-@test "workspace list: a then n opens nothing" {
-    _stage
-    mkdir -p "$BATS_TEST_TMPDIR/b"
-    "$HIST" add g1 "$BATS_TEST_TMPDIR/b"
-    _start_list || false
-    _keys a
-    _wait_for_screen "$LSOCK" "y/n" >/dev/null || false
-    _keys n q
-    _end_list
-    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
-}
-
-@test "workspace list: n goes to the name prompt" {
+@test "box: Tab, then more typing, is a new name" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/a"
     "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys n
-    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "fresh"
-    _keys Enter Enter
-    _end_list
-    grep -qxF 'NAME=fresh' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
-    grep -qxF 'FOLDER=fresh' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+    _start_box || false
+    _t on
+    _k Tab
+    _t x
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Enter
+    _end
+    grep -qxF 'NAME=onex' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
-@test "workspace list: a letter that is not a key starts the name with that letter" {
+@test "box: the gray completion shows the rest of the name, and no colour code as text" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/a"
     "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys w
-    "$REAL_TMUX" -L "$LSOCK" send-keys -t '=live1:' -l "ork"
-    _keys Enter Enter
-    _end_list
-    grep -qxF 'NAME=work' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
+    _start_box || false
+    _t on
+    local part; part="$(_prompt)"
+    _t e
+    local full; full="$(_prompt)"
+    _k Escape
+    _end
+    [[ "$part" == *"on e"* ]] || { echo "after 'on': $part"; false; }
+    [[ "$full" != *"[38;"* && "$full" != *"[0m"* ]] || { echo "a colour code drawn as text: $full"; false; }
 }
 
-@test "workspace list: a row whose folder is gone says so and opens nothing" {
+@test "box: a picked row whose folder is gone asks for a folder" {
+    _need_fzf
     _stage
     "$HIST" add old "$BATS_TEST_TMPDIR/no-such-folder"
-    _start_list || false
-    _keys 1
-    local screen; screen="$(_wait_for_screen "$LSOCK" "folder is gone")" || true
-    _keys q
-    _end_list
+    mkdir -p "$BATS_TEST_TMPDIR/new-home"
+    _start_box || false
+    _k Down Enter
+    local screen; screen="$(_wait_for_screen "$BSOCK" "folder is gone")" || true
+    "$REAL_TMUX" -L "$BSOCK" send-keys -t '=live1:' -l "$BATS_TEST_TMPDIR/new-home"
+    _k Enter
+    _end
     [[ "$screen" == *"folder is gone"* ]] || { echo "$screen"; false; }
-    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+    grep -qxF "FOLDER=$BATS_TEST_TMPDIR/new-home" "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+    grep -qxF 'NAME=old' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
 }
 
-@test "workspace list: a renamed workspace switches to the live session and the row takes its name" {
+@test "box: a renamed workspace switches to the live session and the row takes its name" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/r"
     "$HIST" add old "$BATS_TEST_TMPDIR/r"
-    _start_list || false
-    "$REAL_TMUX" -L "$LSOCK" new-session -d -s renamed -c "$BATS_TEST_TMPDIR/r"
-    _keys 1
-    _end_list
+    BOX_READY="old" _start_box || false
+    "$REAL_TMUX" -L "$BSOCK" new-session -d -s renamed -c "$BATS_TEST_TMPDIR/r"
+    _t old
+    _k Down Enter
+    _end
     [ ! -s "$RECORD" ] || { echo "it built a new workspace: $(cat "$RECORD")"; false; }
     run "$HIST" list
     [ "$output" = "renamed"$'\t'"$BATS_TEST_TMPDIR/r" ] || { echo "list: $output"; echo "$SCREEN"; false; }
 }
 
-@test "workspace list: Esc cancels the list" {
+@test "box: shows 5 rows at the popup size, and Down scrolls past them" {
+    _need_fzf
+    _stage
+    local i
+    for i in 6 5 4 3 2 1; do mkdir -p "$BATS_TEST_TMPDIR/d$i"; "$HIST" add "w$i" "$BATS_TEST_TMPDIR/d$i"; done
+    BOX_READY="w5" _start_box || false
+    local first; first="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Down Down Down Down Down Down
+    local after; after="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Escape
+    _end
+    [[ "$first" == *"w5"* && "$first" != *"w6"* ]] || { echo "not 5 rows:"; echo "$first"; false; }
+    [[ "$after" == *"▸ w6"* ]] || { echo "Down did not scroll to the 6th row:"; echo "$after"; false; }
+    [[ "$after" == *"Workspace"* ]] || { echo "the header scrolled away:"; echo "$after"; false; }
+}
+
+@test "box: the user's FZF_DEFAULT_OPTS do not change it" {
+    _need_fzf
     _stage
     mkdir -p "$BATS_TEST_TMPDIR/a"
     "$HIST" add one "$BATS_TEST_TMPDIR/a"
-    _start_list || false
-    _keys Escape
+    FZF_DEFAULT_OPTS='--layout=default --border --prompt=XX' BOX_READY="one" _start_box || false
+    local screen; screen="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Escape
+    _end
+    [[ "$(printf '%s\n' "$screen" | sed -n 2p)" == "new       ▸"* ]] || { echo "$screen"; false; }
+    [[ "$screen" != *"XX"* ]] || { echo "the user's prompt leaked in:"; echo "$screen"; false; }
+}
+
+@test "box: Esc cancels" {
+    _need_fzf
+    _stage
+    _start_box || false
+    _t partial
+    _k Escape
     local cancelled=0
-    _assert_cancelled "$LSOCK" && cancelled=1
-    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
+    _assert_cancelled "$BSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
     [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled box still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "box: Ctrl-C cancels" {
+    _need_fzf
+    _stage
+    _start_box || false
+    _t partial
+    _k C-c
+    local cancelled=0
+    _assert_cancelled "$BSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled box still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "box: Esc at the folder question cancels" {
+    _need_fzf
+    _stage
+    _start_box || false
+    _t brandnew
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Escape
+    local cancelled=0
+    _assert_cancelled "$BSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled folder question still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "box: the folder question states the default it falls back to" {
+    # Enter alone reuses the session name. bash 3.2 has no `read -i`, so the
+    # default cannot be prefilled — stating it is the only way a user can know
+    # the empty answer does anything.
+    _need_fzf
+    _stage
+    _start_box || false
+    _t myws
+    _k Enter
+    local screen; screen="$(_wait_for_screen "$BSOCK" "folder")" || true
+    _k Escape
+    _end
+    [[ "$screen" == *"[myws]"* ]] || { echo "the folder question never states its default:"; echo "$screen"; false; }
+    [[ "$screen" == *"name    myws"* ]] || { echo "the name is not shown above it:"; echo "$screen"; false; }
+}
+
+@test "box: the rejection fits the popup without scrolling the header away" {
+    # The pane is the popup's INNER size: -w 72 -h 10 less the border.
+    _need_fzf
+    _stage
+    _start_box || false
+    _t "bad:name"
+    _k Enter
+    local screen; screen="$(_wait_for_screen "$BSOCK" "press any key")" || true
+    _k Enter
+    _end
+    [[ "$screen" == *"press any key"* ]] || { echo "the reject path never finished drawing:"; echo "$screen"; false; }
+    [[ "$screen" == *"New workspace"* ]] || { echo "the reason scrolled the header off the popup:"; echo "$screen"; false; }
     [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
 }
 
-@test "workspace list: a popup from an old config (60x5) keeps the header and the selected row" {
+# ===========================================================================
+# 3. Without fzf: the plain prompts
+# ===========================================================================
+
+@test "no fzf: the name prompt, then the folder, are both handed on" {
     _stage
-    local i
-    for i in 1 2 3 4 5; do mkdir -p "$BATS_TEST_TMPDIR/d$i"; "$HIST" add "w$i" "$BATS_TEST_TMPDIR/d$i"; done
-    LSOCK="clux-list-$$-${BATS_TEST_NUMBER}"
-    "$REAL_TMUX" -L "$LSOCK" kill-server >/dev/null 2>&1 || true
-    "$REAL_TMUX" -L "$LSOCK" -f /dev/null new-session -d -s live1 -x 60 -y 5 \
-        "RECORD='$RECORD' PATH='$(dirname "$REAL_TMUX"):/usr/bin:/bin' '$STAGE/new-workspace-prompt.sh'; sleep 20"
-    _wait_for_screen "$LSOCK" "Workspaces" >/dev/null || false
-    _keys j j j
-    _end_list
-    [[ "$SCREEN" == *"Workspaces"* ]] || { echo "the header scrolled away:"; echo "$SCREEN"; false; }
-    [[ "$SCREEN" == *"▸ 4 w2"* ]] || { echo "the selected row is not on the screen:"; echo "$SCREEN"; false; }
+    RUN_PATH="$(_nofzf_path)" _run_in_pty "work" "projects/work"
+    grep -qF 'FOLDER=projects/work' "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "pane: $PANE_TEXT"; false; }
+    grep -qF 'NAME=work' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "no fzf: a rejected name creates nothing" {
+    _stage
+    RUN_PATH="$(_nofzf_path)" _run_in_pty "bad:name"
+    [ ! -s "$RECORD" ] || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "no fzf: Esc cancels the name prompt instead of typing ^[" {
+    # Esc used to be an ordinary character in the line: it echoed "^[" and the
+    # prompt kept waiting. The terminal now carries Esc as its interrupt
+    # character, so Esc takes the same path Ctrl-C did.
+    _stage
+    BOX_READY="New workspace" _start_box 70 8 "$(_nofzf_path)" || false
+    _t partial
+    _k Escape
+    local cancelled=0
+    _assert_cancelled "$BSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
+}
+
+@test "no fzf: Ctrl-C still cancels after Esc took the interrupt key" {
+    # `stty intr` names ONE character. Handing it to Esc TAKES it from Ctrl-C,
+    # which would then land in the line as a literal \003. Ctrl-C is moved onto
+    # `quit` so both keys still cancel.
+    _stage
+    BOX_READY="New workspace" _start_box 70 8 "$(_nofzf_path)" || false
+    _t partial
+    _k C-c
+    local cancelled=0
+    _assert_cancelled "$BSOCK" && cancelled=1
+    "$REAL_TMUX" -L "$BSOCK" kill-server >/dev/null 2>&1 || true
+    [ "$cancelled" -eq 1 ] || false
+    [ ! -s "$RECORD" ] || { echo "a cancelled prompt still handed over:"; cat "$RECORD"; false; }
 }

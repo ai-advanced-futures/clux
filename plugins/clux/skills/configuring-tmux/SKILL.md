@@ -632,6 +632,7 @@ Only when 3.5 was "Yes". Map the palette Agent B extracted onto the `@clux-bar-*
 | `@clux-bar-window-open` | `❰` | (glyph — never inferred from a palette) |
 | `@clux-bar-window-close` | `❱` | (glyph) |
 | `@clux-bar-separator` | `│` | (glyph) |
+| `@clux-workspace-text-color` | `colour245` | (leave default — the rows of the `prefix + A` list; a light gray, so the matched letters stand out) |
 | `@clux-bar-name-length` | `24` | the existing `#{=N:window_name}` truncation width, when the config has one |
 | `@clux-agent-busy-color` | `cyan` | `<agent_busy>` |
 | `@clux-agent-needs-color` | `yellow` | `<agent_needs>` |
@@ -997,8 +998,8 @@ Show the user:
   prefix + N / P   next / previous session, in bar order
   prefix + { / }   move this session left / right in the bar
   prefix + g       session picker with pane preview
-  prefix + A       saved workspaces (1-9 / j k ⏎ open, ␣ folder, x delete,
-                   a open all, n new Claude workspace: name, then folder)
+  prefix + A       workspace box: type a name (⏎ new, then folder), or
+                   ↓ pick a saved one, ⇥ fill its name, ⏎ open / switch to
   prefix + m       jump to the notifying agent
   prefix + M       notification picker
   prefix + ` /DC   dismiss notification
