@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # workspace-history.bats — workspace-history.sh: the saved workspaces that
-# prefix + A lists. One "<name><TAB><folder>" line each, newest first, 9 at
+# prefix + A lists. One "<name><TAB><folder>" line each, newest first, 50 at
 # most, under XDG_STATE_HOME.
 
 load test_helper
@@ -43,13 +43,13 @@ setup() {
     [ "${lines[1]}" = $'two\t/b' ]
 }
 
-@test "workspace-history: the list keeps 9 workspaces, so 1-9 reach each row" {
+@test "workspace-history: the list keeps the 50 newest workspaces" {
     local i
-    for i in 1 2 3 4 5 6 7 8 9 10 11; do "$HIST" add "w$i" "/d$i"; done
+    for i in $(seq 1 52); do "$HIST" add "w$i" "/d$i"; done
     run "$HIST" list
-    [ "${#lines[@]}" -eq 9 ]
-    [ "${lines[0]}" = $'w11\t/d11' ]
-    [ "${lines[8]}" = $'w3\t/d3' ]
+    [ "${#lines[@]}" -eq 50 ]
+    [ "${lines[0]}" = $'w52\t/d52' ]
+    [ "${lines[49]}" = $'w3\t/d3' ]
 }
 
 @test "workspace-history: remove deletes one line and keeps the order" {
@@ -87,6 +87,20 @@ setup() {
     "$HIST" add 'p' '/x\new'
     run "$HIST" list
     [ "${lines[0]}" = $'p\t/x\\new' ]
+}
+
+@test "workspace-history: a name that looks like a number is compared as text" {
+    # awk compares two values that look like numbers as numbers, so "1" was
+    # equal to "01" and to "1.0": `add 1` removed the saved 01.
+    "$HIST" add 01 /a
+    "$HIST" add api /b
+    "$HIST" add 1 /c
+    run "$HIST" list
+    [ "$output" = $'1\t/c\napi\t/b\n01\t/a' ] || { echo "after add: $output"; false; }
+    "$HIST" remove 1.0
+    "$HIST" set-dir 1e0 /x
+    run "$HIST" list
+    [ "$output" = $'1\t/c\napi\t/b\n01\t/a' ] || { echo "after remove and set-dir: $output"; false; }
 }
 
 @test "workspace-history: a TAB or a newline in a value is refused" {

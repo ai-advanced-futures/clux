@@ -3,7 +3,8 @@
 # workspace-history.sh — the saved workspaces prefix + A lists.
 #
 # One line per workspace, "<name><TAB><absolute folder>", newest first, at
-# most CLUX_WORKSPACE_MAX (9) lines, so the keys 1-9 reach every row.
+# most CLUX_WORKSPACE_MAX (50) lines. The prefix + A box filters the list as
+# the user types, so it can hold more rows than fit on the screen.
 #
 #   workspace-history.sh path              print the file path
 #   workspace-history.sh list              print the lines, newest first
@@ -23,7 +24,7 @@
 # reader never sees half a file. Two writes at the same moment can lose one of
 # the two changes; for a list that prefix + A writes, that is acceptable.
 
-CLUX_WORKSPACE_MAX=9
+CLUX_WORKSPACE_MAX=50
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/clux/workspaces"
 
 _usage() {
@@ -54,8 +55,12 @@ _write() {
 }
 
 # _without NAME — the current lines, less the line of NAME.
+#
+# Each name compare adds "" to make it a text compare. Without it, awk
+# compares two values that look like numbers as numbers, so "01", "1.0" and
+# "1" are the same name, and "add 01" removes the line of "1".
 _without() {
-    _list | _WS_N="$1" awk -F'\t' '$1 != ENVIRON["_WS_N"]'
+    _list | _WS_N="$1" awk -F'\t' '($1 "") != (ENVIRON["_WS_N"] "")'
 }
 
 cmd="${1:-}"
@@ -84,7 +89,7 @@ case "$cmd" in
     set-dir)
         [ $# -eq 3 ] || _usage
         if _bad_value "$3"; then exit 1; fi
-        out="$(_list | _WS_N="$2" _WS_D="$3" awk -F'\t' -v OFS='\t' '$1 == ENVIRON["_WS_N"] { $2 = ENVIRON["_WS_D"] } { print }')"
+        out="$(_list | _WS_N="$2" _WS_D="$3" awk -F'\t' -v OFS='\t' '($1 "") == (ENVIRON["_WS_N"] "") { $2 = ENVIRON["_WS_D"] } { print }')"
         if [ -n "$out" ]; then _write "$out"$'\n'; fi
         ;;
     *)

@@ -1238,6 +1238,48 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
+# clux_fzf_color — the foreground of a tmux style in the form that fzf's
+# --color takes, for the prefix + A box. It reads the colour with the same
+# code as clux_ansi, so one style gives the same colour in the two forms.
+# ---------------------------------------------------------------------------
+
+_fzfc() {
+    run bash -c "
+        export STUB_LOG='$BATS_TEST_TMPDIR/stub.log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        source '$SCRIPTS_DIR/helpers.sh'
+        clux_fzf_color '$1'
+    "
+    [ "$status" -eq 0 ]
+}
+
+@test "clux_fzf_color: names, numbers and hex become fzf colours, and bold stays" {
+    _fzfc 'fg=red,bold';     [ "$output" = 'red:bold' ] || { echo "red,bold: $output"; false; }
+    _fzfc 'bold,fg=#aabbcc'; [ "$output" = '#aabbcc:bold' ] || { echo "hex: $output"; false; }
+    _fzfc 'fg=colour240';    [ "$output" = '240' ] || { echo "colour240: $output"; false; }
+    _fzfc 'fg=brightblack';  [ "$output" = 'bright-black' ] || { echo "brightblack: $output"; false; }
+    _fzfc 'fg=default';      [ "$output" = '-1' ] || { echo "default: $output"; false; }
+    _fzfc 'bg=red';          [ "$output" = '-1' ] || { echo "bg only: $output"; false; }
+    _fzfc '';                [ "$output" = '-1' ] || { echo "empty: $output"; false; }
+}
+
+@test "clux_fzf_color: a term that is not a colour does not replace the colour" {
+    # The bug: each term that it did not list became the colour, so
+    # 'fg=red,blink' gave -1 here while clux_ansi gave red.
+    local s
+    for s in 'fg=red,blink' 'fg=red,nobold' 'fg=red,us=blue' 'fg=red,fill=colour235' 'fg=red,strikethrough'; do
+        _fzfc "$s"
+        [ "$output" = 'red' ] || { echo "$s gave: $output"; false; }
+    done
+}
+
+@test "clux_fzf_color: a colour that fzf cannot take gives the terminal colour, with no error" {
+    # fzf stops on a number over 255; a bad hex printed a bash error.
+    _fzfc 'fg=colour999'; [ "$output" = '-1' ] || { echo "colour999: $output"; false; }
+    _fzfc 'fg=#GGHHII';   [ "$output" = '-1' ] || { echo "bad hex: $output"; false; }
+}
+
+# ---------------------------------------------------------------------------
 # clux_ansi — tmux style string to ANSI escape, for the prefix + A popup.
 # A popup runs a real shell, so it cannot use a tmux `#[...]` format; these
 # translate the SAME style options the bar draws with.

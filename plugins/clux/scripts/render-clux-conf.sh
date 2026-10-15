@@ -64,6 +64,7 @@ BAR_WINDOW_OPEN=""
 BAR_WINDOW_CLOSE=""
 BAR_SEPARATOR=""
 BAR_NAME_LENGTH=""
+WORKSPACE_TEXT_COLOR=""
 
 AGENT_BUSY_COLOR=""
 AGENT_NEEDS_COLOR=""
@@ -96,6 +97,7 @@ BAR_WINDOW_OPEN:@clux-bar-window-open
 BAR_WINDOW_CLOSE:@clux-bar-window-close
 BAR_SEPARATOR:@clux-bar-separator
 BAR_NAME_LENGTH:@clux-bar-name-length
+WORKSPACE_TEXT_COLOR:@clux-workspace-text-color
 AGENT_BUSY_COLOR:@clux-agent-busy-color
 AGENT_NEEDS_COLOR:@clux-agent-needs-color
 AGENT_DONE_COLOR:@clux-agent-done-color
@@ -191,6 +193,7 @@ Optional:
   --bar-window-close VALUE
   --bar-separator VALUE
   --bar-name-length VALUE
+  --workspace-text-color VALUE    colour of the rows in the prefix + A list
   --agent-busy-color VALUE        colour of the busy glyph in the bar's
   --agent-needs-color VALUE        per-session agent column, and of the
   --agent-done-color VALUE         glyph agent-bar.sh draws
@@ -241,6 +244,7 @@ while [ $# -gt 0 ]; do
         --bar-window-close) BAR_WINDOW_CLOSE="${2:-}"; shift 2 ;;
         --bar-separator) BAR_SEPARATOR="${2:-}"; shift 2 ;;
         --bar-name-length) BAR_NAME_LENGTH="${2:-}"; shift 2 ;;
+        --workspace-text-color) WORKSPACE_TEXT_COLOR="${2:-}"; shift 2 ;;
         --agent-busy-color) AGENT_BUSY_COLOR="${2:-}"; shift 2 ;;
         --agent-needs-color) AGENT_NEEDS_COLOR="${2:-}"; shift 2 ;;
         --agent-done-color) AGENT_DONE_COLOR="${2:-}"; shift 2 ;;
@@ -395,14 +399,19 @@ PAIRS
     # reads both answers itself instead; see its header. No user-supplied value
     # reaches a tmux command string on this path any more.
     # Fixed rows, not a percentage, so the popup has the same size on each
-    # terminal (`-h 30%%` grew it on a tall one). 15 rows less the border give
-    # 13: the header, a blank line, the 9 saved workspaces, a message line and
-    # the key line (see new-workspace-prompt.sh). `-x 0 -y S`
+    # terminal (`-h 30%%` grew it on a tall one). 10 rows less the border give
+    # 8: the header, the text box, the "recents" line and 5 saved workspaces;
+    # the list scrolls past 5 (see new-workspace-prompt.sh). `-x 0 -y S`
     # pins it to the top-left corner, just clear of the status line — S
     # resolves to the line below the bar when status-position is top and the
     # line above it when it is bottom, so the popup follows the bar rather
     # than needing a second setting.
-    printf 'bind-key A display-popup -w 62 -h 15 -x 0 -y S -E "%s/new-workspace-prompt.sh"\n' "$SCRIPTS_DIR"
+    # tmux does not open a popup that is wider than the client ("width too
+    # large"), so on a client of less than 72 columns the key did nothing.
+    # if-shell -F compares the client width (numeric compare, tmux 3.2, the
+    # same release as display-popup) and gives that client a full-width
+    # popup. The box reads its width from the terminal, so it fits.
+    printf "bind-key A if-shell -F '#{e|<:#{client_width},72}' 'display-popup -w 100%% -h 10 -x 0 -y S -E \"%s/new-workspace-prompt.sh\"' 'display-popup -w 72 -h 10 -x 0 -y S -E \"%s/new-workspace-prompt.sh\"'\n" "$SCRIPTS_DIR" "$SCRIPTS_DIR"
     printf 'bind-key m run-shell "%s/jump-to-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key ` run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key DC run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"

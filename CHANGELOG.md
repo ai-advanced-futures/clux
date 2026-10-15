@@ -2,6 +2,34 @@
 
 All notable changes to clux are documented here.
 
+## [5.1.0]
+
+### Changed
+
+- **`prefix + A` is one text box.** Type a name. The list under the box shows the saved workspaces and the live sessions that match, newest first. Before you type, the title of the list is `recents`. After you type, the title is `matches`
+- Enter makes a new workspace with the typed name, then asks for the folder. Down picks the top match, and Enter then opens it in its saved folder, with no folder question. Up from the top row goes back to a new name. The other fzf keys that move up (Ctrl-K, Ctrl-P, Alt-Up, Shift-Tab and Page Up) do the same. When you type, the box also goes back to a new name
+- Tab puts the name of the current row in the box. Enter then opens it, or you can type more for a new name
+- Ctrl-J is the same as Enter. If you type Enter before the box opens, the terminal sends Ctrl-J. The box does not lose it
+- When the typed name is exactly the name of a saved workspace or a live session, Enter opens it
+- The prompt tells what Enter does: `new`, `open` (a saved workspace) or `switch to` (a live session). After the typed text, the rest of the current row's name shows in gray
+- The popup is 72 × 10 and shows 5 rows. The list scrolls. On a terminal of less than 72 columns, the popup has the full width of the terminal. Run `/clux:upgrade` to write the new binding
+- The saved list keeps 50 workspaces (was 9)
+- The box needs fzf 0.66 or later. Without fzf, or with an older fzf, the popup shows no list (5.0.0 showed the saved list without fzf too). It asks for the name and then the folder. The exact name of a saved workspace or a live session opens it. With an older fzf, the popup tells you the fzf version that the list needs
+
+### Added
+
+- `@clux-workspace-text-color` (default `colour245`): the color of the rows in the `prefix + A` list
+
+### Fixed
+
+- `prefix + A` did nothing on a terminal that was narrower than the popup. tmux does not open a popup that is wider than the terminal
+- When you opened workspace `1`, the saved workspace `01` (or `1.0`) went out of the list, because clux compared the names as numbers. Now clux compares names as text
+
+### Removed
+
+- The keys of the old list: `1`-`9`, `j`, `k`, `x`, Space, `a`, `n` and `q`. To remove a saved workspace, run `~/.config/clux/scripts/workspace-history.sh remove NAME`
+- Enter in the empty box does not open the newest saved workspace. Down, then Enter, opens it
+
 ## [5.0.0]
 
 ### Changed

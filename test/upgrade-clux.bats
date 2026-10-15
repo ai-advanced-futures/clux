@@ -63,6 +63,16 @@ _upgrade() {
     grep -qF 'set -g @clux-editor "vim"' "$BATS_TEST_TMPDIR/again.conf"
 }
 
+@test "render-clux-conf --from: the colour of the prefix + A rows is kept" {
+    # @clux-workspace-text-color had no flag and no pair, so --from dropped it.
+    _render_old
+    echo 'set -g "@clux-workspace-text-color" "colour250"' >> "$HOME/.config/clux/clux.tmux.conf"
+    run "$RENDER" --from "$HOME/.config/clux/clux.tmux.conf" --out "$BATS_TEST_TMPDIR/again.conf"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"dropped:"* ]] || { echo "$output"; false; }
+    grep -qF 'set -g "@clux-workspace-text-color" "colour250"' "$BATS_TEST_TMPDIR/again.conf"
+}
+
 @test "render-clux-conf --from: a setting this version does not write is dropped and reported" {
     _render_old
     echo 'set -g "@clux-bar-gone-away" "x"' >> "$HOME/.config/clux/clux.tmux.conf"
