@@ -69,7 +69,7 @@ One script with subcommands. `<cwd>` can be any folder in the repo or in one of 
 | `set <cwd> <n> allow\|deny <regex>` | Checks the regex, then replaces line `<n>`. |
 | `remove <cwd> <n>` | Removes line `<n>`. The file stays, also when it has no rules. |
 
-- **Regex check:** `printf '' | grep -E -- "$regex"`. Exit 2 means a bad regex. On a bad regex, `add` and `set` print the grep error on stderr and exit 2. They do not change the file.
+- **Regex check:** `printf '' | grep -E -- "$regex"`. Exit 2 means a bad regex. On a bad regex, `add` and `set` print the grep error on stderr and exit 2. They do not change the file. An empty regex is also refused: exit 2, with the message `empty regex` [inferred].
 - **Line numbers:** `set` and `remove` take the line number from `list`. If the line is not a rule line, or the file changed so that line `<n>` does not exist, they exit 3 and do not change the file. The mod then reads the list again.
 - **Writes:** each write goes to a temporary file in the same folder, then `mv` puts it in place. Two writes at the same time cannot leave a half-written file. The last write wins.
 - **Match:** `printf '%s\n' "$name" | grep -Eq -- "$regex"`.
@@ -97,19 +97,19 @@ In `scripts/notification-picker.sh`:
 
 Files: `hooks/notifications/register.tsx`, a new `hooks/notifications/filters.ts` (pure helpers: parse the `list` output, make the row text), and `types/index.d.ts`.
 
-**State.** The `notifications` atom gets a sibling key `filters` with these fields:
+**State.** A new atom, key `filters`, goes beside `notifications` in `PluginState['clux']`. The `notifications` atom does not change. The new atom has these fields:
 - `view: 'notifications' | 'filters'`
 - `file: string` (the path, or `''` when the cwd is not in a git repo)
 - `rules: FilterRow[]`, where `FilterRow = { n: number, kind: 'allow' | 'deny' | 'invalid', text: string }`
 - `editing: null | { mode: 'add' } | { mode: 'set', n: number }`
 
-The session cwd comes from `$.session.cwd()`, as in the sessions pane. The 2 s poll also runs `notify-filter.sh list <session cwd>` while the pane is open on the Filters view. It reads `path` once when the view opens.
+The session cwd comes from `$.session.cwd()`, as in the sessions pane. The 2 s poll also runs `notify-filter.sh list <session cwd>`, in both views. It reads `path` once when the pane opens.
 
-**Header.** `Notifications · <N>  |  Filters · <R>`. The active view is bold. `q: hide` stays in both views.
+**Header.** `Notifications · <N>  |  Filters · <R>`. `<R>` counts the valid rules (the rows that are not `invalid`) [inferred]. The active view is bold. `q: hide` stays in both views. The header draws only the buttons of the active view [inferred].
 
 **Keys in the Notifications view:** as today, plus `f: filters`.
 
-**Keys in the Filters view:**
+**Keys in the Filters view:** The Filters view has its own focus index and its own key prefix, `rule:<i>`. The index is 0 when the view opens. When the person goes back to Notifications, `focused` is set to 0 [inferred].
 
 | Key | Action |
 |---|---|
@@ -129,9 +129,11 @@ The session cwd comes from `$.session.cwd()`, as in the sessions pane. The 2 s p
 
 In `scripts/session-bar-refresh.sh`, beside the write of `@clux_status`:
 
-1. Read `#{pane_current_path}` of the active pane of the client.
-2. If `notify-filter.sh active <path>` exits 0, put the mark before the status text: `#[bg=<notify bg>,fg=<notify fg>] <mark> #[default]`. A `#` in the mark is written as `##`.
+1. Read `#{pane_current_path}` of the active pane of the client. On the quiet path, use the client of argument 2 (`display-message -c`). On the hook path, use `display-message -p` with no client [inferred].
+2. If `notify-filter.sh active <path>` exits 0, put the mark before the status text: `#[bg=<notify bg>,fg=<notify fg>] <mark> #[default]`. A `#` in the mark is written as `##`. The colors come from `CLUX_NOTIFY_BG` and `CLUX_NOTIFY_FG`, with the same defaults as `show-notification.sh` [inferred]. The mark shows also when the status text is empty [inferred].
 3. The mark text comes from a new config option, `@clux-filter-mark`. The default is `⊘ filtered`. An empty value turns the mark off.
+
+The write runs on every path, also on each animation tick, with no cache. The cost is one tmux read and one `git` call each second for each client [inferred].
 
 There is no new status line token, so the mark shows in the current setups with no `/clux:setup` run. The `/clux:setup` skill and the docs list the new option.
 
