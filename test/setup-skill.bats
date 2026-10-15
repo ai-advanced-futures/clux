@@ -72,6 +72,7 @@ SKILL="$REPO_ROOT/plugins/clux/skills/configuring-tmux/SKILL.md"
                 'verify-tmux-conf.sh' \
                 'AskUserQuestion' \
                 '@clux-agent-glyph-busy-frames' \
+                '@clux-filter-mark' \
                 'throttle.sh'; do
         grep -qF "$part" "$SKILL" || missing="$missing [$part]"
     done

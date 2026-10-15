@@ -244,8 +244,12 @@ test('a new question raises no toast and plays no sound', async ($, on) => {
   await ui.unmount()
 
   expect(toasts).toEqual([])
-  // Only git and tmux run: no audio player.
-  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !((argv[0] ?? '').endsWith('/scripts/notification-line.sh') && argv[1] === 'path'))).toEqual([])
+  // Only git, tmux and the two path reads of the notifications pane run: no
+  // audio player.
+  const isPathRead = (argv: string[]) =>
+    ['/scripts/notification-line.sh', '/scripts/notify-filter.sh'].some(name => (argv[0] ?? '').endsWith(name))
+    && argv[1] === 'path'
+  expect(ran.filter(argv => argv[0] !== 'git' && argv[0] !== 'tmux' && !isPathRead(argv))).toEqual([])
 })
 
 const runSessions = ($: Engine, args = '') =>

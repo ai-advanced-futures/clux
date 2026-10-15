@@ -31,24 +31,37 @@ if [ ! -f "$NOTIFY_FILE" ] || [ ! -s "$NOTIFY_FILE" ]; then
     exit 0
 fi
 
-selected=$(fzf --reverse \
-    --header="Enter=jump  Ctrl-D=dismiss  Esc=close" \
-    --expect=ctrl-d \
-    < "$NOTIFY_FILE")
+# fzf runs in a loop, so the popup stays open after a delete: ctrl-x (and
+# ctrl-d, the key of 4.x) takes the line out, then fzf starts again on the new
+# queue, with the cursor on the first line. A shell loop, not a fzf reload
+# bind: it works with every fzf version, and the test stub can drive it.
+# Enter jumps and ends the popup; Esc ends it; an empty queue ends it.
+while [ -s "$NOTIFY_FILE" ]; do
+    selected=$(fzf --reverse \
+        --header="Enter=jump  Ctrl-X=delete  Esc=close" \
+        --expect=ctrl-x,ctrl-d \
+        < "$NOTIFY_FILE")
 
-# fzf exits 130 on Esc/ctrl-c
-[ -z "$selected" ] && exit 0
+    # fzf exits 130 on Esc/ctrl-c
+    [ -z "$selected" ] && exit 0
 
-key=$(head -1 <<< "$selected")
-line=$(tail -1 <<< "$selected")
+    key=$(head -1 <<< "$selected")
+    line=$(tail -1 <<< "$selected")
 
-[ -z "$line" ] && exit 0
+    [ -z "$line" ] && exit 0
 
-if [ "$key" = "ctrl-d" ]; then
-    "$CURRENT_DIR/notification-line.sh" remove "$line"
-else
-    "$CURRENT_DIR/notification-line.sh" jump "$line"
-fi
+    case "$key" in
+        ctrl-x|ctrl-d)
+            # A busy queue keeps the line: fzf shows it again, and the person
+            # can press ctrl-x once more.
+            "$CURRENT_DIR/notification-line.sh" remove "$line"
+            ;;
+        *)
+            "$CURRENT_DIR/notification-line.sh" jump "$line"
+            break
+            ;;
+    esac
+done
 
 # The popup always ends well, as prefix + m does: a line with no target or a
 # busy queue must not leave an error line inside display-popup.

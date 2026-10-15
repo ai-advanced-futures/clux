@@ -325,8 +325,8 @@ STUBEOF
     printf '%s\n%s\n' "$short" "$long" > "$QUEUE_FILE"
 
     run bash -c "
-        export FZF_STUB_KEY='ctrl-d'
-        export FZF_STUB_LINE='main:editor done|||\$sess1:@win3'
+        export FZF_STUB_KEYS='ctrl-d esc'
+        export FZF_STUB_COUNT='$BATS_TEST_TMPDIR/fzf.count'
         bash '$SCRIPTS_DIR/notification-picker.sh'
     "
     [ "$status" -eq 0 ]

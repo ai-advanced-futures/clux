@@ -635,3 +635,135 @@ STUBEOF
     [ "$status" -eq 0 ]
     [ "$(grep -n -x -e '--' "$stub_log" | cut -d: -f1)" -eq "$(( $(grep -n -x -e '-e oops' "$stub_log" | cut -d: -f1) - 1 ))" ]
 }
+
+# ===========================================================================
+# 5.2.0 — the per-repo notification filter (scripts/notify-filter.sh). A
+# hidden notification makes nothing: no queue line, no sound, no desktop
+# banner, no bell, on both paths.
+# ===========================================================================
+
+# _filter_repo DIR RULE... — a git repo at DIR whose filter file holds one
+# line for each RULE.
+_filter_repo() {
+    local dir="$1"; shift
+    git init -q "$dir"
+    mkdir -p "$dir/.claude"
+    printf '%s\n' "$@" > "$dir/.claude/clux-filters.local"
+}
+
+# The interactive tmux stub of the StopFailure test above: a pane in window
+# "editor" of session "main".
+_write_pane_tmux_stub() {
+    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<EOF
+#!/usr/bin/env bash
+echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
+case "\$*" in
+  *@clux_muted*) echo "" ;;
+  *display-message*) echo "main|||editor|||\$1|||@win1" ;;
+  *@claude-notify-file*) echo "$QUEUE_FILE" ;;
+esac
+exit 0
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+}
+
+# notify-sound.sh runs in the background, so give it time before a test
+# says that it did not run.
+_settle_sound() { sleep 0.5; }
+
+@test "filter: a deny rule hides an agent notification — no queue line, no banner, no sound, no output" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    local proj="$BATS_TEST_TMPDIR/proj"
+    _filter_repo "$proj" 'deny ^proj$'
+    local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"s-filt-001\",\"cwd\":\"$proj\",\"message\":\"needs you\"}"
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run grep -qF '|||agent:s-filt-001' "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+    _settle_sound
+    run grep -qE 'notification-sound|osascript' "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+@test "filter: an allow rule that does not match hides an interactive notification — no queue line, no bell" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    local proj="$BATS_TEST_TMPDIR/proj"
+    _filter_repo "$proj" 'allow ^feat-'
+    _write_pane_tmux_stub
+    local JSON="{\"hook_event_name\":\"StopFailure\",\"session_id\":\"s-int-filt\",\"error_type\":\"billing_error\",\"cwd\":\"$proj\"}"
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export TMUX='/dev/null,1234,0'
+        export TMUX_PANE='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" != *$'\a'* ]]
+    run grep -qF 'main:editor' "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+    _settle_sound
+    run grep -qF 'failure-sound' "$stub_log"
+    [ "$status" -ne 0 ]
+}
+
+@test "filter: an allow rule that matches lets an interactive notification through" {
+    local proj="$BATS_TEST_TMPDIR/proj"
+    _filter_repo "$proj" 'allow ^proj$'
+    _write_pane_tmux_stub
+    local JSON="{\"hook_event_name\":\"StopFailure\",\"session_id\":\"s-int-ok\",\"error_type\":\"billing_error\",\"cwd\":\"$proj\"}"
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export TMUX='/dev/null,1234,0'
+        export TMUX_PANE='%1'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF 'main:editor' "$QUEUE_FILE"
+    [[ "$output" == *$'\a'* ]]
+}
+
+@test "filter: the rule matches the session name from the transcript, not the folder" {
+    local proj="$BATS_TEST_TMPDIR/proj"
+    _filter_repo "$proj" 'deny ^feat-'
+    local transcript="$BATS_TEST_TMPDIR/t.jsonl"
+    printf '%s\n' '{"type":"custom-title","customTitle":"feat-login"}' > "$transcript"
+    local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"s-filt-002\",\"cwd\":\"$proj\",\"transcript_path\":\"$transcript\"}"
+    run bash -c "
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF '|||agent:s-filt-002' "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
+}
+
+@test "filter: a repo with no filter file notifies as before, sound included" {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    local proj="$BATS_TEST_TMPDIR/proj"
+    git init -q "$proj"
+    local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"s-filt-003\",\"cwd\":\"$proj\",\"message\":\"needs you\"}"
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        printf '%s' '$JSON' | TMUX= '$NOTIFY_HOOK'
+    "
+    [ "$status" -eq 0 ]
+    grep -qF '|||agent:s-filt-003' "$QUEUE_FILE"
+    [[ "$output" == *'"terminalSequence"'* ]]
+    local i=0
+    until grep -qF 'notification-sound' "$stub_log" 2>/dev/null || [ "$i" -ge 20 ]; do
+        sleep 0.1; i=$((i + 1))
+    done
+    grep -qF 'notification-sound' "$stub_log"
+}

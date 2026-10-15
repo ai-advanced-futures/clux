@@ -10,6 +10,7 @@ const IN_TMUX = { TMUX: '/tmp/tmux-1000/default,1,0' }
 const WINDOW = 'main:editor Task done|||$sess1:@win3'
 const AGENT = '⚡ agents / pr-flow|||agent:abc-123@@$s9:@w9:%pane3@@/code/clux'
 const THIRD = 'main:tests 8/8 green|||$sess1:@win5'
+const FILTER_FILE = `${ROOT}/.claude/clux-filters.local`
 
 const out = (stdout: string, exitCode = 0) => ({
   exitCode,
@@ -21,6 +22,16 @@ const out = (stdout: string, exitCode = 0) => ({
 
 // What the queue file holds; `null` is a file that is not there.
 type Queue = { text: string | null }
+
+// How notify-filter.sh answers. `file` null is a cwd outside git: `path` and
+// `list` exit 1. `list` is the stdout of `list`. `exits` and `stderr` set the
+// answer of `add`, `set` and `remove`; by default they exit 0.
+type Filter = {
+  file: string | null
+  list: string
+  exits: Record<string, number>
+  stderr: Record<string, string>
+}
 
 // The world beneath the mod: the queue file, notification-line.sh, a host.
 // The sessions pane loads from the same hooks module, so the calls it makes
@@ -34,6 +45,7 @@ function world(on: On, queue: Queue, env: Record<string, string> = {}) {
   // How notification-line.sh answers. `exits` and `rejects` are set by the
   // tests of the failure paths; by default every verb exits 0.
   const script = { exits: {} as Record<string, number>, rejects: new Set<string>() }
+  const filter: Filter = { file: FILTER_FILE, list: '', exits: {}, stderr: {} }
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME: '/home/me', ...env })
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
@@ -57,6 +69,11 @@ function world(on: On, queue: Queue, env: Record<string, string> = {}) {
     ran.push([...e.argv])
     if (e.argv[0] === 'git') return { value: out('') }
     const verb = e.argv[1] ?? ''
+    if ((e.argv[0] ?? '').endsWith('/scripts/notify-filter.sh')) {
+      if (verb === 'path') return { value: filter.file === null ? out('', 1) : out(`${filter.file}\n`) }
+      if (verb === 'list') return { value: filter.file === null ? out('', 1) : out(filter.list) }
+      return { value: { ...out('', filter.exits[verb] ?? 0), stderr: filter.stderr[verb] ?? '' } }
+    }
     if (verb === 'path') return { value: out(`${QUEUE}\n`) }
     if (script.rejects.has(verb)) return { deny: 'spawn EACCES' }
     return { value: out('', script.exits[verb] ?? 0) }
@@ -100,7 +117,7 @@ function world(on: On, queue: Queue, env: Record<string, string> = {}) {
     )
   })
 
-  return { clock, ran, toasts, logs, closes, focuses, panes, queue, reads, script }
+  return { clock, ran, toasts, logs, closes, focuses, panes, queue, reads, script, filter }
 }
 
 const PANE_PROPS = {
@@ -560,5 +577,239 @@ test('the hide button has the hotkey q, and q closes the pane', async ($, on) =>
   expect((await ui.find({ key: 'close-notifications' }))?.props.hotkey).toBe('q')
   await ui.press({ key: 'close-notifications' })
   expect(panes.has('notifications')).toBe(false)
+  await ui.unmount()
+})
+
+// --- The Filters view -------------------------------------------------------
+
+const ruleLabels = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
+  (await ui.findAll({ type: 'Button' }))
+    .filter(button => (button.key ?? '').startsWith('rule:'))
+    .map(button => String(button.props.label))
+
+const allText = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
+  (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+
+test('the header names both views, and f and n change the view', async ($, on) => {
+  const { filter } = world(on, { text: `${WINDOW}\n` })
+  filter.list = '3\tallow\t^feat-\n4\tinvalid\tdeny (\n'
+  await start($)
+  const ui = await mountPane($, true)
+
+  expect(await allText(ui)).toContain('Notifications · 1')
+  // An invalid line hides nothing, so it is not counted.
+  expect(await allText(ui)).toContain('Filters · 1')
+  expect((await ui.find({ key: 'view-filters' }))?.props.hotkey).toBe('f')
+  expect(await ui.find({ key: 'rule-add' })).toBeUndefined()
+
+  await ui.press({ key: 'view-filters' })
+  expect(await rowLabels(ui)).toEqual([])
+  expect(await ruleLabels(ui)).toEqual(['allow  ^feat-', 'deny ('])
+  expect(await allText(ui)).toContain(FILTER_FILE)
+  // Only the keys of the view that shows.
+  expect(await ui.find({ key: 'row-remove' })).toBeUndefined()
+  expect((await ui.find({ key: 'view-notifications' }))?.props.hotkey).toBe('n')
+  expect((await ui.find({ key: 'close-notifications' }))?.props.hotkey).toBe('q')
+
+  await ui.press({ key: 'view-notifications' })
+  expect(await rowLabels(ui)).toEqual(['main:editor Task done'])
+  expect(await ruleLabels(ui)).toEqual([])
+  await ui.unmount()
+})
+
+test('an invalid row is marked in red before its raw line', async ($, on) => {
+  const { filter } = world(on, { text: null })
+  filter.list = '4\tinvalid\tdeny (\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  const mark = (await ui.findAll({ type: 'Text' })).find(t => t.text === 'invalid ')
+  expect(mark?.props.color).toBe('red')
+  await ui.unmount()
+})
+
+test('with no rules the view says how to add one', async ($, on) => {
+  world(on, { text: null })
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  expect(await allText(ui)).toContain('No filters. a: add a rule.')
+  expect(await allText(ui)).toContain('Filters · 0')
+  await ui.unmount()
+})
+
+test('outside git the view says so, and only n and q work', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  filter.file = null
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  expect(await allText(ui)).toContain('Not in a git repo.')
+  expect(await ui.find({ key: 'rule-add' })).toBeUndefined()
+  expect(await ui.find({ key: 'view-notifications' })).toBeDefined()
+  // No repo, no list to poll.
+  expect(ran.filter(argv => (argv[0] ?? '').endsWith('/scripts/notify-filter.sh') && argv[1] === 'list')).toEqual([])
+  await ui.unmount()
+})
+
+test('the poll reads the list on the session cwd in both views', async ($, on) => {
+  const { ran, clock, filter } = world(on, { text: null })
+  await start($)
+  const ui = await mountPane($, true)
+
+  filter.list = '1\tdeny\twip\n'
+  await clock.advance(2000)
+  await clock.settle()
+  expect(await allText(ui)).toContain('Filters · 1')
+  expect(ran.some(argv => (argv[0] ?? '').endsWith('/scripts/notify-filter.sh') && argv[1] === 'list' && argv[2] === ROOT)).toBe(true)
+  await ui.unmount()
+})
+
+test('back in Notifications, x acts on the first row again', async ($, on) => {
+  const { ran, queue } = world(on, { text: `${WINDOW}\n${AGENT}\n` })
+  await start($)
+  const ui = await mountPane($, true)
+
+  await raiseFocus($, 'row:1')
+  await ui.press({ key: 'view-filters' })
+  await ui.press({ key: 'view-notifications' })
+  queue.text = `${AGENT}\n`
+  await ui.press({ key: 'row-remove' })
+
+  expect(lineRuns(ran)).toEqual([['remove', WINDOW]])
+  await ui.unmount()
+})
+
+// The verb and the arguments after the cwd of each notify-filter.sh write, in
+// order. The `path` and `list` reads are left out.
+const filterRuns = (ran: string[][]) =>
+  ran
+    .filter(argv => (argv[0] ?? '').endsWith('/scripts/notify-filter.sh') && !['path', 'list'].includes(argv[1] ?? ''))
+    .map(argv => [argv[1], ...argv.slice(3)])
+
+test('a and Enter run add with the kind and the regex, then close the box', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  await ui.press({ key: 'rule-add' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('deny ')
+
+  filter.list = '2\tdeny\twip\n'
+  await ui.input({ key: 'filter-input', text: ' deny   wip ' })
+  expect(filterRuns(ran)).toEqual([['add', 'deny', 'wip']])
+  expect(await ui.find({ key: 'filter-input' })).toBeUndefined()
+  expect(await ruleLabels(ui)).toEqual(['deny   wip'])
+  await ui.unmount()
+})
+
+test('e and Enter on a row run set on the line number of the focused rule', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  filter.list = '3\tallow\t^feat-\n5\tdeny\twip\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  await raiseFocus($, 'rule:1')
+  await ui.press({ key: 'rule-edit' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('deny wip')
+  await ui.input({ key: 'filter-input', text: 'deny wip|tmp' })
+
+  // Enter on a row edits that row.
+  await ui.press({ key: 'rule:0' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('allow ^feat-')
+  await ui.input({ key: 'filter-input', text: 'allow ^fix-' })
+
+  expect(filterRuns(ran)).toEqual([['set', '5', 'deny', 'wip|tmp'], ['set', '3', 'allow', '^fix-']])
+  await ui.unmount()
+})
+
+test('t changes allow to deny with the same regex, and x removes the focused line', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  filter.list = '3\tallow\t^feat-\n5\tdeny\twip\n6\tinvalid\tdeny (\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  await ui.press({ key: 'rule-toggle' })
+  await raiseFocus($, 'rule:1')
+  await ui.press({ key: 'rule-toggle' })
+  // An invalid row has no kind to change.
+  await raiseFocus($, 'rule:2')
+  await ui.press({ key: 'rule-toggle' })
+  await ui.press({ key: 'rule-remove' })
+
+  expect(filterRuns(ran)).toEqual([
+    ['set', '3', 'deny', '^feat-'],
+    ['set', '5', 'allow', 'wip'],
+    ['remove', '6'],
+  ])
+  await ui.unmount()
+})
+
+test('a refused regex shows the first line of stderr and keeps the box with the text', async ($, on) => {
+  const { toasts, filter } = world(on, { text: null })
+  filter.exits.add = 2
+  filter.stderr.add = 'grep: Unmatched ( or \\(\nmore\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+  await ui.press({ key: 'rule-add' })
+
+  await ui.input({ key: 'filter-input', text: 'deny (' })
+  expect(toasts).toEqual(['grep: Unmatched ( or \\('])
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('deny (')
+  await ui.unmount()
+})
+
+test('a first word that is not allow or deny runs nothing and keeps the box', async ($, on) => {
+  const { ran, toasts } = world(on, { text: null })
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+  await ui.press({ key: 'rule-add' })
+
+  await ui.input({ key: 'filter-input', text: 'block wip' })
+  expect(filterRuns(ran)).toEqual([])
+  expect(toasts).toEqual(['A rule starts with allow or deny.'])
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('block wip')
+  await ui.unmount()
+})
+
+test('a stale line number reads the list again and says the file changed', async ($, on) => {
+  const { ran, toasts, filter } = world(on, { text: null })
+  filter.list = '3\tdeny\twip\n'
+  filter.exits.remove = 3
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  const listsBefore = ran.filter(argv => argv[1] === 'list').length
+  filter.list = '4\tdeny\twip\n'
+  await ui.press({ key: 'rule-remove' })
+
+  expect(toasts).toEqual(['The file changed. Try again.'])
+  expect(ran.filter(argv => argv[1] === 'list').length).toBe(listsBefore + 1)
+  expect(await ruleLabels(ui)).toEqual(['deny   wip'])
+  await ui.unmount()
+})
+
+test('a ring that leaves the box closes it with no change', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  filter.list = '3\tdeny\twip\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+  await ui.press({ key: 'rule-add' })
+  expect(await ui.find({ key: 'filter-input' })).toBeDefined()
+
+  // Esc gives the keys back to the ring, which lands on a row.
+  await raiseFocus($, 'rule:0')
+  expect(await ui.find({ key: 'filter-input' })).toBeUndefined()
+  expect(filterRuns(ran)).toEqual([])
   await ui.unmount()
 })

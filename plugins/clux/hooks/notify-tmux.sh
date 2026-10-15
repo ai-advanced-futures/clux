@@ -74,6 +74,19 @@ fi
 TYPE=$(map_event_to_type "$EVENT" "$NOTIFICATION_TYPE")
 [ -n "$TYPE" ] || exit 0
 
+# A repo can hide the notifications of some of its sessions: the rules in
+# <main repo root>/.claude/clux-filters.local, which notify-filter.sh alone
+# reads. The check comes before the sound, so a hidden notification makes no
+# sound, no desktop banner, no queue line and no bell, on both paths. A repo
+# with no filter file pays one git call; the name lookup runs only when the
+# file is there. Only exit 1 hides: a filter script that fails in another way
+# must not hide every notification.
+_FILTER="$CURRENT_DIR/../scripts/notify-filter.sh"
+if [ -n "$CWD" ] && _FILTER_FILE=$("$_FILTER" path "$CWD" 2>/dev/null) && [ -f "$_FILTER_FILE" ]; then
+    "$_FILTER" check "$CWD" "$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")"
+    [ $? -eq 1 ] && exit 0
+fi
+
 # Default message based on event / type. The payload's own message wins when
 # it has one, except for a failure — which always names its error type.
 if [ "$TYPE" = "failure" ]; then

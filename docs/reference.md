@@ -62,6 +62,7 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 | `@claude-notify-<type>-visual` | see below | Status-bar badge (and, for an agents workspace, the desktop banner and jump entry) for one type |
 | `@claude-notify-<type>-sound` | see below | `on`, `off`, or a custom command, for one type |
 | `@claude-notify-<type>-sound-file` | OS default | Sound file for one type |
+| `@clux-filter-mark` | `⊘ filtered` | The status-bar mark when the repo of the active pane has notification filters. An empty value turns it off |
 
 `<type>` names what Claude Code told clux, and each one is a question in `/clux:setup`:
 
