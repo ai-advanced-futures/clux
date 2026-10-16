@@ -42,6 +42,11 @@ case "$1" in
     show-option)
         case "$*" in
             *@clux-session-order*) printf '%s\n' "${FAKE_ORDER:-}" ;;
+            *@clux-filter-mark*)
+                # Real tmux: show-option without -q fails for an unset option.
+                [ -n "${FAKE_MARK+set}" ] || exit 1
+                printf '%s\n' "$FAKE_MARK"
+                ;;
         esac
         ;;
     list-sessions)
@@ -481,4 +486,46 @@ STUBEOF
     # ...and no separator, raw or escaped, reached the screen.
     [[ "$out" != *'\037'* ]] || { echo "escaped separator leaked into the bar: $out"; false; }
     [[ "$out" != *"$SEP"* ]] || { echo "raw separator leaked into the bar: $out"; false; }
+}
+
+# ---------------------------------------------------------------------------
+# 5.3.0 — the filter mark after the window name. A window whose active pane is
+# in a repo with a valid filter rule shows @clux-filter-mark (default ⊘) after
+# its name; the other windows do not.
+# ---------------------------------------------------------------------------
+_run_mark_list() {
+    _write_list_tmux_stub
+    cp "$SCRIPTS_DIR/notify-filter.sh" "$STAGED_DIR/"
+    git init -q "$BATS_TEST_TMPDIR/repo"
+    write_filter_rules "$BATS_TEST_TMPDIR/repo" 'allow hitl'
+    mkdir -p "$BATS_TEST_TMPDIR/plain"
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha'
+        export FAKE_SESS_ROWS=\$'alpha\t1\talpha'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\tjag\t$BATS_TEST_TMPDIR/repo\nalpha\t0\t1\tother\t$BATS_TEST_TMPDIR/plain'
+        $1
+        '$LIST_SCRIPT'
+    "
+}
+
+@test "session-list: a window in a repo with a filter rule shows ⊘ after its name" {
+    _run_mark_list 'unset FAKE_MARK'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"]jag ⊘#[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"]other#[default]"* ]] || { echo "$output"; false; }
+}
+
+@test "session-list: @clux-filter-mark sets the mark, with each # doubled" {
+    _run_mark_list "export FAKE_MARK='#f'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"]jag ##f#[default]"* ]] || { echo "$output"; false; }
+}
+
+@test "session-list: an empty @clux-filter-mark turns the mark off" {
+    _run_mark_list "export FAKE_MARK=''"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"]jag#[default]"* ]] || { echo "$output"; false; }
 }

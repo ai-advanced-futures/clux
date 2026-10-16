@@ -111,8 +111,39 @@ done_color="${done_color:-green}"
 fail_color="${fail_color:-red}"
 
 sess=$(tmux list-sessions -F "#{session_name}${TAB}#{session_attached}${TAB}#{=${name_length}:session_name}")
-wins=$(tmux list-windows -a -F "#{session_name}${TAB}#{window_active}${TAB}#{window_index}${TAB}#{=${name_length}:window_name}" \
+wins=$(tmux list-windows -a -F "#{session_name}${TAB}#{window_active}${TAB}#{window_index}${TAB}#{=${name_length}:window_name}${TAB}#{pane_current_path}" \
   | sort -t"$TAB" -k1,1 -k3,3n)
+
+# The filter mark (5.3.0). A window whose active pane is in a repo with a
+# valid notification filter rule (notify-filter.sh active) gets
+# @clux-filter-mark (default "⊘"; an empty value turns it off) after its
+# name. The bar draws the windows of an attached session only, so only their
+# folders are checked, and each folder once: one git call for each. No
+# associative arrays: macOS ships bash 3.2. The folders travel to awk on \037,
+# for the reason the agent rows do (see below).
+attached=$'\n'
+while IFS="$TAB" read -r s n _; do
+  [ "${n:-0}" -gt 0 ] 2>/dev/null && attached="$attached$s"$'\n'
+done <<EOF
+$sess
+EOF
+checked=$'\n'
+filtered=""
+while IFS="$TAB" read -r s _ _ _ path; do
+  case "$attached" in *$'\n'"$s"$'\n'*) ;; *) continue ;; esac
+  [ -n "$path" ] || continue
+  case "$checked" in *$'\n'"$path"$'\n'*) continue ;; esac
+  checked="$checked$path"$'\n'
+  "$CURRENT_DIR/notify-filter.sh" active "$path" >/dev/null 2>&1 && filtered="$filtered$path"$'\037'
+done <<EOF
+$wins
+EOF
+filter_mark=""
+if [ -n "$filtered" ]; then
+  # show-option without -q exits 1 for an option that is not set: then the
+  # default. A value that is set but empty turns the mark off.
+  filter_mark=$(tmux show-option -gv @clux-filter-mark 2>/dev/null) || filter_mark='⊘'
+fi
 
 # Claude Code agent state, one "session<TAB>state" line per session that has a
 # live agent (clux). ONE call renders the whole bar: agent-query.sh already
@@ -136,6 +167,7 @@ agents=$("$CURRENT_DIR/agent-query.sh" 2>/dev/null) || agents=""
 agents=$(printf '%s' "$agents" | tr '\n' '\037')
 
 awk -v order="$order" -v agents="$agents" \
+    -v filtered="$filtered" -v filter_mark="$filter_mark" \
     -v name_attached_style="$name_attached_style" \
     -v name_detached_style="$name_detached_style" \
     -v window_active_style="$window_active_style" \
@@ -181,6 +213,16 @@ awk -v order="$order" -v agents="$agents" \
     for (ai = 1; ai <= na; ai++) {
       if (split(rows[ai], af, "\t") == 2) state[af[1]] = af[2]
     }
+    nf = split(filtered, frows, "\037")
+    for (fi = 1; fi <= nf; fi++) {
+      if (frows[fi] != "") filt[frows[fi]] = 1
+    }
+  }
+
+  # The window name, and the filter mark after it when its folder has a rule.
+  function wname(name, path) {
+    if (filter_mark != "" && path in filt) return esc(name) " " esc(filter_mark)
+    return esc(name)
   }
 
   # First file: session -> attached client count, and display name.
@@ -189,9 +231,9 @@ awk -v order="$order" -v agents="$agents" \
   # Second file: accumulate per-session window segments (already index-sorted).
   {
     if ($2 == 1)
-      wins[$1]=wins[$1] " #[" window_active_style "]" esc($4) "#[default]"
+      wins[$1]=wins[$1] " #[" window_active_style "]" wname($4, $5) "#[default]"
     else
-      wins[$1]=wins[$1] " #[" window_inactive_style "]" esc($4) "#[default]"
+      wins[$1]=wins[$1] " #[" window_inactive_style "]" wname($4, $5) "#[default]"
   }
 
   END {

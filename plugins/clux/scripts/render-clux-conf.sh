@@ -321,8 +321,7 @@ render() {
 #
 # Naming rule: a hyphenated @clux-* option (@clux-dir-resolver, @clux-editor,
 # every @clux-bar-* and @clux-agent-*) is a configuration input clux sets
-# here. An underscored @clux_* option (@clux_session_bar, @clux_status,
-# @clux_filter_mark) is a
+# here. An underscored @clux_* option (@clux_session_bar, @clux_status) is a
 # RUNTIME string clux's hooks render into on every event — never set by this
 # file, because a "set -g" here would reset it to a stale value on every
 # reload.

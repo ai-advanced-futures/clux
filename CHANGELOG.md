@@ -8,8 +8,8 @@ All notable changes to clux are documented here.
 
 - **The `prefix + M` popup shows the short text of each notification.** It shows the text before the `|||` id marker, for example `⚡ clux-claude / clux`. The session ids, pane ids and folder do not show. Enter and Ctrl-X still use the full line, and the search matches the short text only
 - **A new filter rule starts with `allow`.** In the Filters view of the notifications pane, `a` opens the box with `allow ` (was `deny `)
-- **The filter mark can show in another place.** clux also writes the mark to `@clux_filter_mark`, as plain text with no colors. When your status line holds `#{@clux_filter_mark}`, the mark shows there in the colors of your status line, and not before the notification in `@clux_status`. With no such token, the mark shows in the notification badge, as in 5.2.0
-- **The filter mark is `⊘` alone** (was `⊘ filtered`). `@clux-filter-mark` still sets the text
+- **The filter mark moves to the window name.** In the clux session bar, a window whose active pane is in a repo with a valid filter rule shows `⊘` after its name. Each window shows the state of its own folder. The mark no longer shows before the notification in `@clux_status`, so it does not depend on which client refreshed the bar last
+- **The filter mark is `⊘` alone** (was `⊘ filtered`), in the colors of the window name. `@clux-filter-mark` still sets the text, and an empty value turns it off
 
 ### Removed
 
