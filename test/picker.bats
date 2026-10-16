@@ -275,13 +275,12 @@ _loop_picker() {
 # ---------------------------------------------------------------------------
 @test "picker: fzf shows the text before the id marker, Ctrl-X uses the full line" {
     local agent='⚡ clux-claude / clux|||agent:101389a6@@$15:@33:%41@@/home/x/clux'
-    printf '%s\n' "$agent" 'main:tests green|||$sess1:@win5' 'legacy line|ID:$s:@w' 'plain line' > "$QUEUE_FILE"
+    printf '%s\n' "$agent" 'main:tests green|||$sess1:@win5' 'plain line' > "$QUEUE_FILE"
     _loop_picker 'ctrl-x esc'
     [ "$status" -eq 0 ]
     [ "$(sed -n 1p "$FZF_CALLS.1")" = "$agent"$'\t⚡ clux-claude / clux' ]
     [ "$(sed -n 2p "$FZF_CALLS.1")" = $'main:tests green|||$sess1:@win5\tmain:tests green' ]
-    [ "$(sed -n 3p "$FZF_CALLS.1")" = $'legacy line|ID:$s:@w\tlegacy line' ]
-    [ "$(sed -n 4p "$FZF_CALLS.1")" = $'plain line\tplain line' ]
+    [ "$(sed -n 3p "$FZF_CALLS.1")" = $'plain line\tplain line' ]
     grep -qF -- '--delimiter=\t --with-nth=2' "$BATS_TEST_TMPDIR/stub.log"
     # Ctrl-X got the full line back: the agent line left the queue.
     run grep -qF '|||agent:101389a6' "$QUEUE_FILE"

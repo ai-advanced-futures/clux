@@ -182,17 +182,6 @@ STUBEOF
     grep -qF 'switch-client -t $sess1' "$stub_log" || false
 }
 
-@test "notification-line jump: a legacy |ID: line selects the window by id too" {
-    local stub_log="$BATS_TEST_TMPDIR/stub.log"
-
-    run bash -c "
-        export STUB_LOG='$stub_log'
-        bash '$SCRIPT' jump 'main:editor Task done|ID:\$sess1:@win3'
-    "
-    [ "$status" -eq 0 ]
-    grep -qF 'select-window -t $sess1:@win3' "$stub_log" || false
-}
-
 @test "notification-line jump: a line with no marker falls back to the name parse" {
     local stub_log="$BATS_TEST_TMPDIR/stub.log"
 

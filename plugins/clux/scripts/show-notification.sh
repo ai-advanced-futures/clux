@@ -50,9 +50,6 @@ while [ -f "$NOTIFY_FILE" ]; do
     if echo "$FIRST" | grep -q '|||'; then
         LINE_ID="${FIRST##*|||}"
         [ "$LINE_ID" = "$CURRENT_ID" ] && DISMISS=true
-    elif echo "$FIRST" | grep -q '|ID:'; then
-        LINE_ID="${FIRST##*|ID:}"
-        [ "$LINE_ID" = "$CURRENT_ID" ] && DISMISS=true
     else
         echo "$FIRST" | grep -qF "$CURRENT_CONTEXT" && DISMISS=true
     fi
@@ -73,14 +70,8 @@ done
 FIRST=$(head -1 "$NOTIFY_FILE" 2>/dev/null)
 [ -n "$FIRST" ] || exit 0
 
-# Strip ID markers before display
-if echo "$FIRST" | grep -q '|||'; then
-    DISPLAY="${FIRST%%|||*}"
-elif echo "$FIRST" | grep -q '|ID:'; then
-    DISPLAY="${FIRST%%|ID:*}"
-else
-    DISPLAY="$FIRST"
-fi
+# Strip the id marker before display. A line with no marker stays as it is.
+DISPLAY="${FIRST%%|||*}"
 
 # tmux reads this output as a format: "#[...]" sets a style and "#{...}" or
 # "#S" expands. The text holds window and session names, which a program can

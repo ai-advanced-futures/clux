@@ -7,14 +7,11 @@
 
 import type { NotifRow } from '../../types'
 
-// What the person reads: the part before the id marker. show-notification.sh
-// cuts the same two markers for the status bar.
+// What the person reads: the part before the ||| id marker. show-notification.sh
+// cuts the same marker for the status bar.
 export function displayText(line: string): string {
   const triple = line.indexOf('|||')
-  if (triple !== -1) return line.slice(0, triple)
-  const legacy = line.indexOf('|ID:')
-  if (legacy !== -1) return line.slice(0, legacy)
-  return line
+  return triple === -1 ? line : line.slice(0, triple)
 }
 
 // One row for each line that is not empty, in file order. The row keeps the

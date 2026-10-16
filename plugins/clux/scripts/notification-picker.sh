@@ -45,7 +45,6 @@ while [ -s "$NOTIFY_FILE" ]; do
     selected=$(awk '{
             text = $0
             i = index(text, "|||")
-            if (i == 0) i = index(text, "|ID:")
             if (i > 0) text = substr(text, 1, i - 1)
             print $0 "\t" text
         }' "$NOTIFY_FILE" | fzf --reverse \
