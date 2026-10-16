@@ -60,15 +60,10 @@ async function poll($: EngineInterface) {
   }
 }
 
-// One verb of notify-filter.sh on the session cwd. A script that cannot
-// start, or that overruns RUN_MS, resolves to undefined; the reason goes to
-// the debug log.
+// One verb of notify-filter.sh on the session cwd, through runScript.
 async function runFilter($: EngineInterface, verb: string, args: string[] = []) {
   const cwd = await $.session.cwd()
-  return $.process.run([filterScript($), verb, cwd, ...args], { timeoutMs: RUN_MS }).catch(error => {
-    $.ui.log(`clux notifications: filter ${verb} failed: ${String(error)}`, { to: 'debug' })
-    return undefined
-  })
+  return runScript($, [filterScript($), verb, cwd, ...args], `filter ${verb}`)
 }
 
 // The filter file path, read one time at the start. '' when the cwd is not in
@@ -122,18 +117,23 @@ async function openPane($: EngineInterface) {
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
 
-// One verb of the shared script on one line. A script that cannot start, or
-// that overruns its budget, reads as a failure exactly as a non-zero exit
-// does; the reason goes to the debug log, never to the person. The budget is
-// RUN_MS: the engine default is 30 s, too long for a key press when tmux
-// does not answer.
+// A script that cannot start, or that overruns its budget, resolves to
+// undefined, and so reads as a failure exactly as a non-zero exit does; the
+// reason goes to the debug log, never to the person. The budget is RUN_MS:
+// the engine default is 30 s, too long for a key press when tmux does not
+// answer.
 const RUN_MS = 5000
 
-async function runLine($: EngineInterface, verb: 'jump' | 'remove', row: NotifRow) {
-  const answer = await $.process.run([script($), verb, row.line], { timeoutMs: RUN_MS }).catch(error => {
-    $.ui.log(`clux notifications: ${verb} failed: ${String(error)}`, { to: 'debug' })
+async function runScript($: EngineInterface, argv: string[], label: string) {
+  return $.process.run(argv, { timeoutMs: RUN_MS }).catch(error => {
+    $.ui.log(`clux notifications: ${label} failed: ${String(error)}`, { to: 'debug' })
     return undefined
   })
+}
+
+// One verb of the shared script on one line.
+async function runLine($: EngineInterface, verb: 'jump' | 'remove', row: NotifRow) {
+  const answer = await runScript($, [script($), verb, row.line], verb)
   return answer?.exitCode === 0
 }
 
@@ -254,26 +254,30 @@ async function focusedRule($: EngineInterface): Promise<FilterRow | undefined> {
   return rules[Math.min(ruleFocused, rules.length - 1)]
 }
 
-// What an answer of add, set or remove means for the person. 0: the file
-// changed, so the list is read again. 2: the script refused the rule, and the
-// first line of its stderr says why. 3: the line moved under the pane, so the
-// list is read again. True only for 0.
-async function settle($: EngineInterface, answer: Awaited<ReturnType<typeof runFilter>>): Promise<boolean> {
+// What an answer of add, set or remove means for the person. 0 'ok': the
+// file changed, so the list is read again. 2 'refused': the script refused
+// the rule, and the first line of its stderr says why. 3 'stale': the line
+// moved under the pane, so the list is read again. Only this function reads
+// the exit codes.
+async function settle(
+  $: EngineInterface,
+  answer: Awaited<ReturnType<typeof runFilter>>,
+): Promise<'ok' | 'stale' | 'refused' | 'failed'> {
   if (answer?.exitCode === 0) {
     await pollFilters($)
-    return true
+    return 'ok'
   }
   if (answer?.exitCode === 3) {
     await pollFilters($)
     $.ui.toast(STALE)
-    return false
+    return 'stale'
   }
   if (answer?.exitCode === 2) {
     $.ui.toast(answer.stderr.split('\n')[0]?.trim() || 'The rule was not saved.')
-    return false
+    return 'refused'
   }
   $.ui.toast('The filter file did not change.')
-  return false
+  return 'failed'
 }
 
 // The rule box takes the keys. In a test, and while the pane does not hold
@@ -311,7 +315,8 @@ async function submitRule($: EngineInterface, value: string) {
   const answer = editing.mode === 'add'
     ? await runFilter($, 'add', [rule.kind, rule.regex])
     : await runFilter($, 'set', [String(editing.n), rule.kind, rule.regex])
-  if (await settle($, answer) || answer?.exitCode === 3) {
+  const outcome = await settle($, answer)
+  if (outcome === 'ok' || outcome === 'stale') {
     await update($, filters, s => ({ ...s, editing: null }))
     return
   }
@@ -331,9 +336,16 @@ async function toggleRule($: EngineInterface) {
 async function removeRule($: EngineInterface) {
   const row = await focusedRule($)
   if (!row) return
-  if (!(await settle($, await runFilter($, 'remove', [String(row.n)])))) return
+  if ((await settle($, await runFilter($, 'remove', [String(row.n)]))) !== 'ok') return
   const { rules } = await read($, filters)
   if (rules.length > 0) await focusRule($, Math.min(ruleFocused, rules.length - 1))
+}
+
+// The row index in a ring key such as `row:3`, or undefined for another key.
+function indexAfter(key: string, prefix: string): number | undefined {
+  if (!key.startsWith(prefix)) return undefined
+  const index = Number(key.slice(prefix.length))
+  return Number.isInteger(index) && index >= 0 ? index : undefined
 }
 
 export const register: Register = on => {
@@ -384,14 +396,8 @@ export const register: Register = on => {
   // the ring, and a box the person left holds no edit they can see through.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const key = e.element ?? ''
-    if (key.startsWith('row:')) {
-      const index = Number(key.slice(4))
-      if (Number.isInteger(index) && index >= 0) focused = index
-    }
-    if (key.startsWith('rule:')) {
-      const index = Number(key.slice(5))
-      if (Number.isInteger(index) && index >= 0) ruleFocused = index
-    }
+    focused = indexAfter(key, 'row:') ?? focused
+    ruleFocused = indexAfter(key, 'rule:') ?? ruleFocused
     if (key !== INPUT_KEY && (await read($, filters)).editing) {
       await update($, filters, s => ({ ...s, editing: null }))
     }

@@ -157,9 +157,9 @@ fi
 # (verified).
 now=$(date +%s)
 opts=$(tmux display-message -p \
-  "#{@clux_bar_tpl}${SEP}#{${idx_opt}}${SEP}#{@clux-agent-glyph-busy-frames}${SEP}#{@clux-agent-glyph-busy}" \
+  "#{@clux_bar_tpl}${SEP}#{${idx_opt}}${SEP}#{@clux-agent-glyph-busy-frames}${SEP}#{@clux-agent-glyph-busy}${SEP}#{pane_current_path}" \
   2>/dev/null)
-IFS="$SEP" read -r tpl_raw idx_raw frames_raw busy_raw <<EOF
+IFS="$SEP" read -r tpl_raw idx_raw frames_raw busy_raw pane_path <<EOF
 $opts
 EOF
 
@@ -282,7 +282,7 @@ fi
 # that draws this status line. Argument 2 is the pid of that client, and
 # `display-message -c` takes a client name, not a pid, so list-clients finds
 # it. On the hook path, and on a quiet path with no client id, the pane that
-# `display-message -p` picks.
+# `display-message -p` picks, read in the batched read above.
 _filter_mark() {
     local path="" pid p mark
     if [ -n "$client_id" ]; then
@@ -295,7 +295,7 @@ _filter_mark() {
 $(tmux list-clients -F "#{client_pid}${SEP}#{pane_current_path}" 2>/dev/null)
 EOF
     else
-        path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+        path="$pane_path"
     fi
     [ -n "$path" ] || return 0
     "$CURRENT_DIR/notify-filter.sh" active "$path" 2>/dev/null || return 0

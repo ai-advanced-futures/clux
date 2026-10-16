@@ -12,14 +12,12 @@ import type { FilterRow } from '../../types'
 // rest of the line, tabs and all. A line of another shape is skipped.
 export function parseList(stdout: string): FilterRow[] {
   return stdout.split('\n').flatMap(line => {
-    const first = line.indexOf('\t')
-    const second = first === -1 ? -1 : line.indexOf('\t', first + 1)
-    if (second === -1) return []
-    const n = Number(line.slice(0, first))
-    const kind = line.slice(first + 1, second)
+    const [num, kind, ...rest] = line.split('\t')
+    if (rest.length === 0) return []
+    const n = Number(num)
     if (!Number.isInteger(n) || n < 1) return []
     if (kind !== 'allow' && kind !== 'deny' && kind !== 'invalid') return []
-    return [{ n, kind, text: line.slice(second + 1) }]
+    return [{ n, kind, text: rest.join('\t') }]
   })
 }
 

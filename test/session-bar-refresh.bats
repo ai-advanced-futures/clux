@@ -786,8 +786,9 @@ _stage_anim() {
 
 MARK='#[bg=#EBCB8B,fg=#2E3440] ⊘ filtered #[default]'
 
-# _write_mark_tmux_stub — answers the reads of the mark. display-message -p
-# '#{pane_current_path}' prints $MARK_DISPLAY_PATH. list-clients prints two
+# _write_mark_tmux_stub — answers the reads of the mark. The batched
+# display-message -p read, whose last field is #{pane_current_path}, prints
+# four empty fields and then $MARK_DISPLAY_PATH. list-clients prints two
 # clients: pid 222 in /nowhere, then pid 111 in $MARK_CLIENT_PATH. show-option
 # of @clux-filter-mark prints $MARK_OPT, and fails as real tmux does when
 # MARK_OPT is not set. Every call is logged.
@@ -798,7 +799,7 @@ echo "tmux $*" >> "${STUB_LOG:-/dev/null}"
 case "$1" in
     display-message)
         case "$*" in
-            *'#{pane_current_path}') printf '%s\n' "${MARK_DISPLAY_PATH:-}" ;;
+            *'#{pane_current_path}') printf '\356\200\201\356\200\201\356\200\201\356\200\201%s\n' "${MARK_DISPLAY_PATH:-}" ;;
         esac
         ;;
     list-clients)

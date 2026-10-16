@@ -79,11 +79,13 @@ TYPE=$(map_event_to_type "$EVENT" "$NOTIFICATION_TYPE")
 # reads. The check comes before the sound, so a hidden notification makes no
 # sound, no desktop banner, no queue line and no bell, on both paths. A repo
 # with no filter file pays one git call; the name lookup runs only when the
-# file is there. Only exit 1 hides: a filter script that fails in another way
-# must not hide every notification.
+# file has a valid rule, and the label below reuses it. Only exit 1 hides: a
+# filter script that fails in another way must not hide every notification.
 _FILTER="$CURRENT_DIR/../scripts/notify-filter.sh"
-if [ -n "$CWD" ] && _FILTER_FILE=$("$_FILTER" path "$CWD" 2>/dev/null) && [ -f "$_FILTER_FILE" ]; then
-    "$_FILTER" check "$CWD" "$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")"
+unset _FILTER_NAME
+if [ -n "$CWD" ] && "$_FILTER" active "$CWD" 2>/dev/null; then
+    _FILTER_NAME=$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")
+    "$_FILTER" check "$CWD" "$_FILTER_NAME"
     [ $? -eq 1 ] && exit 0
 fi
 
@@ -181,7 +183,7 @@ _agent_handle_event() {
     PREFIX=""
     [ -n "${wid:-}" ] && PREFIX=$(_sanitize "$(tmux display-message -p -t "$wid" '#{window_name}' 2>/dev/null)")
     [ -z "$PREFIX" ] && PREFIX="agents"
-    NAME=$(_sanitize "$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")")
+    NAME=$(_sanitize "${_FILTER_NAME-$(resolve_agent_name "$SESSION_ID" "$CWD" "$TRANSCRIPT_PATH")}")
     [ -z "$NAME" ] && NAME="agent"
     LABEL="$PREFIX / $NAME"
     MSG=$(_sanitize "${MESSAGE:-needs input}")

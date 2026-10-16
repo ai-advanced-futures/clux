@@ -28,7 +28,8 @@ VERB="${1:-}"
 CWD="${2:-}"
 
 HEADER='# clux notification filters. Regex type: grep -E, case-sensitive.'
-RULE_RE='^(allow|deny)[[:space:]]+(.*[^[:space:]])[[:space:]]*$'
+RULE_RE='^[[:space:]]*(allow|deny)[[:space:]]+(.*[^[:space:]])[[:space:]]*$'
+SKIP_RE='^[[:space:]]*(#|$)'
 
 COMMON=""
 ROOT=""
@@ -49,20 +50,14 @@ _trim() {
     printf '%s' "$s"
 }
 
-_regex_ok() {
-    printf '' | grep -E -- "$1" >/dev/null 2>&1
-    [ $? -ne 2 ]
-}
-
+# Sets KIND and REGEX for a rule line; returns 1 for a blank line or a
+# comment. A line that is not "allow|deny <regex>", or whose regex grep -E
+# refuses, is KIND=invalid with the raw line as REGEX.
 _parse() {
-    local line
-    line=$(_trim "$1")
-    case "$line" in
-        ''|'#'*) return 1 ;;
-    esac
+    [[ "$1" =~ $SKIP_RE ]] && return 1
     KIND=invalid
     REGEX="$1"
-    if [[ "$line" =~ $RULE_RE ]] && _regex_ok "${BASH_REMATCH[2]}"; then
+    if [[ "$1" =~ $RULE_RE ]] && _check_regex "${BASH_REMATCH[2]}" 2>/dev/null; then
         KIND="${BASH_REMATCH[1]}"
         REGEX="${BASH_REMATCH[2]}"
     fi
@@ -73,6 +68,7 @@ _match() {
     printf '%s\n' "$1" | grep -Eq -- "$2" 2>/dev/null
 }
 
+# The one read loop of the file: "<n>\t<kind>\t<regex>" for each rule line.
 _list() {
     local n=0 line
     [ -f "$FILE" ] || return 0
@@ -84,33 +80,25 @@ _list() {
 }
 
 _check() {
-    local name="$1" line has_allow=0 allowed=0 denied=0
-    [ -f "$FILE" ] || return 0
-    while IFS= read -r line || [ -n "$line" ]; do
-        _parse "$line" || continue
-        case "$KIND" in
+    local name="$1" kind regex has_allow=0 allowed=0 denied=0
+    while IFS=$'\t' read -r _ kind regex; do
+        case "$kind" in
             allow)
                 has_allow=1
-                _match "$name" "$REGEX" && allowed=1
+                _match "$name" "$regex" && allowed=1
                 ;;
             deny)
-                _match "$name" "$REGEX" && denied=1
+                _match "$name" "$regex" && denied=1
                 ;;
         esac
-    done < "$FILE"
+    done < <(_list)
     [ "$has_allow" = 1 ] && [ "$allowed" = 0 ] && return 1
     [ "$denied" = 1 ] && return 1
     return 0
 }
 
 _active() {
-    local line
-    [ -f "$FILE" ] || return 1
-    while IFS= read -r line || [ -n "$line" ]; do
-        _parse "$line" || continue
-        [ "$KIND" = invalid ] || return 0
-    done < "$FILE"
-    return 1
+    _list | cut -f2 | grep -qvx invalid
 }
 
 _check_kind() {
