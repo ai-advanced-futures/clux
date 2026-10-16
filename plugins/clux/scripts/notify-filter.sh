@@ -35,11 +35,23 @@ COMMON=""
 ROOT=""
 FILE=""
 
+# The main repo root is not always the folder above the common dir: a
+# submodule keeps its git dir in <super>/.git/modules/<name>, and
+# --separate-git-dir puts it anywhere. So: the top level of the work tree,
+# and for a linked worktree the first entry of `git worktree list`, which is
+# the main worktree.
 _locate() {
+    local out gitdir
     [ -n "$CWD" ] || return 1
-    COMMON=$(git -C "$CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-    [ -n "$COMMON" ] || return 1
-    ROOT=$(dirname "$COMMON")
+    out=$(git -C "$CWD" rev-parse --path-format=absolute --git-common-dir --git-dir --show-toplevel 2>/dev/null) || return 1
+    { IFS= read -r COMMON; IFS= read -r gitdir; IFS= read -r ROOT; } <<EOF
+$out
+EOF
+    [ -n "$COMMON" ] && [ -n "$ROOT" ] || return 1
+    if [ "$gitdir" != "$COMMON" ]; then
+        ROOT=$(git -C "$CWD" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
+        [ -n "$ROOT" ] || return 1
+    fi
     FILE="$ROOT/.claude/clux-filters.local"
 }
 
@@ -169,6 +181,11 @@ _rewrite() {
 _exclude() {
     git -C "$ROOT" check-ignore -q -- .claude/clux-filters.local 2>/dev/null && return 0
     mkdir -p "$COMMON/info" 2>/dev/null || return 0
+    # A last line with no newline must not join the new line: that breaks
+    # the pattern of the person and ours.
+    if [ -s "$COMMON/info/exclude" ] && [ -n "$(tail -c 1 "$COMMON/info/exclude")" ]; then
+        printf '\n' >> "$COMMON/info/exclude"
+    fi
     printf '/.claude/clux-filters.local\n' >> "$COMMON/info/exclude"
 }
 
