@@ -95,7 +95,8 @@ deny  wip
 In the notifications pane, `f` opens the Filters view and `n` goes back. The view shows the file path and one row for each rule:
 
 ```
-Notifications · 3  |  Filters · 2 q: hide  n: notifications  j: down  k: up  a: add  e: edit  t: allow/deny  x: remove
+Notifications · 3  |  Filters · 2
+q: hide n: notifications j: down k: up a: add e: edit t: allow/deny x: remove
 /code/app/.claude/clux-filters.local
 allow  ^feat-
 deny   wip
@@ -103,6 +104,7 @@ deny   wip
 
 - `a` opens a box with `deny `. Type the rule, then push Enter. `e`, or Enter on a row, edits the focused rule. `t` changes allow to deny, or deny to allow. `x` removes the focused rule. Esc closes the box with no change.
 - When grep refuses the regex, the pane shows the grep error, and the box stays open with your text.
+- `grep -E` has no `\d`: GNU grep reads `\d` as a plain `d`. The pane refuses a new rule with `\d`. Use `[0-9]`.
 - Outside a git repo, the view shows `Not in a git repo.`
 
 When the repo of the active tmux pane has one or more valid rules, the status bar shows `⊘ filtered` before the notification. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:

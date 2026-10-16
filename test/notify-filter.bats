@@ -245,3 +245,24 @@ _rules() {
     run "$FILTER" remove "$REPO" 2
     [ "$(ls -A "$REPO/.claude")" = 'clux-filters.local' ]
 }
+
+@test "notify-filter: add and set refuse \\d, which grep -E reads as a plain d" {
+    _repo
+    run "$FILTER" add "$REPO" deny 'x\d'
+    [ "$status" -eq 2 ]
+    [ "$output" = 'grep -E reads \d as a plain d: use [0-9]' ]
+    [ ! -e "$RULES" ]
+    # An escaped backslash before a d is not \d.
+    run "$FILTER" add "$REPO" deny 'x\\d'
+    [ "$status" -eq 0 ]
+    run "$FILTER" set "$REPO" 2 deny 'x\D'
+    [ "$status" -eq 2 ]
+    [ "$(tail -1 "$RULES")" = 'deny x\\d' ]
+}
+
+@test "notify-filter: a \\d line already in the file stays valid" {
+    _repo
+    _rules 'deny x\d'
+    run "$FILTER" list "$REPO"
+    [ "$output" = "$(printf '1\tdeny\tx\\d')" ]
+}

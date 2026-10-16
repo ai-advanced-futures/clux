@@ -813,3 +813,42 @@ test('a ring that leaves the box closes it with no change', async ($, on) => {
   expect(filterRuns(ran)).toEqual([])
   await ui.unmount()
 })
+
+test('Esc in the box gives the keys to the prompt, and the box closes with no change', async ($, on) => {
+  const { ran, clock, panes } = world(on, { text: null })
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+  await ui.press({ key: 'rule-add' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.autoFocus).toBe(true)
+  await ui.unmount()
+
+  // The pane is drawn again without the keys: no box, and the first row
+  // has the autoFocus, so the pane can take the keys again.
+  const away = await mountPane($, false)
+  expect(await away.find({ key: 'filter-input' })).toBeUndefined()
+  await away.unmount()
+  // The next poll finds no pane with the keys (the world lists none) and
+  // clears the box.
+  expect(panes.has('notifications')).toBe(false)
+  await clock.advance(2000)
+  await clock.settle()
+  const back = await mountPane($, true)
+  expect(await back.find({ key: 'filter-input' })).toBeUndefined()
+  expect(filterRuns(ran)).toEqual([])
+  await back.unmount()
+})
+
+test('the box label has no colon of its own, and an invalid row is red', async ($, on) => {
+  const { filter } = world(on, { text: null })
+  filter.list = '4\tinvalid\tdeny (\n'
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  const line = (await ui.findAll({ type: 'Text' })).find(t => t.text === 'deny (')
+  expect(line?.props.color).toBe('red')
+  await ui.press({ key: 'rule-add' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.label).toBe('new rule')
+  await ui.unmount()
+})

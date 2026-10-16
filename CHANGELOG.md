@@ -9,7 +9,7 @@ All notable changes to clux are documented here.
 - **Notification filters.** A file in a repo, `<main repo root>/.claude/clux-filters.local`, hides some clux notifications. Each line is `allow <regex>` or `deny <regex>`. The regex (`grep -E`, case-sensitive) matches the Claude session name. `deny` hides the notifications of the sessions that match. `allow` lets only the sessions that match notify. All the worktrees of the repo use the same file
 - A hidden notification makes no sound, no desktop banner, no queue line and no bell, for a Claude in a tmux pane and for a background agent. The lines that are already in the queue stay
 - `scripts/notify-filter.sh` owns the file: the hook, the status bar and the notifications pane all run it. Its verbs are `path`, `check`, `active`, `list`, `add`, `set` and `remove`. When git does not ignore the file, `add` writes it to `.git/info/exclude`
-- The notifications pane has a Filters view. `f` opens it and `n` goes back. `a` adds a rule, `e` (or Enter on a row) edits one, `t` changes allow to deny or deny to allow, and `x` removes one. The header shows `Notifications · <N>  |  Filters · <R>`
+- The notifications pane has a Filters view. `f` opens it and `n` goes back. `a` adds a rule, `e` (or Enter on a row) edits one, `t` changes allow to deny or deny to allow, and `x` removes one. The header shows `Notifications · <N>  |  Filters · <R>`, and the keys go on the line under it. `add` and `set` refuse `\d`, because `grep -E` reads it as a plain `d`: use `[0-9]`
 - The status bar shows `⊘ filtered` when the repo of the active pane has a valid rule. `@clux-filter-mark` sets the text; an empty value turns the mark off. The current status line shows the mark with no `/clux:setup` run
 
 ### Changed

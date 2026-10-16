@@ -140,6 +140,19 @@ _check_regex() {
     return 0
 }
 
+# A write refuses \d and \D: grep -E has no digit class, so GNU grep reads
+# \d as a plain "d", and "deny x\d" would hide "xd" but not "x5". A file line
+# with \d stays valid, so a rule the person already has keeps its meaning.
+_check_digit() {
+    local rest="${1//\\\\/}"
+    case "$rest" in
+        *'\d'*|*'\D'*)
+            printf 'grep -E reads \\d as a plain d: use [0-9]\n' >&2
+            return 2 ;;
+    esac
+    return 0
+}
+
 _check_n() {
     case "$1" in
         ''|0*|*[!0-9]*) printf 'not a line number: "%s"\n' "$1" >&2; return 2 ;;
@@ -194,6 +207,7 @@ _add() {
     regex=$(_trim "$2")
     _check_kind "$kind" || return 2
     _check_regex "$regex" || return 2
+    _check_digit "$regex" || return 2
     mkdir -p "$ROOT/.claude" || return 1
     {
         if [ -f "$FILE" ]; then
@@ -215,6 +229,7 @@ _set() {
     _check_n "$n" || return 2
     _check_kind "$kind" || return 2
     _check_regex "$regex" || return 2
+    _check_digit "$regex" || return 2
     _is_rule_line "$n" || return 3
     _rewrite "$n" "$kind $regex"
 }

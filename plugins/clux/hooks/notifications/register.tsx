@@ -86,11 +86,22 @@ async function pollFilters($: EngineInterface) {
   }
 }
 
+// Esc in the rule box gives the keys to the prompt, and no hook hears it. The
+// pane then draws no box; this clears the box from the state too, so the box
+// does not come back when the pane takes the keys again.
+async function closeLostBox($: EngineInterface) {
+  if (!(await read($, filters)).editing) return
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane?.isFocused) return
+  await update($, filters, s => ({ ...s, editing: null }))
+}
+
 // One poll at a time, so a slow poll and the next tick never overlap.
 async function tick($: EngineInterface) {
   if (loop.isPolling) return
   loop.isPolling = true
   try {
+    await closeLostBox($)
     await poll($)
     await pollFilters($)
   } catch (error) {
@@ -392,8 +403,9 @@ export const register: Register = on => {
   // of the engine's own stops (the close mark, with no `element`), leaves
   // `focused` as it was, so `x` still acts on the row last focused.
   //
-  // The rule box closes when the ring leaves it: Esc gives the keys back to
-  // the ring, and a box the person left holds no edit they can see through.
+  // The rule box closes when the ring leaves it for a row or a button: a box
+  // the person left holds no edit they can see through. Esc gives the keys
+  // to the prompt instead, and `closeLostBox` closes the box then.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const key = e.element ?? ''
     focused = indexAfter(key, 'row:') ?? focused
@@ -418,14 +430,25 @@ export const register: Register = on => {
     // The row text is cut to the pane, so one long notification cannot
     // reflow the list.
     const width = Math.max(8, e.props.bodyColumns - 1)
+    // Esc in the rule box gives the keys to the prompt, not to the ring, so
+    // no `ui.focus` closes the box. A pane without the keys draws no box, and
+    // its first row has the `autoFocus`, so the pane can take the keys again.
+    // Drawing is pure: `closeLostBox` clears the state.
+    const editing = e.props.isFocused ? state.editing : null
 
     return (
       <Box flexDirection="column">
+        {/* The two views, the one that shows in bold. */}
         <Box>
-          {/* The two views, the one that shows in bold. */}
           <Text bold={!isFilters}>{TITLE} · {list.length}</Text>
           <Text>  |  </Text>
-          <Text bold={isFilters}>Filters · {validCount(state.rules)} </Text>
+          <Text bold={isFilters}>Filters · {validCount(state.rules)}</Text>
+        </Box>
+        {/* The keys go on a line of their own, and wrap in a narrow pane, so
+            the counts above never wrap. Only the keys of the view that shows:
+            a hotkey of the other view would act on rows the person cannot
+            see. Claude Code draws a plain Button with a hotkey as "j: down". */}
+        <Box flexWrap="wrap" columnGap={1}>
           {/* Over the footer's label: the chord closes an open pane, and `q`
               closes it while the pane has the keys. Plain, so it reads
               "q: hide", as the other keys do. Both views draw it. */}
@@ -437,43 +460,23 @@ export const register: Register = on => {
             action={TOGGLE_ACTION}
             onPress={() => $.ui.close({ id: PANE })}
           />
-          {/* Only the keys of the view that shows: a hotkey of the other
-              view would act on rows the person cannot see. */}
-          {!isFilters && (
-            <Box key="notification-keys">
-              <Text> </Text>
-              {/* Claude Code draws a plain Button with a hotkey as "j: down". */}
-              <Button key="nav-down" plain hotkey="j" label="down" onPress={() => move($, 1)} />
-              <Text> </Text>
-              <Button key="nav-up" plain hotkey="k" label="up" onPress={() => move($, -1)} />
-              <Text> </Text>
-              <Button key="row-remove" plain hotkey="x" label="remove" onPress={() => removeRow($)} />
-              <Text> </Text>
-              <Button key="view-filters" plain hotkey="f" label="filters" onPress={() => showView($, 'filters')} />
-            </Box>
-          )}
+          {!isFilters && [
+            <Button key="nav-down" plain hotkey="j" label="down" onPress={() => move($, 1)} />,
+            <Button key="nav-up" plain hotkey="k" label="up" onPress={() => move($, -1)} />,
+            <Button key="row-remove" plain hotkey="x" label="remove" onPress={() => removeRow($)} />,
+            <Button key="view-filters" plain hotkey="f" label="filters" onPress={() => showView($, 'filters')} />,
+          ]}
           {isFilters && (
-            <Box key="filter-keys">
-              <Text> </Text>
-              <Button key="view-notifications" plain hotkey="n" label="notifications" onPress={() => showView($, 'notifications')} />
-              {hasRepo && (
-                <Box key="rule-keys">
-                  <Text> </Text>
-                  <Button key="rule-down" plain hotkey="j" label="down" onPress={() => moveRule($, 1)} />
-                  <Text> </Text>
-                  <Button key="rule-up" plain hotkey="k" label="up" onPress={() => moveRule($, -1)} />
-                  <Text> </Text>
-                  <Button key="rule-add" plain hotkey="a" label="add" onPress={() => addRule($)} />
-                  <Text> </Text>
-                  <Button key="rule-edit" plain hotkey="e" label="edit" onPress={() => editRule($)} />
-                  <Text> </Text>
-                  <Button key="rule-toggle" plain hotkey="t" label="allow/deny" onPress={() => toggleRule($)} />
-                  <Text> </Text>
-                  <Button key="rule-remove" plain hotkey="x" label="remove" onPress={() => removeRule($)} />
-                </Box>
-              )}
-            </Box>
+            <Button key="view-notifications" plain hotkey="n" label="notifications" onPress={() => showView($, 'notifications')} />
           )}
+          {isFilters && hasRepo && [
+            <Button key="rule-down" plain hotkey="j" label="down" onPress={() => moveRule($, 1)} />,
+            <Button key="rule-up" plain hotkey="k" label="up" onPress={() => moveRule($, -1)} />,
+            <Button key="rule-add" plain hotkey="a" label="add" onPress={() => addRule($)} />,
+            <Button key="rule-edit" plain hotkey="e" label="edit" onPress={() => editRule($)} />,
+            <Button key="rule-toggle" plain hotkey="t" label="allow/deny" onPress={() => toggleRule($)} />,
+            <Button key="rule-remove" plain hotkey="x" label="remove" onPress={() => removeRule($)} />,
+          ]}
         </Box>
         {/* Claude Code opens a pane without the keys while the message box
             has a draft, and a mod cannot take them: the person moves in. */}
@@ -495,26 +498,36 @@ export const register: Register = on => {
         {isFilters && hasRepo && state.rules.length === 0 && (
           <Text dimColor>No filters. a: add a rule.</Text>
         )}
-        {/* A Button draws no color of its own, so an invalid row is a red
-            word before its raw line. Enter on a row edits it. */}
-        {isFilters && hasRepo && state.rules.map((row, i) => (
-          <Box key={`rule-line:${i}`}>
-            {row.kind === 'invalid' && <Text color="red">invalid </Text>}
+        {/* A Button draws no color of its own, so an invalid row draws its
+            text as red children: the word, then the raw line. The label
+            still names the row. Enter on a row edits it. While the box is
+            open it has the `autoFocus`, so a pane that takes the keys again
+            lands in the box. */}
+        {isFilters && hasRepo && state.rules.map((row, i) => {
+          const label = rowText(row).slice(0, width)
+          return (
             <Button
               key={`rule:${i}`}
-              autoFocus={i === 0 && !state.editing ? true : undefined}
+              autoFocus={i === 0 && !editing ? true : undefined}
               plain
-              label={rowText(row).slice(0, width)}
+              label={label}
               onPress={() => editRule($, i)}
-            />
-          </Box>
-        ))}
-        {isFilters && hasRepo && state.editing && Input && (
+            >
+              {row.kind === 'invalid' ? [
+                <Text key="invalid-mark" color="red">invalid </Text>,
+                <Text key="invalid-line" color="red">{label}</Text>,
+              ] : label}
+            </Button>
+          )
+        })}
+        {isFilters && hasRepo && editing && Input && (
           <Input
             key={INPUT_KEY}
-            label={state.editing.mode === 'add' ? 'new rule: ' : `line ${state.editing.n}: `}
+            autoFocus
+            // The box draws the colon after the label.
+            label={editing.mode === 'add' ? 'new rule' : `line ${editing.n}`}
             placeholder="allow|deny <regex>"
-            value={state.editing.value}
+            value={editing.value}
             submitLabel="save"
             onSubmit={(value: string) => submitRule($, value)}
           />
