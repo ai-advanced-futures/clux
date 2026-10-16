@@ -273,13 +273,14 @@ fi
 # --- The filter mark (5.2.0) ------------------------------------------------
 # When the repo of the active pane has a filter file with one or more valid
 # rules (notify-filter.sh active), a mark shows, so the person knows that some
-# notifications of that repo are hidden. The mark goes in @clux_filter_mark
-# (5.3.0), for a status line that puts #{@clux_filter_mark} where it wants it.
-# A status line with no such token gets the mark at the start of @clux_status,
-# as in 5.2.0, so it still shows with no /clux:setup run. The text is
-# @clux-filter-mark (default "⊘ filtered"; an empty value turns the mark off),
-# in the colors of the notification badge. It runs on every path, with no
-# cache: one tmux read and one git call for each run.
+# notifications of that repo are hidden. The text is @clux-filter-mark
+# (default "⊘"; an empty value turns the mark off). It goes in
+# @clux_filter_mark (5.3.0) as plain text with no colors, for a status line
+# that puts #{@clux_filter_mark} where it wants it, in its own colors. A
+# status line with no such token gets the mark at the start of @clux_status,
+# in the colors of the notification badge, as in 5.2.0, so it still shows
+# with no /clux:setup run. It runs on every path, with no cache: one tmux
+# read and one git call for each run.
 #
 # The pane: on the quiet path with a client id, the active pane of the client
 # that draws this status line. Argument 2 is the pid of that client, and
@@ -304,10 +305,8 @@ EOF
     "$CURRENT_DIR/notify-filter.sh" active "$path" 2>/dev/null || return 0
     # show-option without -q exits 1 for an option that is not set: then the
     # default. A value that is set but empty turns the mark off.
-    mark=$(tmux show-option -gv @clux-filter-mark 2>/dev/null) || mark='⊘ filtered'
-    [ -n "$mark" ] || return 0
-    printf '#[bg=%s,fg=%s] %s #[default]' \
-        "${CLUX_NOTIFY_BG:-#EBCB8B}" "${CLUX_NOTIFY_FG:-#2E3440}" "${mark//#/##}"
+    mark=$(tmux show-option -gv @clux-filter-mark 2>/dev/null) || mark='⊘'
+    printf '%s' "${mark//#/##}"
 }
 
 # True when a status line option holds the #{@clux_filter_mark} token. One
@@ -324,9 +323,10 @@ _mark_has_token() {
 # token, the filter mark goes before its text, also when that text is empty.
 mark_out=$(_filter_mark)
 tmux set-option -g @clux_filter_mark "$mark_out" 2>/dev/null
-status_lead="$mark_out"
-if [ -n "$mark_out" ] && _mark_has_token; then
-    status_lead=""
+status_lead=""
+if [ -n "$mark_out" ] && ! _mark_has_token; then
+    status_lead=$(printf '#[bg=%s,fg=%s] %s #[default]' \
+        "${CLUX_NOTIFY_BG:-#EBCB8B}" "${CLUX_NOTIFY_FG:-#2E3440}" "$mark_out")
 fi
 if status_out=$("$CURRENT_DIR/show-notification.sh"); then
     tmux set-option -g @clux_status "${status_lead}${status_out}"

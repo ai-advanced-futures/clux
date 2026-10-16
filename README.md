@@ -107,16 +107,16 @@ deny   wip
 - `grep -E` has no `\d`: GNU grep reads `\d` as a plain `d`. The pane refuses a new rule with `\d`. Use `[0-9]`.
 - Outside a git repo, the view shows `Not in a git repo.`
 
-When the repo of the active tmux pane has one or more valid rules, the status bar shows `⊘ filtered` before the notification. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
+When the repo of the active tmux pane has one or more valid rules, the status bar shows `⊘` before the notification. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
 
 ```
 set -g @clux-filter-mark 'filters on'
 ```
 
-To show the mark in another place, put `#{@clux_filter_mark}` in your status line. Then the mark shows there, and not before the notification. This example puts it at the start of the right side:
+To show the mark in another place, put `#{@clux_filter_mark}` in your status line. Then the mark shows there, and not before the notification. The option holds the plain text with no colors, so your status line sets them. This example puts the mark at the start of the right side, in gray:
 
 ```
-set -g 'status-format[0]' '... #[align=right]#{@clux_filter_mark}%H:%M '
+set -g 'status-format[0]' '... #[align=right]#[fg=#4C566A]#{@clux_filter_mark} #[default]%H:%M '
 ```
 
 ## Companion terminal

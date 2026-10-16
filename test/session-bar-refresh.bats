@@ -784,7 +784,7 @@ _stage_anim() {
 # the notification badge.
 # ---------------------------------------------------------------------------
 
-MARK='#[bg=#EBCB8B,fg=#2E3440] ⊘ filtered #[default]'
+MARK='#[bg=#EBCB8B,fg=#2E3440] ⊘ #[default]'
 
 # _write_mark_tmux_stub — answers the reads of the mark. The batched
 # display-message -p read, whose last field is #{pane_current_path}, prints
@@ -905,6 +905,8 @@ _run_mark() {
     _run_mark
     [ "$status" -eq 0 ]
     grep -qxF 'tmux set-option -g @clux_status #[bg=#EBCB8B,fg=#2E3440] ##hidden #[default]NOTIF' "$BATS_TEST_TMPDIR/stub.log"
+    # The token gets the plain text, with no colors.
+    grep -qxF 'tmux set-option -g @clux_filter_mark ##hidden' "$BATS_TEST_TMPDIR/stub.log"
 }
 
 @test "session-bar-refresh: on the quiet path the mark follows the pane of the client in argument 2" {
@@ -934,7 +936,7 @@ _run_mark() {
     MARK_ENV="unset MARK_OPT; export MARK_DISPLAY_PATH='$MARK_REPO' MARK_FORMAT='#[align=centre]#{@clux_status}'"
     _run_mark
     [ "$status" -eq 0 ]
-    grep -qxF "tmux set-option -g @clux_filter_mark ${MARK}" "$BATS_TEST_TMPDIR/stub.log"
+    grep -qxF "tmux set-option -g @clux_filter_mark ⊘" "$BATS_TEST_TMPDIR/stub.log"
     grep -qxF "tmux set-option -g @clux_status ${MARK}NOTIF" "$BATS_TEST_TMPDIR/stub.log"
 }
 
@@ -944,7 +946,7 @@ _run_mark() {
     MARK_ENV="unset MARK_OPT; export MARK_DISPLAY_PATH='$MARK_REPO' MARK_FORMAT='#{@clux_status}#[align=right]#{@clux_filter_mark}'"
     _run_mark
     [ "$status" -eq 0 ]
-    grep -qxF "tmux set-option -g @clux_filter_mark ${MARK}" "$BATS_TEST_TMPDIR/stub.log"
+    grep -qxF "tmux set-option -g @clux_filter_mark ⊘" "$BATS_TEST_TMPDIR/stub.log"
     grep -qxF 'tmux set-option -g @clux_status NOTIF' "$BATS_TEST_TMPDIR/stub.log"
 }
 
