@@ -817,6 +817,9 @@ case "$1" in
                 ;;
         esac
         ;;
+    show-options)
+        printf '%s\n' "${MARK_FORMAT:-}"
+        ;;
 esac
 exit 0
 STUBEOF
@@ -921,4 +924,37 @@ _run_mark() {
     _run_mark quiet 222
     [ "$status" -eq 0 ]
     grep -qxF 'tmux set-option -g @clux_status NOTIF' "$BATS_TEST_TMPDIR/stub.log"
+}
+
+# 5.3.0 — @clux_filter_mark. The mark always goes in @clux_filter_mark. It
+# leaves @clux_status only when a status line option holds the token.
+@test "session-bar-refresh: the mark goes in @clux_filter_mark too" {
+    _write_mark_tmux_stub
+    _stage_mark 'NOTIF' 'deny wip'
+    MARK_ENV="unset MARK_OPT; export MARK_DISPLAY_PATH='$MARK_REPO' MARK_FORMAT='#[align=centre]#{@clux_status}'"
+    _run_mark
+    [ "$status" -eq 0 ]
+    grep -qxF "tmux set-option -g @clux_filter_mark ${MARK}" "$BATS_TEST_TMPDIR/stub.log"
+    grep -qxF "tmux set-option -g @clux_status ${MARK}NOTIF" "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "session-bar-refresh: with the #{@clux_filter_mark} token, @clux_status has no mark" {
+    _write_mark_tmux_stub
+    _stage_mark 'NOTIF' 'deny wip'
+    MARK_ENV="unset MARK_OPT; export MARK_DISPLAY_PATH='$MARK_REPO' MARK_FORMAT='#{@clux_status}#[align=right]#{@clux_filter_mark}'"
+    _run_mark
+    [ "$status" -eq 0 ]
+    grep -qxF "tmux set-option -g @clux_filter_mark ${MARK}" "$BATS_TEST_TMPDIR/stub.log"
+    grep -qxF 'tmux set-option -g @clux_status NOTIF' "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "session-bar-refresh: no rule empties @clux_filter_mark and reads no status line" {
+    _write_mark_tmux_stub
+    _stage_mark 'NOTIF'
+    MARK_ENV="unset MARK_OPT; export MARK_DISPLAY_PATH='$MARK_REPO'"
+    _run_mark
+    [ "$status" -eq 0 ]
+    grep -qxF 'tmux set-option -g @clux_filter_mark ' "$BATS_TEST_TMPDIR/stub.log"
+    run grep -qF 'show-options' "$BATS_TEST_TMPDIR/stub.log"
+    [ "$status" -ne 0 ]
 }

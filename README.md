@@ -113,6 +113,12 @@ When the repo of the active tmux pane has one or more valid rules, the status ba
 set -g @clux-filter-mark 'filters on'
 ```
 
+To show the mark in another place, put `#{@clux_filter_mark}` in your status line. Then the mark shows there, and not before the notification. This example puts it at the start of the right side:
+
+```
+set -g 'status-format[0]' '... #[align=right]#{@clux_filter_mark}%H:%M '
+```
+
 ## Companion terminal
 
 The `clux:terminal` skill gives Claude one tmux pane that you can see. Claude runs commands in it. A Clef model examines each command before it runs. A dangerous command waits for your `y`. You run one Clef server and name it with `CLUX_CLEF_URL`:
