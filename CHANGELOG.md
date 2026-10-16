@@ -6,10 +6,11 @@ All notable changes to clux are documented here.
 
 ### Changed
 
+- **The `prefix + M` popup is smaller:** 60 columns by 15 rows (was 80% by 60% of the client). A client smaller than that gets a full-size popup. Run `/clux:upgrade` to write the new key
 - **The `prefix + M` popup shows the short text of each notification.** It shows the text before the `|||` id marker, for example `⚡ clux-claude / clux`. The session ids, pane ids and folder do not show. Enter and Ctrl-X still use the full line, and the search matches the short text only
 - **A new filter rule starts with `allow`.** In the Filters view of the notifications pane, `a` opens the box with `allow ` (was `deny `)
-- **The filter mark moves to the window name.** In the clux session bar, a window whose active pane is in a repo with a valid filter rule shows `⊘` after its name. Each window shows the state of its own folder. The mark no longer shows before the notification in `@clux_status`, so it does not depend on which client refreshed the bar last
-- **The filter mark is `⊘` alone** (was `⊘ filtered`), in the colors of the window name. `@clux-filter-mark` still sets the text, and an empty value turns it off
+- **The filter mark moves to the session name.** In the clux session bar, a session with a window whose active pane is in a repo with a valid filter rule shows `⊘` after the session name. This is true for sessions with and without a client. The window names show no mark. The mark no longer shows before the notification in `@clux_status`, so it does not depend on which client refreshed the bar last
+- **The filter mark is `⊘` alone** (was `⊘ filtered`), in the colors of the session name. `@clux-filter-mark` still sets the text, and an empty value turns it off
 
 ### Removed
 

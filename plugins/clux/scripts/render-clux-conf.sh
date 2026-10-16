@@ -415,7 +415,10 @@ PAIRS
     printf 'bind-key m run-shell "%s/jump-to-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key ` run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
     printf 'bind-key DC run-shell "%s/dismiss-notification.sh"\n' "$SCRIPTS_DIR"
-    printf 'bind-key M display-popup -w 80%% -h 60%% -E "%s/notification-picker.sh"\n' "$SCRIPTS_DIR"
+    # The picker shows only the short text of each line, so a small popup is
+    # enough. A client smaller than the popup gets a full-size popup, for the
+    # same reason as A above.
+    printf "bind-key M if-shell -F '#{||:#{e|<:#{client_width},60},#{e|<:#{client_height},15}}' 'display-popup -w 100%% -h 100%% -E \"%s/notification-picker.sh\"' 'display-popup -w 60 -h 15 -E \"%s/notification-picker.sh\"'\n" "$SCRIPTS_DIR" "$SCRIPTS_DIR"
 
     echo
     echo "# --- Hooks (band 90-99, see header) ---"

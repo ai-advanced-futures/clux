@@ -107,7 +107,7 @@ deny   wip
 - `grep -E` has no `\d`: GNU grep reads `\d` as a plain `d`. The pane refuses a new rule with `\d`. Use `[0-9]`.
 - Outside a git repo, the view shows `Not in a git repo.`
 
-In the clux session bar, a window whose active pane is in a repo with one or more valid rules shows `⊘` after its name. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
+In the clux session bar, a session with a window whose active pane is in a repo with one or more valid rules shows `⊘` after the session name. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
 
 ```
 set -g @clux-filter-mark 'filters on'

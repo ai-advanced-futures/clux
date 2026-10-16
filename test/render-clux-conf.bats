@@ -119,6 +119,21 @@ _make_fake_scripts_dir() {
     grep -qF 'new-workspace-prompt.sh' "$out" || false
 }
 
+@test "render-clux-conf: M opens a small picker popup, full size on a small client" {
+    local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
+    local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"
+    run bash -c "
+        '$RENDER_SCRIPT' --dir-resolver path --editor none \
+            --agents-command 'claude agents --cwd \"\$PWD\"' --picker fzf \
+            --scripts-dir '$scripts_dir' --out '$out'
+    "
+    [ "$status" -eq 0 ]
+    local line; line=$(grep '^bind-key M ' "$out")
+    [[ "$line" == *"display-popup -w 60 -h 15 -E"*"notification-picker.sh"* ]] || { echo "$line"; false; }
+    [[ "$line" == *"display-popup -w 100% -h 100% -E"*"notification-picker.sh"* ]] || { echo "$line"; false; }
+    [[ "$line" == *"#{e|<:#{client_width},60}"*"#{e|<:#{client_height},15}"* ]] || { echo "$line"; false; }
+}
+
 @test "render-clux-conf: a passed theming flag is written, an omitted one is not" {
     local out="$BATS_TEST_TMPDIR/clux.tmux.conf"
     local scripts_dir; scripts_dir="$(_make_fake_scripts_dir)"

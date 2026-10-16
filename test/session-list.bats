@@ -489,9 +489,9 @@ STUBEOF
 }
 
 # ---------------------------------------------------------------------------
-# 5.3.0 — the filter mark after the window name. A window whose active pane is
-# in a repo with a valid filter rule shows @clux-filter-mark (default ⊘) after
-# its name; the other windows do not.
+# 5.3.0 — the filter mark after the session name. A session with a window whose
+# active pane is in a repo with a valid filter rule shows @clux-filter-mark
+# (default ⊘) after the session name. The window names show no mark.
 # ---------------------------------------------------------------------------
 _run_mark_list() {
     _write_list_tmux_stub
@@ -511,17 +511,18 @@ _run_mark_list() {
     "
 }
 
-@test "session-list: a window in a repo with a filter rule shows ⊘ after its name" {
+@test "session-list: a session with a window in a repo with a filter rule shows ⊘ after its name" {
     _run_mark_list 'unset FAKE_MARK'
     [ "$status" -eq 0 ]
-    [[ "$output" == *"]jag ⊘#[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"] alpha ⊘ #[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"]jag#[default]"* ]] || { echo "$output"; false; }
     [[ "$output" == *"]other#[default]"* ]] || { echo "$output"; false; }
 }
 
 @test "session-list: @clux-filter-mark sets the mark, with each # doubled" {
     _run_mark_list "export FAKE_MARK='#f'"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"]jag ##f#[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"] alpha ##f #[default]"* ]] || { echo "$output"; false; }
 }
 
 @test "session-list: a session with no client shows ⊘ after its name when a window has it" {
@@ -548,5 +549,5 @@ _run_mark_list() {
 @test "session-list: an empty @clux-filter-mark turns the mark off" {
     _run_mark_list "export FAKE_MARK=''"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"]jag#[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"] alpha #[default]"* ]] || { echo "$output"; false; }
 }

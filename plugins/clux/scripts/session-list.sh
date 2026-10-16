@@ -213,12 +213,6 @@ awk -v order="$order" -v agents="$agents" \
     }
   }
 
-  # The window name, and the filter mark after it when its folder has a rule.
-  function wname(name, path) {
-    if (filter_mark != "" && path in filt) return esc(name) " " esc(filter_mark)
-    return esc(name)
-  }
-
   # First file: session -> attached client count, and display name.
   NR==FNR { attached[$1]=$2; disp[$1]=$3; next }
 
@@ -226,9 +220,9 @@ awk -v order="$order" -v agents="$agents" \
   {
     if (filter_mark != "" && $5 in filt) smark[$1] = 1
     if ($2 == 1)
-      wins[$1]=wins[$1] " #[" window_active_style "]" wname($4, $5) "#[default]"
+      wins[$1]=wins[$1] " #[" window_active_style "]" esc($4) "#[default]"
     else
-      wins[$1]=wins[$1] " #[" window_inactive_style "]" wname($4, $5) "#[default]"
+      wins[$1]=wins[$1] " #[" window_inactive_style "]" esc($4) "#[default]"
   }
 
   END {
@@ -239,13 +233,13 @@ awk -v order="$order" -v agents="$agents" \
       # disp[] is absent only if the session vanished between the two tmux
       # calls; fall back to the raw name rather than rendering an empty slot.
       name=esc((s in disp) ? disp[s] : s)
+      # The filter mark goes after the session name when one of its windows
+      # is in a folder with a rule.
+      if (s in smark) name = name " " esc(filter_mark)
       if (attached[s] + 0 > 0)
         out=out glyph(s) "#[" name_attached_style "] " name " #[default] #[" bracket_style "]" window_open "#[default]" wins[s] " #[" bracket_style "]" window_close "#[default] #[" separator_style "]" separator "#[default] "
-      else {
-        # No windows drawn: the filter mark of a window goes after the name.
-        if (s in smark) name = name " " esc(filter_mark)
+      else
         out=out glyph(s) "#[" name_detached_style "] " name " #[default] #[" separator_style "]" separator "#[default] "
-      }
     }
     printf "%s", out
   }

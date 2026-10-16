@@ -41,7 +41,7 @@ set -g bell-action any
 bind-key m run-shell "~/.config/clux/scripts/jump-to-notification.sh"
 bind-key ` run-shell "~/.config/clux/scripts/dismiss-notification.sh"
 bind-key DC run-shell "~/.config/clux/scripts/dismiss-notification.sh"
-bind-key M display-popup -w 80% -h 60% -E "~/.config/clux/scripts/notification-picker.sh"
+bind-key M display-popup -w 60 -h 15 -E "~/.config/clux/scripts/notification-picker.sh"
 ```
 
 Scripts are deployed to `~/.config/clux/scripts/` so your tmux.conf doesn't break when the plugin version updates.
