@@ -36,17 +36,28 @@ fi
 # queue, with the cursor on the first line. A shell loop, not a fzf reload
 # bind: it works with every fzf version, and the test stub can drive it.
 # Enter jumps and ends the popup; Esc ends it; an empty queue ends it.
+#
+# fzf gets "<line><TAB><text>" and shows field 2 only: the text before the id
+# marker, as the notifications pane and the status bar show it. The text is the
+# LAST field, because some fzf versions show the delimiter after a field that
+# is not last. The writers remove control bytes, so a line holds no TAB.
 while [ -s "$NOTIFY_FILE" ]; do
-    selected=$(fzf --reverse \
+    selected=$(awk '{
+            text = $0
+            i = index(text, "|||")
+            if (i > 0) text = substr(text, 1, i - 1)
+            print $0 "\t" text
+        }' "$NOTIFY_FILE" | fzf --reverse \
+        --delimiter='\t' --with-nth=2 \
         --header="Enter=jump  Ctrl-X=delete  Esc=close" \
-        --expect=ctrl-x,ctrl-d \
-        < "$NOTIFY_FILE")
+        --expect=ctrl-x,ctrl-d)
 
     # fzf exits 130 on Esc/ctrl-c
     [ -z "$selected" ] && exit 0
 
     key=$(head -1 <<< "$selected")
     line=$(tail -1 <<< "$selected")
+    line="${line%%$'\t'*}"
 
     [ -z "$line" ] && exit 0
 

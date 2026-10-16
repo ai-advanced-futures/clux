@@ -352,7 +352,7 @@ These keybindings are added within the clux section markers and use absolute pat
 ```tmux
 bind-key m run-shell "/absolute/path/to/jump-to-notification.sh"
 bind-key ` run-shell "/absolute/path/to/dismiss-notification.sh"
-bind-key M display-popup -w 80% -h 60% -E "/absolute/path/to/notification-picker.sh"
+bind-key M display-popup -w 60 -h 15 -E "/absolute/path/to/notification-picker.sh"
 ```
 
 ## Implementation for LLM

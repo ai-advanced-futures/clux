@@ -3,7 +3,6 @@ import { describe, expect, test } from 'claude-code/testing'
 import { displayText, toRows } from '../hooks/notifications/lines'
 
 const WINDOW = 'main:editor Task done|||$sess1:@win3'
-const LEGACY = 'main:editor Task done|ID:$sess1:@win3'
 const AGENT = '⚡ agents / pr-flow|||agent:abc-123@@$s9:@w9:%pane3@@/code/clux'
 const OLD_AGENT = '⚡ needs input|||agent:s-abc-123'
 const BARE = 'main:editor Task done'
@@ -11,10 +10,6 @@ const BARE = 'main:editor Task done'
 describe('displayText', () => {
   test('cuts the ||| marker', () => {
     expect(displayText(WINDOW)).toBe('main:editor Task done')
-  })
-
-  test('cuts the legacy |ID: marker', () => {
-    expect(displayText(LEGACY)).toBe('main:editor Task done')
   })
 
   test('cuts the marker of an agent line, new shape and legacy shape', () => {

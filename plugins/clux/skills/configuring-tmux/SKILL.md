@@ -654,7 +654,7 @@ long after setup ran and with nothing to point at.
 backslash that needs single-quoting, and an animation cadence is not something
 detection reads off an old bar. A user who wants it sets it in their own file.
 
-`@clux-filter-mark` (default `⊘ filtered`) has no flag either. It is the text that the status bar shows before the notification when the repo of the active pane has notification filters (`<main repo root>/.claude/clux-filters.local`, written by the Filters view of the notifications pane). Detection cannot read it off an old bar. The mark shows in the current status line with no new token, so setup writes nothing for it. A user who wants another text, or an empty value to turn the mark off, sets it in their own file.
+`@clux-filter-mark` (default `⊘`) has no flag either. It is the text that the clux session bar shows after the name of a session that has a window whose active pane is in a repo with notification filters (`<main repo root>/.claude/clux-filters.local`, written by the Filters view of the notifications pane). Detection cannot read it off an old bar. The mark shows in the current status line with no new token, so setup writes nothing for it. A user who wants another text, or an empty value to turn the mark off, sets it in their own file.
 
 The defaults are tmux **named** colours on purpose, so an 8-colour terminal and an unthemed machine both render readably. `@clux-bar-name-length` must be numeric — `render-clux-conf.sh` refuses a non-numeric value, because a bad `N` corrupts the whole tmux format string `session-list.sh` builds from it.
 

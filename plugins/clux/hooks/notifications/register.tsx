@@ -285,9 +285,9 @@ async function openBox($: EngineInterface, editing: NonNullable<FilterEditing>) 
   await askFocus($, INPUT_KEY)
 }
 
-// `a`: a new rule, `deny ` ready in the box.
+// `a`: a new rule, `allow ` ready in the box.
 async function addRule($: EngineInterface) {
-  await openBox($, { mode: 'add', value: 'deny ' })
+  await openBox($, { mode: 'add', value: 'allow ' })
 }
 
 // `e`, or Enter on a row: the box holds the rule, to replace its line.

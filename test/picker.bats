@@ -231,7 +231,7 @@ _loop_picker() {
     [ "$status" -eq 0 ]
     [ "$(cat "$FZF_CALLS")" -eq 2 ]
     # The second fzf got the queue without the deleted line.
-    [ "$(cat "$FZF_CALLS.2")" = 'main:tests green|||$sess1:@win5' ]
+    [ "$(cat "$FZF_CALLS.2")" = $'main:tests green|||$sess1:@win5\tmain:tests green' ]
     [ "$(cat "$QUEUE_FILE")" = 'main:tests green|||$sess1:@win5' ]
     grep -qF -- '--header=Enter=jump  Ctrl-X=delete  Esc=close' "$BATS_TEST_TMPDIR/stub.log"
     grep -qF -- '--expect=ctrl-x,ctrl-d' "$BATS_TEST_TMPDIR/stub.log"
@@ -267,4 +267,22 @@ _loop_picker() {
     [ "$status" -eq 0 ]
     [ "$(cat "$FZF_CALLS")" -eq 1 ]
     [ "$(cat "$QUEUE_FILE")" = 'main:editor Task done|||$sess1:@win3' ]
+}
+
+# ---------------------------------------------------------------------------
+# 5.3.0 — the popup shows the text before the id marker. fzf gets
+# "<line><TAB><text>" and shows field 2 only; Ctrl-X still uses the full line.
+# ---------------------------------------------------------------------------
+@test "picker: fzf shows the text before the id marker, Ctrl-X uses the full line" {
+    local agent='⚡ clux-claude / clux|||agent:101389a6@@$15:@33:%41@@/home/x/clux'
+    printf '%s\n' "$agent" 'main:tests green|||$sess1:@win5' 'plain line' > "$QUEUE_FILE"
+    _loop_picker 'ctrl-x esc'
+    [ "$status" -eq 0 ]
+    [ "$(sed -n 1p "$FZF_CALLS.1")" = "$agent"$'\t⚡ clux-claude / clux' ]
+    [ "$(sed -n 2p "$FZF_CALLS.1")" = $'main:tests green|||$sess1:@win5\tmain:tests green' ]
+    [ "$(sed -n 3p "$FZF_CALLS.1")" = $'plain line\tplain line' ]
+    grep -qF -- '--delimiter=\t --with-nth=2' "$BATS_TEST_TMPDIR/stub.log"
+    # Ctrl-X got the full line back: the agent line left the queue.
+    run grep -qF '|||agent:101389a6' "$QUEUE_FILE"
+    [ "$status" -ne 0 ]
 }

@@ -64,7 +64,7 @@ main:tests 8/8 green
 - At the right end of the prompt footer, a dim `notifs` label opens the pane. When the queue is not empty, the label shows the count, for example `3 notifs`.
 - clux reads the queue file every 2 seconds. The tmux status bar shows a new notification sooner, because tmux runs its own job on its own interval.
 - Enter works also when Claude Code itself does not run in tmux (for example a background session): tmux moves its attached client to the window. With no tmux server, Enter says it could not jump, and `x` still works.
-- In the `prefix + M` popup, Ctrl-X deletes the selected notification, and the popup stays open. Enter goes to the notification, and Esc closes the popup.
+- The `prefix + M` popup shows the short text of each notification, without the ids after `|||`. In the popup, Ctrl-X deletes the selected notification, and the popup stays open. Enter goes to the notification, and Esc closes the popup.
 
 The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 2.1.291 or later. The keys of this pane and the keys of the `prefix + M` popup both run `scripts/notification-line.sh`, so a jump means the same thing in both.
 
@@ -102,12 +102,12 @@ allow  ^feat-
 deny   wip
 ```
 
-- `a` opens a box with `deny `. Type the rule, then push Enter. `e`, or Enter on a row, edits the focused rule. `t` changes allow to deny, or deny to allow. `x` removes the focused rule. Esc closes the box with no change.
+- `a` opens a box with `allow `. Type the rule, then push Enter. `e`, or Enter on a row, edits the focused rule. `t` changes allow to deny, or deny to allow. `x` removes the focused rule. Esc closes the box with no change.
 - When grep refuses the regex, the pane shows the grep error, and the box stays open with your text.
 - `grep -E` has no `\d`: GNU grep reads `\d` as a plain `d`. The pane refuses a new rule with `\d`. Use `[0-9]`.
 - Outside a git repo, the view shows `Not in a git repo.`
 
-When the repo of the active tmux pane has one or more valid rules, the status bar shows `⊘ filtered` before the notification. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
+In the clux session bar, a session with a window whose active pane is in a repo with one or more valid rules shows `⊘` after the session name. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
 
 ```
 set -g @clux-filter-mark 'filters on'

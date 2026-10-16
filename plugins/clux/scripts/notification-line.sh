@@ -80,7 +80,7 @@ _remove() {
     return 0
 }
 
-# A "<session_id>:<window_id>" tail, from ||| or from the legacy |ID: marker.
+# A "<session_id>:<window_id>" tail, from after the ||| marker.
 # A tail with no colon leaves both halves equal to the whole tail, which is a
 # line that names no target, so the equality guard is the target test.
 _jump_ids() {
@@ -133,10 +133,6 @@ case "$LINE" in
     *"|||agent:"*) ;;
     *"|||"*)
         _jump_ids "${LINE##*|||}"
-        exit $?
-        ;;
-    *"|ID:"*)
-        _jump_ids "${LINE##*|ID:}"
         exit $?
         ;;
     *)
