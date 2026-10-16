@@ -53,7 +53,7 @@ The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.2
 `/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. `ctrl+x n` does the same from anywhere, also while you write a message, after you bind it (see below).
 
 ```
-Notifications · 3 q: hide  j: down  k: up  x: remove
+Notifications · 3  |  Filters · 2 q: hide  j: down  k: up  x: remove  f: filters
 main:editor Task done
 ⚡ agents / pr-flow needs you
 main:tests 8/8 green
@@ -64,6 +64,7 @@ main:tests 8/8 green
 - At the right end of the prompt footer, a dim `notifs` label opens the pane. When the queue is not empty, the label shows the count, for example `3 notifs`.
 - clux reads the queue file every 2 seconds. The tmux status bar shows a new notification sooner, because tmux runs its own job on its own interval.
 - Enter works also when Claude Code itself does not run in tmux (for example a background session): tmux moves its attached client to the window. With no tmux server, Enter says it could not jump, and `x` still works.
+- In the `prefix + M` popup, Ctrl-X deletes the selected notification, and the popup stays open. Enter goes to the notification, and Esc closes the popup.
 
 The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 2.1.291 or later. The keys of this pane and the keys of the `prefix + M` popup both run `scripts/notification-line.sh`, so a jump means the same thing in both.
 
@@ -74,6 +75,43 @@ The pane is a function-hooks mod (`hooks/notifications/`). It needs Claude Code 
 ```
 
 The pane borrows the `app:toggleDiffPreSession` action, which Claude Code uses only for the diff view. While the diff view is open, the key can act on the diff view instead of the pane. To use a different key, bind that key to `app:toggleDiffPreSession`.
+
+### Notification filters
+
+A file in a repo can hide some clux notifications. clux reads `<main repo root>/.claude/clux-filters.local`. All the worktrees of the repo use the same file. Each line is one rule:
+
+```
+# clux notification filters. Regex type: grep -E, case-sensitive.
+allow ^feat-
+deny  wip
+```
+
+- The regex (`grep -E`, case-sensitive) matches the Claude session name, the name that the sessions pane shows. When a session has no name, the name is the folder name.
+- `deny` hides the notifications of the sessions that match. `allow` lets only the sessions that match notify. When the file has an `allow` rule, the name must match one `allow` rule and no `deny` rule. The order of the lines has no effect.
+- A hidden notification makes no sound, no desktop banner, no queue line and no bell. A new rule does not remove the lines that are already in the queue.
+- clux ignores blank lines and lines that start with `#`. It also ignores a line that is not a rule, and the Filters view shows that line in red.
+- When git does not ignore the file, clux adds it to `.git/info/exclude`.
+
+In the notifications pane, `f` opens the Filters view and `n` goes back. The view shows the file path and one row for each rule:
+
+```
+Notifications · 3  |  Filters · 2
+q: hide n: notifications j: down k: up a: add e: edit t: allow/deny x: remove
+/code/app/.claude/clux-filters.local
+allow  ^feat-
+deny   wip
+```
+
+- `a` opens a box with `deny `. Type the rule, then push Enter. `e`, or Enter on a row, edits the focused rule. `t` changes allow to deny, or deny to allow. `x` removes the focused rule. Esc closes the box with no change.
+- When grep refuses the regex, the pane shows the grep error, and the box stays open with your text.
+- `grep -E` has no `\d`: GNU grep reads `\d` as a plain `d`. The pane refuses a new rule with `\d`. Use `[0-9]`.
+- Outside a git repo, the view shows `Not in a git repo.`
+
+When the repo of the active tmux pane has one or more valid rules, the status bar shows `⊘ filtered` before the notification. To change the text, set `@clux-filter-mark`. An empty value turns the mark off:
+
+```
+set -g @clux-filter-mark 'filters on'
+```
 
 ## Companion terminal
 

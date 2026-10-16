@@ -43,7 +43,8 @@ plugins/clux/
 │   ├── agent-state.sh           # Writes the per-pane agent-state file
 │   ├── notifications/           # The notification queue pane (function hooks)
 │   │   ├── register.tsx         #   Pane, footer label, /clux:notifications
-│   │   └── lines.ts             #   Pure helpers: the queue text as rows
+│   │   ├── lines.ts             #   Pure helpers: the queue text as rows
+│   │   └── filters.ts           #   Pure helpers: the filter list as rows
 │   └── sessions/                # The background sessions pane (function hooks)
 │       ├── register.tsx         #   Pane, footer label, /clux:sessions, ctrl+x b
 │       └── jobs.ts              #   Pure helpers: a job's state.json as one row
@@ -61,6 +62,7 @@ plugins/clux/
 │   ├── dismiss-notification.sh  # Dismiss top notification
 │   ├── notification-picker.sh   # Interactive notification picker
 │   ├── notify-sound.sh          # Sound playback per notification type
+│   ├── notify-filter.sh         # The per-repo filter file: parse, check, edit
 │   ├── truncate-title.sh        # Per-OS safe title truncation
 │   │                            # Agent state — readers only, they never write
 │   ├── agent-query.sh           # Reads one session's rolled-up agent state

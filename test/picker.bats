@@ -206,3 +206,65 @@ STUBEOF
     run grep -qF "switch-client" "$stub_log"
     [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# 5.2.0 — ctrl-x deletes and the popup stays open. The picker runs fzf in a
+# loop; FZF_STUB_KEYS gives one key for each call of fzf.
+# ---------------------------------------------------------------------------
+_loop_picker() {
+    local stub_log="$BATS_TEST_TMPDIR/stub.log"
+    FZF_CALLS="$BATS_TEST_TMPDIR/fzf.count"
+    run bash -c "
+        export STUB_LOG='$stub_log'
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export CLUX_NOTIFY_FILE='$QUEUE_FILE'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FZF_STUB_KEYS='$1'
+        export FZF_STUB_COUNT='$FZF_CALLS'
+        bash '$SCRIPTS_DIR/notification-picker.sh'
+    "
+}
+
+@test "picker: ctrl-x removes the line, then starts fzf again on the new queue" {
+    printf '%s\n' 'main:editor Task done|||$sess1:@win3' 'main:tests green|||$sess1:@win5' > "$QUEUE_FILE"
+    _loop_picker 'ctrl-x esc'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FZF_CALLS")" -eq 2 ]
+    # The second fzf got the queue without the deleted line.
+    [ "$(cat "$FZF_CALLS.2")" = 'main:tests green|||$sess1:@win5' ]
+    [ "$(cat "$QUEUE_FILE")" = 'main:tests green|||$sess1:@win5' ]
+    grep -qF -- '--header=Enter=jump  Ctrl-X=delete  Esc=close' "$BATS_TEST_TMPDIR/stub.log"
+    grep -qF -- '--expect=ctrl-x,ctrl-d' "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "picker: ctrl-d still deletes, and the popup stays open too" {
+    printf '%s\n' 'main:editor Task done|||$sess1:@win3' 'main:tests green|||$sess1:@win5' > "$QUEUE_FILE"
+    _loop_picker 'ctrl-d esc'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FZF_CALLS")" -eq 2 ]
+    [ "$(cat "$QUEUE_FILE")" = 'main:tests green|||$sess1:@win5' ]
+}
+
+@test "picker: the loop ends when the queue is empty" {
+    printf '%s\n' 'main:editor Task done|||$sess1:@win3' 'main:tests green|||$sess1:@win5' > "$QUEUE_FILE"
+    _loop_picker 'ctrl-x ctrl-x ctrl-x'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FZF_CALLS")" -eq 2 ]
+    [ ! -s "$QUEUE_FILE" ]
+}
+
+@test "picker: Enter after a delete jumps and ends the loop" {
+    printf '%s\n' 'main:editor Task done|||$sess1:@win3' 'main:tests green|||$sess1:@win5' > "$QUEUE_FILE"
+    _loop_picker 'ctrl-x enter ctrl-x'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FZF_CALLS")" -eq 2 ]
+    grep -qF 'select-window -t $sess1:@win5' "$BATS_TEST_TMPDIR/stub.log"
+}
+
+@test "picker: Esc ends the loop and keeps the queue" {
+    printf '%s\n' 'main:editor Task done|||$sess1:@win3' > "$QUEUE_FILE"
+    _loop_picker 'esc'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$FZF_CALLS")" -eq 1 ]
+    [ "$(cat "$QUEUE_FILE")" = 'main:editor Task done|||$sess1:@win3' ]
+}

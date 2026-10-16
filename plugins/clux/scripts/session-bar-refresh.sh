@@ -157,9 +157,9 @@ fi
 # (verified).
 now=$(date +%s)
 opts=$(tmux display-message -p \
-  "#{@clux_bar_tpl}${SEP}#{${idx_opt}}${SEP}#{@clux-agent-glyph-busy-frames}${SEP}#{@clux-agent-glyph-busy}" \
+  "#{@clux_bar_tpl}${SEP}#{${idx_opt}}${SEP}#{@clux-agent-glyph-busy-frames}${SEP}#{@clux-agent-glyph-busy}${SEP}#{pane_current_path}" \
   2>/dev/null)
-IFS="$SEP" read -r tpl_raw idx_raw frames_raw busy_raw <<EOF
+IFS="$SEP" read -r tpl_raw idx_raw frames_raw busy_raw pane_path <<EOF
 $opts
 EOF
 
@@ -270,10 +270,49 @@ else
     _full_render "$frame"
 fi
 
+# --- The filter mark (5.2.0) ------------------------------------------------
+# When the repo of the active pane has a filter file with one or more valid
+# rules (notify-filter.sh active), @clux_status starts with a mark, so the
+# person knows that some notifications of that repo are hidden. The text is
+# @clux-filter-mark (default "⊘ filtered"; an empty value turns the mark off),
+# in the colors of the notification badge. It runs on every path, with no
+# cache: one tmux read and one git call for each run.
+#
+# The pane: on the quiet path with a client id, the active pane of the client
+# that draws this status line. Argument 2 is the pid of that client, and
+# `display-message -c` takes a client name, not a pid, so list-clients finds
+# it. On the hook path, and on a quiet path with no client id, the pane that
+# `display-message -p` picks, read in the batched read above.
+_filter_mark() {
+    local path="" pid p mark
+    if [ -n "$client_id" ]; then
+        while IFS="$SEP" read -r pid p; do
+            if [ "$pid" = "$client_id" ]; then
+                path="$p"
+                break
+            fi
+        done <<EOF
+$(tmux list-clients -F "#{client_pid}${SEP}#{pane_current_path}" 2>/dev/null)
+EOF
+    else
+        path="$pane_path"
+    fi
+    [ -n "$path" ] || return 0
+    "$CURRENT_DIR/notify-filter.sh" active "$path" 2>/dev/null || return 0
+    # show-option without -q exits 1 for an option that is not set: then the
+    # default. A value that is set but empty turns the mark off.
+    mark=$(tmux show-option -gv @clux-filter-mark 2>/dev/null) || mark='⊘ filtered'
+    [ -n "$mark" ] || return 0
+    printf '#[bg=%s,fg=%s] %s #[default]' \
+        "${CLUX_NOTIFY_BG:-#EBCB8B}" "${CLUX_NOTIFY_FG:-#2E3440}" "${mark//#/##}"
+}
+
 # show-notification.sh is not part of the throttle above — see the header
-# comment. It runs on every path, including a cheap animation tick.
+# comment. It runs on every path, including a cheap animation tick. The
+# filter mark goes before its text, also when that text is empty.
+mark_out=$(_filter_mark)
 if status_out=$("$CURRENT_DIR/show-notification.sh"); then
-    tmux set-option -g @clux_status "$status_out"
+    tmux set-option -g @clux_status "${mark_out}${status_out}"
 fi
 
 # A redraw needs a client, and there is very often no client here.

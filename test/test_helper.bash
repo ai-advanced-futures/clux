@@ -104,6 +104,14 @@ with open(sys.argv[1], encoding="utf-8") as log:
 PY
 }
 
+# write_filter_rules DIR RULE... — the filter file of the repo at DIR
+# (scripts/notify-filter.sh), one line for each RULE.
+write_filter_rules() {
+    local dir="$1"; shift
+    mkdir -p "$dir/.claude"
+    printf '%s\n' "$@" > "$dir/.claude/clux-filters.local"
+}
+
 # hold_lock PATH — a live process that holds the flock lock of PATH, as a verb
 # of terminal.sh does (LOCK_HELPER). It sets HOLD_PID when the lock is held.
 # stop_holders stops each holder (the teardown does it too). A holder that

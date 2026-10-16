@@ -3,7 +3,29 @@
 # Reads FZF_STUB_KEY and FZF_STUB_LINE env vars to emit controlled output.
 # If FZF_STUB_EXIT is set, exits with that code instead (e.g. 130 for Esc).
 # Logs invocation args.
+#
+# FZF_STUB_KEYS drives a caller that runs fzf in a loop: one answer for each
+# call, space-separated — ctrl-x, ctrl-d, enter, or esc (exit 130). A call
+# past the end of the list is esc, so a loop that does not end stops there.
+# Each call selects the first line of its input, where the cursor of fzf
+# starts, and saves that input as "$FZF_STUB_COUNT.<call>". FZF_STUB_COUNT
+# names the file that counts the calls.
 echo "fzf $*" >> "${STUB_LOG:-/dev/null}"
+
+if [ -n "${FZF_STUB_KEYS:-}" ]; then
+    count_file="${FZF_STUB_COUNT:?FZF_STUB_COUNT is needed with FZF_STUB_KEYS}"
+    n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+    printf '%s\n' "$n" > "$count_file"
+    cat > "$count_file.$n"
+    read -r -a keys <<< "$FZF_STUB_KEYS"
+    key="${keys[$((n - 1))]:-esc}"
+    case "$key" in
+        esc) exit 130 ;;
+        enter) key="" ;;
+    esac
+    printf '%s\n%s\n' "$key" "$(head -1 "$count_file.$n")"
+    exit 0
+fi
 
 if [ -n "${FZF_STUB_EXIT:-}" ]; then
     exit "$FZF_STUB_EXIT"

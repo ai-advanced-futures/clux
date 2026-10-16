@@ -29,6 +29,7 @@ jump-to-notification.sh
 dismiss-notification.sh
 notification-picker.sh
 notify-sound.sh
+notify-filter.sh
 truncate-title.sh
 
 # Agent state

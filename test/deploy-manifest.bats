@@ -154,3 +154,9 @@ EOF
     done
     [ -z "$missing" ] || { echo "not named in the manifest header:$missing"; false; }
 }
+
+@test "deploy-manifest: lists notify-filter.sh — the status bar runs the deployed copy" {
+    # session-bar-refresh.sh runs from ~/.config/clux/scripts and calls
+    # notify-filter.sh beside it, so the filter script must be deployed too.
+    _manifest_entries | grep -qxF notify-filter.sh
+}
