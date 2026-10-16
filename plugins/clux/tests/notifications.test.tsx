@@ -683,6 +683,40 @@ test('back in Notifications, x acts on the first row again', async ($, on) => {
   await ui.unmount()
 })
 
+test('a pane that opens new in the Filters view puts the rule ring on the first row', async ($, on) => {
+  const { ran, filter } = world(on, { text: null })
+  filter.list = '3\tallow\t^feat-\n5\tdeny\twip\n'
+  await start($)
+  await runNotifications($, 'on')
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+  await raiseFocus($, 'rule:1')
+  await ui.unmount()
+
+  // The view stays Filters; the new pane draws its ring on rule:0.
+  await runNotifications($, 'off')
+  await runNotifications($, 'on')
+  const again = await mountPane($, true)
+  expect((await again.find({ key: 'rule:0' }))?.props.autoFocus).toBe(true)
+  await again.press({ key: 'rule-remove' })
+
+  expect(filterRuns(ran)).toEqual([['remove', '3']])
+  await again.unmount()
+})
+
+test('an invalid row fits the pane with its red word', async ($, on) => {
+  const { filter } = world(on, { text: null })
+  filter.list = `4\tinvalid\tdeny ${'('.repeat(200)}\n`
+  await start($)
+  const ui = await mountPane($, true)
+  await ui.press({ key: 'view-filters' })
+
+  const line = (await ui.findAll({ type: 'Text' })).find(t => t.text.startsWith('deny ('))
+  // bodyColumns 80: the row is 79 columns, the red word takes 8 of them.
+  expect(('invalid ' + (line?.text ?? '')).length).toBe(79)
+  await ui.unmount()
+})
+
 // The verb and the arguments after the cwd of each notify-filter.sh write, in
 // order. The `path` and `list` reads are left out.
 const filterRuns = (ran: string[][]) =>

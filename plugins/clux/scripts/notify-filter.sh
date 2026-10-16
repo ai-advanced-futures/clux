@@ -181,12 +181,16 @@ _is_rule_line() {
     _parse "$(sed -n "${1}p" "$FILE")"
 }
 
-# stdin goes to a temporary file in the same folder, then mv puts it in
-# place: a reader never sees a half-written file. The last write wins.
+# _write CMD ARGS... — the output of CMD goes to a temporary file in the same
+# folder, then mv puts it in place: a reader never sees a half-written file.
+# The last write wins. A CMD that fails (a file it cannot read) changes
+# nothing, so a failed read cannot empty the file. The temporary file takes
+# the mode of the file that is there, because mktemp makes it 0600.
 _write() {
     local tmp
     tmp=$(mktemp "${FILE}.XXXXXX") || return 1
-    if cat > "$tmp" && mv "$tmp" "$FILE"; then
+    [ -f "$FILE" ] && cp -p "$FILE" "$tmp" 2>/dev/null
+    if "$@" > "$tmp" && mv "$tmp" "$FILE"; then
         return 0
     fi
     rm -f "$tmp"
@@ -196,20 +200,39 @@ _write() {
 # Line <n> becomes TEXT, or goes when DROP is set. The values go through
 # ENVIRON, not awk -v: -v reads backslash escapes, and a regex keeps its
 # backslashes.
-_rewrite() {
+_rewritten() {
     N="$1" TEXT="${2:-}" DROP="${3:-}" awk '
         NR == ENVIRON["N"] + 0 { if (ENVIRON["DROP"] == "") print ENVIRON["TEXT"]; next }
-        { print }' "$FILE" | _write
+        { print }' "$FILE"
+}
+
+_rewrite() {
+    _write _rewritten "$@"
 }
 
 # A ".local" name does not make git ignore a file. The line goes in the
 # info/exclude of the common dir, so it holds for every worktree and changes
 # no file of the repo. check-ignore sees the line after, so it goes in once.
+# check-ignore cannot run in a bare main repo (a bare clone with linked
+# worktrees), so the line in the file is also a stop.
 _exclude() {
+    local exclude="$COMMON/info/exclude" line='/.claude/clux-filters.local'
     git -C "$ROOT" check-ignore -q -- .claude/clux-filters.local 2>/dev/null && return 0
+    grep -qxF -- "$line" "$exclude" 2>/dev/null && return 0
     mkdir -p "$COMMON/info" 2>/dev/null || return 0
-    _ends_open "$COMMON/info/exclude" && printf '\n' >> "$COMMON/info/exclude"
-    printf '/.claude/clux-filters.local\n' >> "$COMMON/info/exclude"
+    _ends_open "$exclude" && printf '\n' >> "$exclude"
+    printf '%s\n' "$line" >> "$exclude"
+}
+
+# The file with one more rule at the end, or the header and the rule.
+_added() {
+    if [ -f "$FILE" ]; then
+        cat "$FILE" || return 1
+        _ends_open "$FILE" && printf '\n'
+    else
+        printf '%s\n' "$HEADER"
+    fi
+    printf '%s %s\n' "$1" "$2"
 }
 
 _add() {
@@ -217,15 +240,7 @@ _add() {
     regex=$(_trim "$2")
     _check_rule "$kind" "$regex" || return 2
     mkdir -p "$ROOT/.claude" || return 1
-    {
-        if [ -f "$FILE" ]; then
-            cat "$FILE"
-            _ends_open "$FILE" && printf '\n'
-        else
-            printf '%s\n' "$HEADER"
-        fi
-        printf '%s %s\n' "$kind" "$regex"
-    } | _write || return 1
+    _write _added "$kind" "$regex" || return 1
     _exclude
     return 0
 }

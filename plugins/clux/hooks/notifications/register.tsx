@@ -121,12 +121,16 @@ const ruleRing: Ring = { prefix: 'rule:', index: 0 }
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the
 // keys. A pane that opens new puts the ring on the first row, so the index
-// goes back to 0. A pane that is already open keeps its ring where the
-// person put it, so the index keeps its value too: a reset there would make
-// `x` remove the first row while the ring shows another.
+// of both rings goes back to 0: the pane can open new in either view. A pane
+// that is already open keeps its ring where the person put it, so the index
+// keeps its value too: a reset there would make `x` remove the first row
+// while the ring shows another.
 async function openPane($: EngineInterface) {
   const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
-  if (!isOpen) rowRing.index = 0
+  if (!isOpen) {
+    rowRing.index = 0
+    ruleRing.index = 0
+  }
   await tick($)
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
@@ -236,6 +240,8 @@ async function removeRow($: EngineInterface) {
 const INPUT_KEY = 'filter-input'
 const BAD_KIND = 'A rule starts with allow or deny.'
 const STALE = 'The file changed. Try again.'
+// The red word before the raw line of an invalid row.
+const INVALID_MARK = 'invalid '
 
 // `f` and `n`. A view opens with its ring on its first row, and the rule box
 // closes.
@@ -297,7 +303,9 @@ async function editRule($: EngineInterface, index?: number) {
 async function submitRule($: EngineInterface, value: string) {
   const { editing } = await read($, filters)
   if (!editing) return
-  const keep = () => update($, filters, s => ({ ...s, editing: { ...editing, value } }))
+  // The box can close while the script runs (Esc, or `n`). A refused rule
+  // then keeps it closed.
+  const keep = () => update($, filters, s => (s.editing ? { ...s, editing: { ...s.editing, value } } : s))
   const rule = splitRule(value)
   if (!rule) {
     $.ui.toast(BAD_KIND)
@@ -464,12 +472,13 @@ export const register: Register = on => {
               <Text key="no-filters" dimColor>No filters. a: add a rule.</Text>
             ),
             // A Button draws no color of its own, so an invalid row draws its
-            // text as red children: the word, then the raw line. The label
-            // still names the row. Enter on a row edits it. While the box is
-            // open it has the `autoFocus`, so a pane that takes the keys again
-            // lands in the box.
+            // text as red children: the word, then the raw line, cut so that
+            // the two fit the pane. The label still names the row. Enter on a
+            // row edits it. While the box is open it has the `autoFocus`, so
+            // a pane that takes the keys again lands in the box.
             ...state.rules.map((row, i) => {
-              const label = rowText(row).slice(0, width)
+              const isInvalid = row.kind === 'invalid'
+              const label = rowText(row).slice(0, isInvalid ? Math.max(1, width - INVALID_MARK.length) : width)
               return (
                 <Button
                   key={`rule:${i}`}
@@ -478,8 +487,8 @@ export const register: Register = on => {
                   label={label}
                   onPress={() => editRule($, i)}
                 >
-                  {row.kind === 'invalid' ? [
-                    <Text key="invalid-mark" color="red">invalid </Text>,
+                  {isInvalid ? [
+                    <Text key="invalid-mark" color="red">{INVALID_MARK}</Text>,
                     <Text key="invalid-line" color="red">{label}</Text>,
                   ] : label}
                 </Button>

@@ -167,6 +167,41 @@ _rules() {
     [ ! -e "$BATS_TEST_TMPDIR/wt/.claude/clux-filters.local" ]
 }
 
+@test "notify-filter: a bare main repo gets the exclude line once" {
+    _repo
+    local bare="$BATS_TEST_TMPDIR/bare.git" wt="$BATS_TEST_TMPDIR/bwt"
+    git clone -q --bare "$REPO" "$bare"
+    git -C "$bare" worktree add -q "$wt" 2>/dev/null
+    run "$FILTER" add "$wt" deny wip
+    [ "$status" -eq 0 ]
+    run "$FILTER" add "$wt" deny tmp
+    [ "$status" -eq 0 ]
+    [ "$(grep -cxF '/.claude/clux-filters.local' "$bare/info/exclude")" -eq 1 ]
+}
+
+@test "notify-filter: set and remove keep the mode of the file" {
+    _repo
+    _rules 'deny wip' 'deny tmp'
+    chmod 644 "$RULES"
+    run "$FILTER" set "$REPO" 1 allow wip
+    [ "$status" -eq 0 ]
+    run "$FILTER" remove "$REPO" 2
+    [ "$status" -eq 0 ]
+    [ "$(ls -l "$RULES" | cut -c1-10)" = '-rw-r--r--' ]
+    [ "$(cat "$RULES")" = 'allow wip' ]
+}
+
+@test "notify-filter: a file that cannot be read is not emptied by a write" {
+    _repo
+    _rules 'deny wip'
+    chmod 000 "$RULES"
+    [ -r "$RULES" ] && skip 'root reads every file'
+    run "$FILTER" add "$REPO" deny tmp
+    [ "$status" -ne 0 ]
+    chmod 644 "$RULES"
+    [ "$(cat "$RULES")" = 'deny wip' ]
+}
+
 @test "notify-filter: add with a bad regex exits 2 with the grep error, and makes no file" {
     _repo
     run "$FILTER" add "$REPO" deny '('
