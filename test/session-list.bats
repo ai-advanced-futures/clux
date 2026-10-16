@@ -524,6 +524,27 @@ _run_mark_list() {
     [[ "$output" == *"]jag ##f#[default]"* ]] || { echo "$output"; false; }
 }
 
+@test "session-list: a session with no client shows ⊘ after its name when a window has it" {
+    _write_list_tmux_stub
+    cp "$SCRIPTS_DIR/notify-filter.sh" "$STAGED_DIR/"
+    git init -q "$BATS_TEST_TMPDIR/repo"
+    write_filter_rules "$BATS_TEST_TMPDIR/repo" 'allow hitl'
+    mkdir -p "$BATS_TEST_TMPDIR/plain"
+    run bash -c "
+        export PATH='$BATS_TEST_TMPDIR/stubs:$PATH'
+        export HOME='$BATS_TEST_TMPDIR/home'
+        export FAKE_ORDER=''
+        export FAKE_SESSIONS=\$'\$0\talpha\n\$1\tbeta'
+        export FAKE_SESS_ROWS=\$'alpha\t0\talpha\nbeta\t0\tbeta'
+        export FAKE_WIN_ROWS=\$'alpha\t1\t0\tjag\t$BATS_TEST_TMPDIR/repo\nbeta\t1\t0\tother\t$BATS_TEST_TMPDIR/plain'
+        unset FAKE_MARK
+        '$LIST_SCRIPT'
+    "
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"] alpha ⊘ #[default]"* ]] || { echo "$output"; false; }
+    [[ "$output" == *"] beta #[default]"* ]] || { echo "$output"; false; }
+}
+
 @test "session-list: an empty @clux-filter-mark turns the mark off" {
     _run_mark_list "export FAKE_MARK=''"
     [ "$status" -eq 0 ]

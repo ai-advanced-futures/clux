@@ -117,20 +117,14 @@ wins=$(tmux list-windows -a -F "#{session_name}${TAB}#{window_active}${TAB}#{win
 # The filter mark (5.3.0). A window whose active pane is in a repo with a
 # valid notification filter rule (notify-filter.sh active) gets
 # @clux-filter-mark (default "⊘"; an empty value turns it off) after its
-# name. The bar draws the windows of an attached session only, so only their
-# folders are checked, and each folder once: one git call for each. No
-# associative arrays: macOS ships bash 3.2. The folders travel to awk on \037,
-# for the reason the agent rows do (see below).
-attached=$'\n'
-while IFS="$TAB" read -r s n _; do
-  [ "${n:-0}" -gt 0 ] 2>/dev/null && attached="$attached$s"$'\n'
-done <<EOF
-$sess
-EOF
+# name. The bar draws the windows of an attached session only; a session with
+# no client shows the mark after its own name when one of its windows has it,
+# so the mark shows for every session. Each folder is checked once: one git
+# call for each. No associative arrays: macOS ships bash 3.2. The folders
+# travel to awk on \037, for the reason the agent rows do (see below).
 checked=$'\n'
 filtered=""
-while IFS="$TAB" read -r s _ _ _ path; do
-  case "$attached" in *$'\n'"$s"$'\n'*) ;; *) continue ;; esac
+while IFS="$TAB" read -r _ _ _ _ path; do
   [ -n "$path" ] || continue
   case "$checked" in *$'\n'"$path"$'\n'*) continue ;; esac
   checked="$checked$path"$'\n'
@@ -230,6 +224,7 @@ awk -v order="$order" -v agents="$agents" \
 
   # Second file: accumulate per-session window segments (already index-sorted).
   {
+    if (filter_mark != "" && $5 in filt) smark[$1] = 1
     if ($2 == 1)
       wins[$1]=wins[$1] " #[" window_active_style "]" wname($4, $5) "#[default]"
     else
@@ -246,8 +241,11 @@ awk -v order="$order" -v agents="$agents" \
       name=esc((s in disp) ? disp[s] : s)
       if (attached[s] + 0 > 0)
         out=out glyph(s) "#[" name_attached_style "] " name " #[default] #[" bracket_style "]" window_open "#[default]" wins[s] " #[" bracket_style "]" window_close "#[default] #[" separator_style "]" separator "#[default] "
-      else
+      else {
+        # No windows drawn: the filter mark of a window goes after the name.
+        if (s in smark) name = name " " esc(filter_mark)
         out=out glyph(s) "#[" name_detached_style "] " name " #[default] #[" separator_style "]" separator "#[default] "
+      }
     }
     printf "%s", out
   }
