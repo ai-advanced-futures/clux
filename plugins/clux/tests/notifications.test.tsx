@@ -731,7 +731,7 @@ test('a and Enter run add with the kind and the regex, then close the box', asyn
   await ui.press({ key: 'view-filters' })
 
   await ui.press({ key: 'rule-add' })
-  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('deny ')
+  expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('allow ')
 
   filter.list = '2\tdeny\twip\n'
   await ui.input({ key: 'filter-input', text: ' deny   wip ' })

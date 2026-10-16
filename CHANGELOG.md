@@ -2,6 +2,13 @@
 
 All notable changes to clux are documented here.
 
+## [5.3.0]
+
+### Changed
+
+- **The `prefix + M` popup shows the short text of each notification.** It shows the text before the `|||` id marker, for example `⚡ clux-claude / clux`. The session ids, pane ids and folder do not show. Enter and Ctrl-X still use the full line, and the search matches the short text only
+- **A new filter rule starts with `allow`.** In the Filters view of the notifications pane, `a` opens the box with `allow ` (was `deny `)
+
 ## [5.2.0]
 
 ### Added
