@@ -111,19 +111,22 @@ async function tick($: EngineInterface) {
   }
 }
 
-// The row the ring sits on. The `ui.focus` hook below and `focusRow` write it,
-// apart from `openPane`, which puts it back on the first row when the pane
-// opens new.
-let focused = 0
+// The row the ring sits on, one for each view: its own index and its own key
+// prefix, so the two views never move each other's ring. The `ui.focus` hook
+// below and `focusAt` write the index, apart from `openPane` and `showView`,
+// which put it back on the first row.
+type Ring = { prefix: string; index: number }
+const rowRing: Ring = { prefix: 'row:', index: 0 }
+const ruleRing: Ring = { prefix: 'rule:', index: 0 }
 
 // Asked (a command, a press) it seats at any width; `focus` hands it the
-// keys. A pane that opens new puts the ring on the first row, so `focused`
+// keys. A pane that opens new puts the ring on the first row, so the index
 // goes back to 0. A pane that is already open keeps its ring where the
-// person put it, so `focused` keeps its value too: a reset there would make
+// person put it, so the index keeps its value too: a reset there would make
 // `x` remove the first row while the ring shows another.
 async function openPane($: EngineInterface) {
   const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
-  if (!isOpen) focused = 0
+  if (!isOpen) rowRing.index = 0
   await tick($)
   return $.ui.open({ id: PANE, title: TITLE, focus: true })
 }
@@ -190,17 +193,24 @@ async function askFocus($: EngineInterface, key: string): Promise<boolean> {
   return true
 }
 
-async function focusRow($: EngineInterface, index: number) {
-  if (await askFocus($, `row:${index}`)) focused = index
+async function focusAt($: EngineInterface, ring: Ring, index: number) {
+  if (await askFocus($, `${ring.prefix}${index}`)) ring.index = index
 }
 
 // `j` and `k`: one row on, limited to the list. A poll can make the list
 // shorter with no key press, so the upper limit is read from the list the
-// last poll wrote.
-async function move($: EngineInterface, by: number) {
-  const list = await read($, notifications)
-  if (list.length === 0) return
-  await focusRow($, Math.min(list.length - 1, Math.max(0, focused + by)))
+// last poll wrote. A move by 0 puts the ring back inside a shorter list.
+async function move($: EngineInterface, ring: Ring, by: number) {
+  const length = ring === rowRing
+    ? (await read($, notifications)).length
+    : (await read($, filters)).rules.length
+  if (length === 0) return
+  await focusAt($, ring, Math.min(length - 1, Math.max(0, ring.index + by)))
+}
+
+// The focused row, limited to the list the last poll wrote.
+function at<T>(list: T[], ring: Ring): T | undefined {
+  return list[Math.min(ring.index, list.length - 1)]
 }
 
 // `x`: the queue keeps a notification until the person has read it somewhere
@@ -208,26 +218,19 @@ async function move($: EngineInterface, by: number) {
 // to the list the last poll wrote, the same limit `j` and `k` use, because a
 // poll can make the list shorter with no key press.
 async function removeRow($: EngineInterface) {
-  const list = await read($, notifications)
-  if (list.length === 0) return
-  const row = list[Math.min(focused, list.length - 1)]
+  const row = at(await read($, notifications), rowRing)
   if (!row) return
   if (!(await runLine($, 'remove', row))) {
     $.ui.toast('The queue is busy. Try again.')
     return
   }
   await tick($)
-  const after = await read($, notifications)
   // The ring stays at the same place, so taking the last row out moves it up
   // one. An empty list draws "No notifications." and has no row key at all.
-  if (after.length > 0) await focusRow($, Math.min(focused, after.length - 1))
+  await move($, rowRing, 0)
 }
 
 // --- The Filters view -------------------------------------------------------
-
-// The row the ring sits on in the Filters view: its own index and its own
-// key prefix, `rule:<i>`, so the two views never move each other's ring.
-let ruleFocused = 0
 
 // The key of the rule box, and the toasts of a rule the pane refuses.
 const INPUT_KEY = 'filter-input'
@@ -238,42 +241,20 @@ const STALE = 'The file changed. Try again.'
 // closes.
 async function showView($: EngineInterface, view: 'notifications' | 'filters') {
   await update($, filters, s => ({ ...s, view, editing: null }))
-  if (view === 'filters') {
-    ruleFocused = 0
-    if ((await read($, filters)).rules.length > 0) await askFocus($, 'rule:0')
-  } else {
-    focused = 0
-    if ((await read($, notifications)).length > 0) await askFocus($, 'row:0')
-  }
-}
-
-async function focusRule($: EngineInterface, index: number) {
-  if (await askFocus($, `rule:${index}`)) ruleFocused = index
-}
-
-// `j` and `k` in the Filters view, limited to the rows the last poll wrote.
-async function moveRule($: EngineInterface, by: number) {
-  const { rules } = await read($, filters)
-  if (rules.length === 0) return
-  await focusRule($, Math.min(rules.length - 1, Math.max(0, ruleFocused + by)))
-}
-
-// The focused rule, limited to the list the last poll wrote.
-async function focusedRule($: EngineInterface): Promise<FilterRow | undefined> {
-  const { rules } = await read($, filters)
-  if (rules.length === 0) return undefined
-  return rules[Math.min(ruleFocused, rules.length - 1)]
+  const ring = view === 'filters' ? ruleRing : rowRing
+  ring.index = 0
+  await move($, ring, 0)
 }
 
 // What an answer of add, set or remove means for the person. 0 'ok': the
-// file changed, so the list is read again. 2 'refused': the script refused
-// the rule, and the first line of its stderr says why. 3 'stale': the line
-// moved under the pane, so the list is read again. Only this function reads
-// the exit codes.
+// file changed, so the list is read again. 3 'stale': the line moved under
+// the pane, so the list is read again. Any other answer is 'failed'; for 2
+// the script refused the rule, and the first line of its stderr says why.
+// Only this function reads the exit codes.
 async function settle(
   $: EngineInterface,
   answer: Awaited<ReturnType<typeof runFilter>>,
-): Promise<'ok' | 'stale' | 'refused' | 'failed'> {
+): Promise<'ok' | 'stale' | 'failed'> {
   if (answer?.exitCode === 0) {
     await pollFilters($)
     return 'ok'
@@ -285,7 +266,7 @@ async function settle(
   }
   if (answer?.exitCode === 2) {
     $.ui.toast(answer.stderr.split('\n')[0]?.trim() || 'The rule was not saved.')
-    return 'refused'
+    return 'failed'
   }
   $.ui.toast('The filter file did not change.')
   return 'failed'
@@ -305,8 +286,8 @@ async function addRule($: EngineInterface) {
 
 // `e`, or Enter on a row: the box holds the rule, to replace its line.
 async function editRule($: EngineInterface, index?: number) {
-  if (index !== undefined) ruleFocused = index
-  const row = await focusedRule($)
+  if (index !== undefined) ruleRing.index = index
+  const row = at((await read($, filters)).rules, ruleRing)
   if (!row) return
   await openBox($, { mode: 'set', n: row.n, value: editValue(row) })
 }
@@ -337,7 +318,7 @@ async function submitRule($: EngineInterface, value: string) {
 // `t`: allow becomes deny and deny becomes allow, with the same regex. An
 // invalid row has no kind to change: `e` mends it.
 async function toggleRule($: EngineInterface) {
-  const row = await focusedRule($)
+  const row = at((await read($, filters)).rules, ruleRing)
   if (!row || row.kind === 'invalid') return
   await settle($, await runFilter($, 'set', [String(row.n), row.kind === 'allow' ? 'deny' : 'allow', row.text]))
 }
@@ -345,11 +326,10 @@ async function toggleRule($: EngineInterface) {
 // `x`: the focused line goes. The ring stays at the same place, so taking
 // the last row out moves it up one.
 async function removeRule($: EngineInterface) {
-  const row = await focusedRule($)
+  const row = at((await read($, filters)).rules, ruleRing)
   if (!row) return
   if ((await settle($, await runFilter($, 'remove', [String(row.n)]))) !== 'ok') return
-  const { rules } = await read($, filters)
-  if (rules.length > 0) await focusRule($, Math.min(ruleFocused, rules.length - 1))
+  await move($, ruleRing, 0)
 }
 
 // The row index in a ring key such as `row:3`, or undefined for another key.
@@ -401,15 +381,15 @@ export const register: Register = on => {
   // that does not call `next` keeps the ring where it was, so Tab, the
   // arrows, `j`, `k` and `x` would all move nothing. A header button, or one
   // of the engine's own stops (the close mark, with no `element`), leaves
-  // `focused` as it was, so `x` still acts on the row last focused.
+  // the index as it was, so `x` still acts on the row last focused.
   //
   // The rule box closes when the ring leaves it for a row or a button: a box
   // the person left holds no edit they can see through. Esc gives the keys
   // to the prompt instead, and `closeLostBox` closes the box then.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const key = e.element ?? ''
-    focused = indexAfter(key, 'row:') ?? focused
-    ruleFocused = indexAfter(key, 'rule:') ?? ruleFocused
+    rowRing.index = indexAfter(key, rowRing.prefix) ?? rowRing.index
+    ruleRing.index = indexAfter(key, ruleRing.prefix) ?? ruleRing.index
     if (key !== INPUT_KEY && (await read($, filters)).editing) {
       await update($, filters, s => ({ ...s, editing: null }))
     }
@@ -460,78 +440,81 @@ export const register: Register = on => {
             action={TOGGLE_ACTION}
             onPress={() => $.ui.close({ id: PANE })}
           />
-          {!isFilters && [
-            <Button key="nav-down" plain hotkey="j" label="down" onPress={() => move($, 1)} />,
-            <Button key="nav-up" plain hotkey="k" label="up" onPress={() => move($, -1)} />,
+          {isFilters ? [
+            <Button key="view-notifications" plain hotkey="n" label="notifications" onPress={() => showView($, 'notifications')} />,
+            hasRepo && [
+              <Button key="rule-down" plain hotkey="j" label="down" onPress={() => move($, ruleRing, 1)} />,
+              <Button key="rule-up" plain hotkey="k" label="up" onPress={() => move($, ruleRing, -1)} />,
+              <Button key="rule-add" plain hotkey="a" label="add" onPress={() => addRule($)} />,
+              <Button key="rule-edit" plain hotkey="e" label="edit" onPress={() => editRule($)} />,
+              <Button key="rule-toggle" plain hotkey="t" label="allow/deny" onPress={() => toggleRule($)} />,
+              <Button key="rule-remove" plain hotkey="x" label="remove" onPress={() => removeRule($)} />,
+            ],
+          ] : [
+            <Button key="nav-down" plain hotkey="j" label="down" onPress={() => move($, rowRing, 1)} />,
+            <Button key="nav-up" plain hotkey="k" label="up" onPress={() => move($, rowRing, -1)} />,
             <Button key="row-remove" plain hotkey="x" label="remove" onPress={() => removeRow($)} />,
             <Button key="view-filters" plain hotkey="f" label="filters" onPress={() => showView($, 'filters')} />,
           ]}
-          {isFilters && (
-            <Button key="view-notifications" plain hotkey="n" label="notifications" onPress={() => showView($, 'notifications')} />
-          )}
-          {isFilters && hasRepo && [
-            <Button key="rule-down" plain hotkey="j" label="down" onPress={() => moveRule($, 1)} />,
-            <Button key="rule-up" plain hotkey="k" label="up" onPress={() => moveRule($, -1)} />,
-            <Button key="rule-add" plain hotkey="a" label="add" onPress={() => addRule($)} />,
-            <Button key="rule-edit" plain hotkey="e" label="edit" onPress={() => editRule($)} />,
-            <Button key="rule-toggle" plain hotkey="t" label="allow/deny" onPress={() => toggleRule($)} />,
-            <Button key="rule-remove" plain hotkey="x" label="remove" onPress={() => removeRule($)} />,
-          ]}
         </Box>
-        {/* Claude Code opens a pane without the keys while the message box
-            has a draft, and a mod cannot take them: the person moves in. */}
-        {!e.props.isFocused && !isFilters && list.length > 0 && (
-          <Text dimColor>ctrl+x tab: move into the list</Text>
-        )}
-        {!isFilters && list.length === 0 && <Text dimColor>No notifications.</Text>}
-        {!isFilters && list.map((row, i) => (
-          <Button
-            key={`row:${i}`}
-            autoFocus={i === 0 ? true : undefined}
-            plain
-            label={row.text.slice(0, width)}
-            onPress={() => jumpTo($, row)}
-          />
-        ))}
-        {isFilters && !hasRepo && <Text dimColor>Not in a git repo.</Text>}
-        {isFilters && hasRepo && <Text dimColor>{state.file.slice(0, width)}</Text>}
-        {isFilters && hasRepo && state.rules.length === 0 && (
-          <Text dimColor>No filters. a: add a rule.</Text>
-        )}
-        {/* A Button draws no color of its own, so an invalid row draws its
-            text as red children: the word, then the raw line. The label
-            still names the row. Enter on a row edits it. While the box is
-            open it has the `autoFocus`, so a pane that takes the keys again
-            lands in the box. */}
-        {isFilters && hasRepo && state.rules.map((row, i) => {
-          const label = rowText(row).slice(0, width)
-          return (
+        {isFilters ? (
+          hasRepo ? [
+            <Text key="filter-file" dimColor>{state.file.slice(0, width)}</Text>,
+            state.rules.length === 0 && (
+              <Text key="no-filters" dimColor>No filters. a: add a rule.</Text>
+            ),
+            // A Button draws no color of its own, so an invalid row draws its
+            // text as red children: the word, then the raw line. The label
+            // still names the row. Enter on a row edits it. While the box is
+            // open it has the `autoFocus`, so a pane that takes the keys again
+            // lands in the box.
+            ...state.rules.map((row, i) => {
+              const label = rowText(row).slice(0, width)
+              return (
+                <Button
+                  key={`rule:${i}`}
+                  autoFocus={i === 0 && !editing ? true : undefined}
+                  plain
+                  label={label}
+                  onPress={() => editRule($, i)}
+                >
+                  {row.kind === 'invalid' ? [
+                    <Text key="invalid-mark" color="red">invalid </Text>,
+                    <Text key="invalid-line" color="red">{label}</Text>,
+                  ] : label}
+                </Button>
+              )
+            }),
+            editing && Input && (
+              <Input
+                key={INPUT_KEY}
+                autoFocus
+                // The box draws the colon after the label.
+                label={editing.mode === 'add' ? 'new rule' : `line ${editing.n}`}
+                placeholder="allow|deny <regex>"
+                value={editing.value}
+                submitLabel="save"
+                onSubmit={(value: string) => submitRule($, value)}
+              />
+            ),
+          ] : <Text dimColor>Not in a git repo.</Text>
+        ) : [
+          // Claude Code opens a pane without the keys while the message box
+          // has a draft, and a mod cannot take them: the person moves in.
+          !e.props.isFocused && list.length > 0 && (
+            <Text key="move-in" dimColor>ctrl+x tab: move into the list</Text>
+          ),
+          list.length === 0 && <Text key="no-notifications" dimColor>No notifications.</Text>,
+          ...list.map((row, i) => (
             <Button
-              key={`rule:${i}`}
-              autoFocus={i === 0 && !editing ? true : undefined}
+              key={`row:${i}`}
+              autoFocus={i === 0 ? true : undefined}
               plain
-              label={label}
-              onPress={() => editRule($, i)}
-            >
-              {row.kind === 'invalid' ? [
-                <Text key="invalid-mark" color="red">invalid </Text>,
-                <Text key="invalid-line" color="red">{label}</Text>,
-              ] : label}
-            </Button>
-          )
-        })}
-        {isFilters && hasRepo && editing && Input && (
-          <Input
-            key={INPUT_KEY}
-            autoFocus
-            // The box draws the colon after the label.
-            label={editing.mode === 'add' ? 'new rule' : `line ${editing.n}`}
-            placeholder="allow|deny <regex>"
-            value={editing.value}
-            submitLabel="save"
-            onSubmit={(value: string) => submitRule($, value)}
-          />
-        )}
+              label={row.text.slice(0, width)}
+              onPress={() => jumpTo($, row)}
+            />
+          )),
+        ]}
       </Box>
     )
   })

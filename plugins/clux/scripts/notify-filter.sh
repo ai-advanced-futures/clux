@@ -76,8 +76,10 @@ _parse() {
     return 0
 }
 
+# _match NAME -e REGEX... — 0 when one of the regexes matches NAME.
 _match() {
-    printf '%s\n' "$1" | grep -Eq -- "$2" 2>/dev/null
+    local name="$1"; shift
+    printf '%s\n' "$name" | grep -Eq "$@" 2>/dev/null
 }
 
 # The one read loop of the file: "<n>\t<kind>\t<regex>" for each rule line.
@@ -91,21 +93,23 @@ _list() {
     done < "$FILE"
 }
 
+# One grep for the allow rules and one for the deny rules, not one for each
+# rule: _list gives only regexes that grep -E takes.
 _check() {
-    local name="$1" kind regex has_allow=0 allowed=0 denied=0
+    local name="$1" kind regex
+    local -a allow=() deny=()
     while IFS=$'\t' read -r _ kind regex; do
         case "$kind" in
-            allow)
-                has_allow=1
-                _match "$name" "$regex" && allowed=1
-                ;;
-            deny)
-                _match "$name" "$regex" && denied=1
-                ;;
+            allow) allow+=(-e "$regex") ;;
+            deny)  deny+=(-e "$regex") ;;
         esac
     done < <(_list)
-    [ "$has_allow" = 1 ] && [ "$allowed" = 0 ] && return 1
-    [ "$denied" = 1 ] && return 1
+    if [ "${#allow[@]}" -gt 0 ] && ! _match "$name" "${allow[@]}"; then
+        return 1
+    fi
+    if [ "${#deny[@]}" -gt 0 ] && _match "$name" "${deny[@]}"; then
+        return 1
+    fi
     return 0
 }
 
@@ -153,11 +157,21 @@ _check_digit() {
     return 0
 }
 
+# The checks of every rule that a write puts in the file.
+_check_rule() {
+    _check_kind "$1" && _check_regex "$2" && _check_digit "$2"
+}
+
 _check_n() {
     case "$1" in
         ''|0*|*[!0-9]*) printf 'not a line number: "%s"\n' "$1" >&2; return 2 ;;
     esac
     return 0
+}
+
+# A last line with no newline must not join the next line that goes in.
+_ends_open() {
+    [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]
 }
 
 # Line <n> is a line that list prints: not blank, not a comment, not past
@@ -194,26 +208,19 @@ _rewrite() {
 _exclude() {
     git -C "$ROOT" check-ignore -q -- .claude/clux-filters.local 2>/dev/null && return 0
     mkdir -p "$COMMON/info" 2>/dev/null || return 0
-    # A last line with no newline must not join the new line: that breaks
-    # the pattern of the person and ours.
-    if [ -s "$COMMON/info/exclude" ] && [ -n "$(tail -c 1 "$COMMON/info/exclude")" ]; then
-        printf '\n' >> "$COMMON/info/exclude"
-    fi
+    _ends_open "$COMMON/info/exclude" && printf '\n' >> "$COMMON/info/exclude"
     printf '/.claude/clux-filters.local\n' >> "$COMMON/info/exclude"
 }
 
 _add() {
     local kind="$1" regex
     regex=$(_trim "$2")
-    _check_kind "$kind" || return 2
-    _check_regex "$regex" || return 2
-    _check_digit "$regex" || return 2
+    _check_rule "$kind" "$regex" || return 2
     mkdir -p "$ROOT/.claude" || return 1
     {
         if [ -f "$FILE" ]; then
             cat "$FILE"
-            # A last line with no newline must not join the new rule.
-            [ -s "$FILE" ] && [ -n "$(tail -c 1 "$FILE")" ] && printf '\n'
+            _ends_open "$FILE" && printf '\n'
         else
             printf '%s\n' "$HEADER"
         fi
@@ -227,9 +234,7 @@ _set() {
     local n="$1" kind="$2" regex
     regex=$(_trim "$3")
     _check_n "$n" || return 2
-    _check_kind "$kind" || return 2
-    _check_regex "$regex" || return 2
-    _check_digit "$regex" || return 2
+    _check_rule "$kind" "$regex" || return 2
     _is_rule_line "$n" || return 3
     _rewrite "$n" "$kind $regex"
 }

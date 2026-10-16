@@ -547,17 +547,7 @@ STUBEOF
 }
 
 @test "interactive path: StopFailure with TMUX set writes a window entry naming the error" {
-    cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<EOF
-#!/usr/bin/env bash
-echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
-case "\$*" in
-  *@clux_muted*) echo "" ;;
-  *display-message*) echo "main|||editor|||\$1|||@win1" ;;
-  *@claude-notify-file*) echo "$QUEUE_FILE" ;;
-esac
-exit 0
-EOF
-    chmod +x "$BATS_TEST_TMPDIR/stubs/tmux"
+    _write_pane_tmux_stub
     local JSON='{"hook_event_name":"StopFailure","session_id":"s-int-fail","error_type":"billing_error"}'
     run bash -c "
         export CLUX_NOTIFY_FILE='$QUEUE_FILE'
@@ -647,12 +637,10 @@ STUBEOF
 _filter_repo() {
     local dir="$1"; shift
     git init -q "$dir"
-    mkdir -p "$dir/.claude"
-    printf '%s\n' "$@" > "$dir/.claude/clux-filters.local"
+    write_filter_rules "$dir" "$@"
 }
 
-# The interactive tmux stub of the StopFailure test above: a pane in window
-# "editor" of session "main".
+# The interactive tmux stub: a pane in window "editor" of session "main".
 _write_pane_tmux_stub() {
     cat > "$BATS_TEST_TMPDIR/stubs/tmux" <<EOF
 #!/usr/bin/env bash

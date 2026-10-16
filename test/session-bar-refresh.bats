@@ -833,8 +833,7 @@ _stage_mark() {
     MARK_REPO="$BATS_TEST_TMPDIR/repo"
     git init -q "$MARK_REPO"
     if [ "$#" -gt 0 ]; then
-        mkdir -p "$MARK_REPO/.claude"
-        printf '%s\n' "$@" > "$MARK_REPO/.claude/clux-filters.local"
+        write_filter_rules "$MARK_REPO" "$@"
     fi
 }
 

@@ -19,8 +19,7 @@ _repo() {
 
 # _rules LINE... — the filter file of $REPO, one line for each argument.
 _rules() {
-    mkdir -p "$REPO/.claude"
-    printf '%s\n' "$@" > "$RULES"
+    write_filter_rules "$REPO" "$@"
 }
 
 @test "notify-filter: path is the file of the main checkout, also from a subfolder" {
