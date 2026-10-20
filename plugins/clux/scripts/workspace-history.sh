@@ -11,6 +11,12 @@
 #   workspace-history.sh add NAME DIR      put NAME on top (remove its old line)
 #   workspace-history.sh remove NAME       remove the line of NAME
 #   workspace-history.sh set-dir NAME DIR  change the folder of NAME, keep its place
+#   workspace-history.sh rename NAME NEW [DIR]
+#                                          change the name (and the folder) of
+#                                          NAME, keep its place. An empty DIR
+#                                          keeps the folder. Exit 1 when
+#                                          NAME is not saved, 3 when NEW is the
+#                                          name of another line
 #
 # The file is per user, not per tmux server: it records folders, and a folder
 # is the same for every server. It sits next to the agent state, under
@@ -28,7 +34,7 @@ CLUX_WORKSPACE_MAX=50
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/clux/workspaces"
 
 _usage() {
-    echo "usage: workspace-history.sh path | list | add NAME DIR | remove NAME | set-dir NAME DIR" >&2
+    echo "usage: workspace-history.sh path | list | add NAME DIR | remove NAME | set-dir NAME DIR | rename NAME NEW [DIR]" >&2
     exit 2
 }
 
@@ -63,6 +69,24 @@ _without() {
     _list | _WS_N="$1" awk -F'\t' '($1 "") != (ENVIRON["_WS_N"] "")'
 }
 
+# _edit NAME NEW [DIR] — set the name of the line of NAME to NEW (and its
+# folder to DIR), in one pass and one write. Exit 1 when no line has NAME,
+# and 3 when another line has NEW; the file then does not change.
+_edit() {
+    local out
+    out="$(_list | _WS_N="$1" _WS_NEW="$2" _WS_D="${3:-}" awk -F'\t' -v OFS='\t' '
+        {
+            if (($1 "") == (ENVIRON["_WS_N"] "")) {
+                found = 1
+                $1 = ENVIRON["_WS_NEW"]
+                if (ENVIRON["_WS_D"] != "") $2 = ENVIRON["_WS_D"]
+            } else if (($1 "") == (ENVIRON["_WS_NEW"] "")) taken = 1
+            print
+        }
+        END { if (!found) exit 1; if (taken) exit 3 }')" || return
+    _write "$out"$'\n'
+}
+
 cmd="${1:-}"
 case "$cmd" in
     path)
@@ -89,8 +113,15 @@ case "$cmd" in
     set-dir)
         [ $# -eq 3 ] || _usage
         if _bad_value "$3"; then exit 1; fi
-        out="$(_list | _WS_N="$2" _WS_D="$3" awk -F'\t' -v OFS='\t' '($1 "") == (ENVIRON["_WS_N"] "") { $2 = ENVIRON["_WS_D"] } { print }')"
-        if [ -n "$out" ]; then _write "$out"$'\n'; fi
+        # A name that is not saved is no change, not an error.
+        _edit "$2" "$2" "$3" || [ $? -eq 1 ]
+        ;;
+    rename)
+        [ $# -eq 3 ] || [ $# -eq 4 ] || _usage
+        if _bad_value "$3"; then exit 1; fi
+        # An empty DIR keeps the folder.
+        if [ -n "${4:-}" ] && _bad_value "$4"; then exit 1; fi
+        _edit "$2" "$3" "${4:-}"
         ;;
     *)
         _usage

@@ -27,8 +27,8 @@
 #              change the list. No clux script uses it since 5.1.0 (it was
 #              "Open all" in the old prefix + A list)
 #   --resolve  print the absolute folder <folder-name> resolves to, and build
-#              nothing. No clux script uses it since 5.1.0 (it was Space in
-#              the old prefix + A list); it stays for scripts of your own
+#              nothing. Ctrl-E in the prefix + A box uses it for the new
+#              folder of a saved workspace
 # The workspace (session) name is NOT an argument here — it is read back from
 # the transient @clux-new-workspace-name option (written by
 # new-workspace-prompt.sh) and unset immediately, before any other work, so a
