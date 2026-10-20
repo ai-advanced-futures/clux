@@ -1002,6 +1002,7 @@ Show the user:
   prefix + g       session picker with pane preview
   prefix + A       workspace box: type a name (⏎ new, then folder), or
                    ↓ pick a saved one, ⇥ fill its name, ⏎ open / switch to
+                   ^x remove the picked saved row, ^e edit its name + folder
                    (the list needs fzf 0.66 or later)
   prefix + m       jump to the notifying agent
   prefix + M       notification picker

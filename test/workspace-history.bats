@@ -76,6 +76,49 @@ setup() {
     [ "${lines[1]}" = $'one\t/new' ]
 }
 
+@test "workspace-history: rename changes the name and keeps the place" {
+    "$HIST" add one /a
+    "$HIST" add two /b
+    "$HIST" rename one uno
+    run "$HIST" list
+    [ "${lines[0]}" = $'two\t/b' ]
+    [ "${lines[1]}" = $'uno\t/a' ]
+}
+
+@test "workspace-history: rename refuses a missing name and a name that is taken" {
+    "$HIST" add one /a
+    "$HIST" add two /b
+    run "$HIST" rename three x
+    [ "$status" -eq 1 ]
+    run "$HIST" rename one two
+    [ "$status" -eq 3 ]
+    run "$HIST" rename one $'a\tb'
+    [ "$status" -eq 1 ]
+    run "$HIST" list
+    [ "$output" = $'two\t/b\none\t/a' ]
+}
+
+@test "workspace-history: rename with a folder changes both in one write" {
+    "$HIST" add one /a
+    "$HIST" add two /b
+    "$HIST" rename one uno /new
+    "$HIST" rename two two /b2
+    run "$HIST" list
+    [ "$output" = $'two\t/b2\nuno\t/new' ] || { echo "$output"; false; }
+    run "$HIST" rename uno two /x
+    [ "$status" -eq 3 ]
+    run "$HIST" list
+    [ "$output" = $'two\t/b2\nuno\t/new' ] || { echo "a refused rename changed the file: $output"; false; }
+}
+
+@test "workspace-history: rename compares names as text" {
+    "$HIST" add 1 /a
+    "$HIST" add 01 /b
+    "$HIST" rename 1 one
+    run "$HIST" list
+    [ "$output" = $'01\t/b\none\t/a' ] || { echo "$output"; false; }
+}
+
 @test "workspace-history: a name is matched exactly, not as a pattern" {
     # awk -v would read the backslash as an escape; ENVIRON does not.
     "$HIST" add 'a.b' '/x\new'

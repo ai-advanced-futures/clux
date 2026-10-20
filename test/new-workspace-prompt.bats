@@ -44,6 +44,8 @@ _stage() {
     cp "$SCRIPTS_DIR/helpers.sh" "$SCRIPTS_DIR/path.sh" "$SCRIPTS_DIR/workspace-history.sh" "$STAGE/"
     cat > "$STAGE/new-workspace.sh" <<'STUB'
 #!/usr/bin/env bash
+# --resolve is what Ctrl-E asks for a new folder: an existing folder only.
+if [ "$1" = --resolve ]; then (cd "$2" 2>/dev/null && pwd); exit; fi
 # Records what the prompt handed over, then exits so the popup would close.
 printf 'FOLDER=%s\n' "$1" >> "$RECORD"
 printf 'NAME=%s\n' "$(tmux show-option -gqv @clux-new-workspace-name)" >> "$RECORD"
@@ -228,7 +230,7 @@ teardown() {
 # _rows — a rows file: one saved workspace, one live session.
 _rows() {
     ROWS="$BATS_TEST_TMPDIR/rows"
-    printf 'one\t/a\tone\t/a\tsaved\nlive1\t/b\tlive1\t/b\tlive\n' > "$ROWS"
+    printf 'one\t/a\tone\t/a\tsaved\tkept\nlive1\t/b\tlive1\t/b\tlive\tunkept\n' > "$ROWS"
 }
 
 # _fzf EVENT [FIELD] — run the helper mode with the FZF_* values set by the
@@ -331,6 +333,24 @@ _fzf() {
     [ "$output" = 'print(NEW)+accept' ] || { echo "got: $output"; false; }
 }
 
+@test "helper: Ctrl-X removes a picked saved row, and does nothing un-picked or on an unsaved row" {
+    PTR='▸' _fzf remove kept
+    [ "$output" = 'print(REMOVE)+accept' ]
+    PTR=' ' _fzf remove kept
+    [ -z "$output" ]
+    PTR='▸' _fzf remove unkept
+    [ -z "$output" ]
+}
+
+@test "helper: Ctrl-E edits a picked saved row, and does nothing un-picked or on a live row" {
+    PTR='▸' _fzf edit saved
+    [ "$output" = 'print(EDIT)+accept' ]
+    PTR=' ' _fzf edit saved
+    [ -z "$output" ]
+    PTR='▸' _fzf edit live
+    [ -z "$output" ]
+}
+
 @test "helper: the gray completion is the rest of the name, or → name for a fuzzy match" {
     Q=cl _fzf ghost clux
     [ "$output" = $'<g>ux\033[0m' ] || { echo "got: $output"; false; }
@@ -366,7 +386,7 @@ _fzf() {
     : > "$log"
     _rows
     local ev
-    for ev in change focus down up enter ghost; do
+    for ev in change focus down up enter remove edit ghost; do
         STUB_LOG="$log" Q=on PTR='▸' _fzf "$ev" saved
     done
     [ ! -s "$log" ] || { echo "the helper called:"; cat "$log"; false; }
@@ -530,6 +550,114 @@ _fzf() {
     [[ "$p" == "open      ▸"* ]] || { echo "prompt after Down: $p"; false; }
     grep -qxF "FOLDER=$BATS_TEST_TMPDIR/a" "$RECORD" || { echo "record: $(cat "$RECORD")"; echo "$SCREEN"; false; }
     grep -qxF 'NAME=one' "$RECORD" || { echo "record: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Ctrl-X removes the picked row, and the box opens again with the typed text" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    _start_box || false
+    _t o
+    _k Down C-x
+    local screen; screen="$(_wait_for_screen "$BSOCK" "matches")" || true
+    local p; p="$(_prompt)"
+    _k Escape
+    _end
+    run "$HIST" list
+    [ "$output" = "two"$'\t'"$BATS_TEST_TMPDIR/b" ] || { echo "list: $output"; echo "$screen"; false; }
+    [[ "$p" == *"▸ o"* ]] || { echo "the typed text is lost: $p"; false; }
+    [[ "$screen" == *"two"* ]] || { echo "$screen"; false; }
+    [[ "$screen" != *"one "* ]] || { echo "the removed row stays:"; echo "$screen"; false; }
+    [ ! -s "$RECORD" ] || { echo "a workspace was opened: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Ctrl-X on a saved session that runs removes the line, and the session stays a row" {
+    _need_fzf
+    _stage
+    "$HIST" add live1 "$BATS_TEST_TMPDIR"
+    BOX_READY="live1" _start_box || false
+    _k Down C-x
+    sleep 0.5
+    local screen; screen="$(_wait_for_screen "$BSOCK" "live1")" || true
+    _k Escape
+    _end
+    run "$HIST" list
+    [ -z "$output" ] || { echo "list: $output"; false; }
+    [[ "$screen" == *"live1"* ]] || { echo "the live session is gone from the box:"; echo "$screen"; false; }
+}
+
+@test "box: Ctrl-X with no picked row removes nothing" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    BOX_READY="one" _start_box || false
+    _k C-x
+    _k Escape
+    _end
+    run "$HIST" list
+    [ "${#lines[@]}" -eq 1 ] || { echo "list: $output"; false; }
+}
+
+@test "box: Ctrl-E changes the name and the folder, and keeps the place" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b" "$BATS_TEST_TMPDIR/c"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    BOX_READY="two" _start_box || false
+    _k Down C-e
+    _wait_for_screen "$BSOCK" "Edit workspace" >/dev/null || { echo "no edit prompt"; false; }
+    _t uno
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _t "$BATS_TEST_TMPDIR/c"
+    _k Enter
+    _wait_for_screen "$BSOCK" "recents" >/dev/null || { echo "the box did not open again"; false; }
+    _k Escape
+    _end
+    run "$HIST" list
+    [ "${lines[0]}" = "uno"$'\t'"$BATS_TEST_TMPDIR/c" ] || { echo "list: $output"; false; }
+    [ "${lines[1]}" = "two"$'\t'"$BATS_TEST_TMPDIR/b" ] || { echo "list: $output"; false; }
+    [ ! -s "$RECORD" ] || { echo "a workspace was opened: $(cat "$RECORD")"; false; }
+}
+
+@test "box: Ctrl-E with Enter alone keeps both, and refuses a name that is taken" {
+    _need_fzf
+    _stage
+    mkdir -p "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+    "$HIST" add two "$BATS_TEST_TMPDIR/b"
+    "$HIST" add one "$BATS_TEST_TMPDIR/a"
+    BOX_READY="two" _start_box || false
+    _k Down C-e
+    _wait_for_screen "$BSOCK" "Edit workspace" >/dev/null || { echo "no edit prompt"; false; }
+    _k Enter
+    _wait_for_screen "$BSOCK" "folder" >/dev/null || { echo "no folder question"; false; }
+    _k Enter
+    _wait_for_screen "$BSOCK" "recents" >/dev/null || { echo "the box did not open again"; false; }
+    _k Down C-e
+    _wait_for_screen "$BSOCK" "Edit workspace" >/dev/null || { echo "no edit prompt"; false; }
+    _t two
+    _k Enter
+    local screen; screen="$(_wait_for_screen "$BSOCK" "is taken")" || { echo "no refusal:"; echo "$screen"; false; }
+    _k Escape
+    _end
+    run "$HIST" list
+    [ "$output" = "one"$'\t'"$BATS_TEST_TMPDIR/a"$'\n'"two"$'\t'"$BATS_TEST_TMPDIR/b" ] || { echo "list: $output"; false; }
+}
+
+@test "box: Ctrl-E does nothing on a live session" {
+    _need_fzf
+    _stage
+    BOX_READY="live1" _start_box || false
+    _k Down C-e
+    sleep 0.5
+    local screen; screen="$("$REAL_TMUX" -L "$BSOCK" capture-pane -p)"
+    _k Escape
+    _end
+    [[ "$screen" != *"Edit workspace"* ]] || { echo "$screen"; false; }
 }
 
 @test "box: Down Down opens the second row" {

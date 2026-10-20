@@ -9,7 +9,15 @@
 #   Up from the top    no row picked again; typing also un-picks (each fzf
 #                      key that moves up does what Up does)
 #   Tab                put the name of the current row in the box
+#   Ctrl-X             remove the picked row from the saved list
+#   Ctrl-E             edit the name and folder of the picked saved row
 #   Esc / Ctrl-C       cancel
+#
+# Ctrl-X and Ctrl-E act on a picked row only (Down first), as Enter does. A
+# live session that is not saved has no saved line, so Ctrl-X and Ctrl-E do
+# nothing on it. Ctrl-E does nothing on a saved workspace that runs: the
+# session keeps its own name and folder, and the next switch saves them again.
+# After each one, the box opens again with the same typed text.
 #
 # The prompt always says what Enter does: "new", "open" (a saved workspace
 # that does not run) or "switch to" (a session that runs on this server).
@@ -83,9 +91,11 @@ _ws_exact() {
 # The POINTER holds the state: " " = no row picked, "▸" = a row picked. That
 # leaves the PROMPT free to say what Enter does.
 #
-# Each row is "<shown name>\t<shown folder>\t<name>\t<folder>\t<live|saved>";
-# FIELD is field 5 (focus, down) or field 3 (ghost) of the current row. For
-# up, it is an fzf action (see there).
+# Each row is
+# "<shown name>\t<shown folder>\t<name>\t<folder>\t<live|saved>\t<kept|unkept>",
+# where field 6 says whether the saved list holds the row. FIELD is field 5
+# (focus, down, edit), field 6 (remove) or field 3 (ghost) of the current row.
+# For up, it is an fzf action (see there).
 if [ "${1:-}" = --fzf ]; then
     _row_prompt() {
         if [ "$1" = live ]; then printf '%s' "$P_SWITCH"; else printf '%s' "$P_OPEN"; fi
@@ -136,6 +146,14 @@ if [ "${1:-}" = --fzf ]; then
             ;;
         enter)
             if _picked; then printf 'print(OPEN)+accept'; else printf 'print(NEW)+accept'; fi
+            ;;
+        remove)
+            # The cursor is on the top row when no row is picked too, so the
+            # pick is what tells the row that the user chose.
+            if _picked && [ "${3:-}" = kept ]; then printf 'print(REMOVE)+accept'; fi
+            ;;
+        edit)
+            if _picked && [ "${3:-}" = saved ]; then printf 'print(EDIT)+accept'; fi
             ;;
         ghost)
             # The rest of the row's name after the typed text, or "→ name" when
@@ -261,28 +279,55 @@ _clux_cancelled_line() {
     esac
 }
 
-# The header the plain prompts draw: the same chip and brackets the bar draws.
+# _clux_header [TITLE [ENTER]] — the header the plain prompts draw: the same
+# chip and brackets the bar draws. ENTER says what Enter does.
 _clux_header() {
     printf '\033[H\033[2J'
-    printf '%s New workspace %s %s%s%s %sname + folder%s %s%s%s   %s⏎ create · esc cancel%s\n\n' \
-        "$CHIP" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
-        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "$RESET"
+    printf '%s %s %s %s%s%s %sname + folder%s %s%s%s   %s⏎ %s · esc cancel%s\n\n' \
+        "$CHIP" "${1:-New workspace}" "$RESET" "$BRACKET" "$OPEN" "$RESET" "$DIM" "$RESET" \
+        "$BRACKET" "$CLOSE" "$RESET" "$DIM" "${2:-create}" "$RESET"
+}
+
+# One SHORT line: the popup is seventy columns wide inside its border (less
+# on a narrow terminal), and a longer sentence wraps and pushes the header
+# off.
+BAD_NAME_TEXT="a name cannot hold  ' \" \\ ; : or #"
+
+# _clux_warn TEXT — one warning line.
+_clux_warn() {
+    printf '  %s!%s %s\n' "$BAD" "$RESET" "$1"
+}
+
+# _clux_note TEXT — show TEXT and wait for a key, so the user can read it
+# before the popup closes or the box draws again.
+_clux_note() {
+    _clux_warn "$1"
+    printf '  %spress any key%s' "$DIM" "$RESET"
+    read -rsn1
+}
+
+# _clux_ask VAR LABEL DEFAULT — one question, with DEFAULT as the stated
+# default. Sets VAR to the answer, or to DEFAULT for Enter alone. Exits on a
+# cancel.
+#
+# The default is STATED, not prefilled — bash 3.2 has no `read -i` — and the
+# dim suffix is the whole reason Enter alone is usable here.
+_clux_ask() {
+    local a
+    _clux_plain_keys
+    printf '  %s▸%s %-7s %s[%s]%s ' "$MARK" "$RESET" "$2" "$DIM" "$3" "$RESET"
+    IFS= read -r a || exit 0
+    _clux_cancelled_line "$a" && exit 0
+    [ -n "$a" ] || a="$3"
+    printf -v "$1" '%s' "$a"
 }
 
 # _clux_ask_folder NAME — the folder question, with NAME as the stated
-# default. Sets FOLDER_NAME, or exits on a cancel.
+# default. Sets FOLDER_NAME, or exits on a cancel. Enter alone means "same as
+# the session name", which is exactly what new-workspace.sh already does with
+# an empty folder.
 _clux_ask_folder() {
-    _clux_plain_keys
-    # Enter alone means "same as the session name", which is exactly what
-    # new-workspace.sh already does with an empty folder. The default is
-    # STATED, not prefilled — bash 3.2 has no `read -i` — and the dim suffix is
-    # the whole reason Enter alone is usable here.
-    printf '  %s▸%s folder  %s[%s]%s ' "$MARK" "$RESET" "$DIM" "$1" "$RESET"
-    IFS= read -r FOLDER_NAME || exit 0
-    if _clux_cancelled_line "$FOLDER_NAME"; then
-        exit 0
-    fi
-    [ -n "$FOLDER_NAME" ] || FOLDER_NAME="$1"
+    _clux_ask FOLDER_NAME folder "$1"
 }
 
 # _clux_go NAME FOLDER — hand both to new-workspace.sh. Never returns.
@@ -321,12 +366,7 @@ _clux_reject() {
     # printed here as well. The pause is what keeps `-E` from closing the popup
     # before the reason can be read.
     tmux display-message "clux: workspace name cannot contain a quote, backslash, semicolon, colon, or #"
-    # One SHORT line: the popup is seventy columns wide inside its border (less
-    # on a narrow terminal), and a longer sentence wraps and pushes the header
-    # off.
-    printf '  %s!%s a name cannot hold  '"'"' " \\ ; : or #\n' "$BAD" "$RESET"
-    printf '  %spress any key%s' "$DIM" "$RESET"
-    read -rsn1
+    _clux_note "$BAD_NAME_TEXT"
     exit 0
 }
 
@@ -403,14 +443,14 @@ _ws_rows() {
         m=" "
         [ "$st" = saved ] && [ ! -d "$d" ] && m="${BAD}✗${RESET}"
         _ws_cols "$n" "$d" "$w"
-        printf '%s %s\t%s\t%s\t%s\n' "$SHOWN" "$m" "$n" "$d" "$st"
+        printf '%s %s\t%s\t%s\t%s\tkept\n' "$SHOWN" "$m" "$n" "$d" "$st"
     done < <("$HISTORY" list 2>/dev/null)
     while IFS="$TAB" read -r n d; do
         [ -n "$n" ] || continue
         case "$seen" in *"$NL$n$NL"*) continue ;; esac
         _clux_bad_name "$n" && continue
         _ws_cols "$n" "$d" "$w"
-        printf '%s  \t%s\t%s\tlive\n' "$SHOWN" "$n" "$d"
+        printf '%s  \t%s\t%s\tlive\tunkept\n' "$SHOWN" "$n" "$d"
     done <<ROWS
 $LIVE_ROWS
 ROWS
@@ -441,7 +481,7 @@ ROWS
         if [ ! -d "$d" ]; then
             _clux_header
             _ws_short sd "$d"
-            printf '  %s!%s the folder is gone: %s\n' "$BAD" "$RESET" "$sd"
+            _clux_warn "the folder is gone: $sd"
             _clux_ask_folder "$n"
             d="$FOLDER_NAME"
         fi
@@ -459,13 +499,56 @@ _ws_open_exact() {
     [ -n "$d" ] && _ws_open "$1" "$d"
 }
 
-# _ws_box — the text box. Sets SESSION_NAME for a new workspace, or opens a
-# picked one and does not return. Returns 1 when fzf cannot show the box, and
-# the caller then asks with the plain prompt.
+# _ws_edit NAME DIR — ask for a new name and a new folder of the saved
+# workspace NAME, and change its saved line. Enter alone keeps a value. A
+# refused value changes nothing, and says why. Esc closes the popup.
+_ws_edit() {
+    local n="$1" d="$2" new f sd
+    _clux_header "Edit workspace" save
+    _clux_ask new name "$n"
+    if _clux_bad_name "$new"; then
+        _clux_note "$BAD_NAME_TEXT"
+        return 0
+    fi
+    # The rows hold the live sessions too, which the saved list does not: a
+    # saved line named after a live session would open that session.
+    if [ "$new" != "$n" ] && [ -n "$(_ws_exact "$new" 3)" ]; then
+        _clux_note "the name $new is taken"
+        return 0
+    fi
+    _ws_short sd "$d"
+    _clux_ask f folder "$sd"
+    if [ "$f" = "$sd" ]; then
+        f=""
+    else
+        # The same rules as the folder of a new workspace: a path, ~, or the
+        # @clux-dir-resolver.
+        f="$("$CURRENT_DIR/new-workspace.sh" --resolve "$f" 2>/dev/null)"
+        if [ -z "$f" ]; then
+            _clux_note "no folder for that name"
+            return 0
+        fi
+    fi
+    "$HISTORY" rename "$n" "$new" "$f"
+    case $? in
+        0) ;;
+        3) _clux_note "the name $new is taken" ;;
+        *) _clux_note "the change cannot be saved" ;;
+    esac
+}
+
+# _ws_box [QUERY] — the text box, with QUERY typed in it. Sets SESSION_NAME
+# for a new workspace, or opens a picked one and does not return. Returns 1
+# when fzf cannot show the box, and the caller then asks with the plain
+# prompt. Returns 2 after Ctrl-X or Ctrl-E changed the saved list: the caller
+# opens the box again.
 _ws_box() {
-    local out rc mode row n d h text
+    local out rc mode row n d h text start=()
     [ -n "$CLUX_WS_ROWS" ] || return 1
     h="'$CURRENT_DIR/new-workspace-prompt.sh' --fzf"
+    # With typed text, the prompt and the label must say what that text
+    # does, as after a change. An empty box starts with them right.
+    [ -n "${1:-}" ] && start=(--bind "start:transform:$h change")
     text="$(clux_fzf_color "$(get_workspace_text_color)")"
     # The user's own FZF_DEFAULT_OPTS (a border, a preview, a height) would
     # change this box; it is built to fit the popup exactly, so none apply.
@@ -489,12 +572,13 @@ _ws_box() {
         --no-separator --tiebreak=index --with-shell 'sh -c' \
         --list-border=top --list-label="$L_RECENTS" \
         --info='inline:' --info-command="$h ghost {s3}" \
-        --header "${CHIP} Workspace ${RESET}" --header-first \
+        --header "${CHIP} Workspace ${RESET}   ${DIM}^e edit · ^x remove${RESET}" --header-first \
         --pointer ' ' --gutter ' ' --prompt "$P_NEW" \
         --color "fg:$text,fg+:$text,bg+:-1,hl:-1:bold,hl+:-1:bold,header:-1" \
         --color "prompt:$(clux_fzf_color "$(get_agent_done_color),bold")" \
         --color "pointer:$(clux_fzf_color "$BUSY_COLOR")" \
         --color "list-border:$(clux_fzf_color "$SEP_STYLE"),list-label:$text" \
+        --query "${1:-}" ${start[@]+"${start[@]}"} \
         --bind "change:transform:$h change" \
         --bind "focus:transform:$h focus {5}" \
         --bind 'tab:transform-query:[ "$FZF_MATCH_COUNT" -gt 0 ] && printf %s {s3} || printf %s {q}' \
@@ -505,6 +589,8 @@ _ws_box() {
         --bind "alt-up:transform:$h up" \
         --bind "btab:transform:$h up" \
         --bind "pgup:transform:$h up page-up" \
+        --bind "ctrl-x:transform:$h remove {6}" \
+        --bind "ctrl-e:transform:$h edit {5}" \
         --bind "enter:transform:$h enter" \
         --bind "ctrl-j:transform:$h enter" < "$CLUX_WS_ROWS")"
     rc=$?
@@ -522,15 +608,18 @@ _ws_box() {
     { IFS= read -r SESSION_NAME; IFS= read -r mode; IFS= read -r row; } <<OUT
 $out
 OUT
-    if [ "$mode" = OPEN ] && [ -n "$row" ]; then
-        # No field of a row is empty (the shown columns are padded, and the
-        # list holds no line with an empty name or folder), so tabs cannot
-        # shift the fields.
-        IFS="$TAB" read -r _ _ n d _ <<ROW
+    [ -n "$row" ] || return 0
+    # No field of a row is empty (the shown columns are padded, and the list
+    # holds no line with an empty name or folder), so tabs cannot shift the
+    # fields.
+    IFS="$TAB" read -r _ _ n d _ <<ROW
 $row
 ROW
-        _ws_open "$n" "$d"
-    fi
+    case "$mode" in
+        OPEN) _ws_open "$n" "$d" ;;
+        REMOVE) "$HISTORY" remove "$n"; return 2 ;;
+        EDIT) _ws_edit "$n" "$d"; return 2 ;;
+    esac
 }
 
 # --- Main ------------------------------------------------------------------
@@ -540,7 +629,21 @@ CLUX_WS_ROWS="$(mktemp "${TMPDIR:-/tmp}/clux-ws.XXXXXX" 2>/dev/null)" || CLUX_WS
 [ -n "$CLUX_WS_ROWS" ] && _ws_rows > "$CLUX_WS_ROWS"
 
 SESSION_NAME=""
-if command -v fzf >/dev/null 2>&1 && _ws_box; then
+# _ws_box_loop — the box, opened again after each change to the saved list.
+# Returns 1 when fzf cannot show the box.
+_ws_box_loop() {
+    local rc
+    command -v fzf >/dev/null 2>&1 || return 1
+    while :; do
+        _ws_box "$SESSION_NAME"
+        rc=$?
+        [ "$rc" -eq 2 ] || return "$rc"
+        # The rows again, from the changed list and the sessions that run now.
+        _ws_read_live
+        _ws_rows > "$CLUX_WS_ROWS"
+    done
+}
+if _ws_box_loop; then
     [ -n "$SESSION_NAME" ] || exit 0
     # Exactly the name of a saved or live workspace: open it, no folder
     # question. The prompt said "open" or "switch to" for this name.
@@ -551,7 +654,7 @@ if command -v fzf >/dev/null 2>&1 && _ws_box; then
 else
     _clux_plain_keys
     _clux_header
-    [ -n "$_CLUX_NOTE" ] && printf '  %s!%s %s\n' "$BAD" "$RESET" "$_CLUX_NOTE"
+    [ -n "$_CLUX_NOTE" ] && _clux_warn "$_CLUX_NOTE"
     printf '  %s▸%s name    ' "$MARK" "$RESET"
     IFS= read -r SESSION_NAME || exit 0
     # Empty means the prompt was cancelled — not an error. So does a control

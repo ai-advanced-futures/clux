@@ -2,6 +2,19 @@
 
 All notable changes to clux are documented here.
 
+## [5.4.0]
+
+### Added
+
+- **Ctrl-X in `prefix + A` removes a saved workspace.** Push Down to pick the row, then push Ctrl-X. The box opens again with the same typed text. clux removes only the line in the saved list. The folder and a live session do not change. A live session stays in the list as a row that is not saved. You do not have to run `workspace-history.sh remove NAME` in a shell
+- **Ctrl-E in `prefix + A` edits a saved workspace.** Pick the row, then push Ctrl-E. Type a new name and a new folder, or push Enter to keep each value. The row keeps its place in the list. clux refuses a name that another row has. Esc closes the popup. Ctrl-E does nothing on a live session: the session keeps its name and folder
+- Ctrl-X and Ctrl-E need the list, so fzf 0.66 or later. The plain prompt without fzf does not have them
+- `workspace-history.sh rename NAME NEW`: change the name of a saved workspace and keep its place
+
+### Changed
+
+- In the `prefix + A` box, Ctrl-E does not move to the end of the line. Use the End key
+
 ## [5.3.0]
 
 ### Changed
@@ -29,6 +42,7 @@ All notable changes to clux are documented here.
 ### Changed
 
 - **Ctrl-X in the `prefix + M` popup deletes the selected notification, and the popup stays open.** fzf starts again on the new queue, with the cursor on the first line. Ctrl-D does the same. The popup closes on Enter, on Esc, and when the queue is empty
+||||||| Stash base
 
 ## [5.1.0]
 
