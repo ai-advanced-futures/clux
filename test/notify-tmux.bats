@@ -285,7 +285,8 @@ load test_helper
 echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
 case "\$*" in
   *@claude-notify-file*) echo "$QUEUE_FILE" ;;
-  *display-message*) echo "main|||editor|||s-int-dummy|||@win1" ;;
+  *session_name*) echo "default|||main|||editor|||s-int-dummy|||@win1" ;;
+  *server_name*) echo "default" ;;
   *@claude-notify-notification-visual*) echo "on" ;;
   *@clux_muted*) echo "" ;;
 esac
@@ -341,7 +342,7 @@ EOF
 echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
 case "\$*" in
   *@clux_muted*) echo "" ;;
-  *display-message*) echo "main|||editor|||s-int-444|||@win1" ;;
+  *display-message*) echo "default|||main|||editor|||s-int-444|||@win1" ;;
   *@claude-notify-file*) echo "$QUEUE_FILE" ;;
   *"@claude-notify-notification-visual"*) echo "off" ;;
 esac
@@ -647,7 +648,7 @@ _write_pane_tmux_stub() {
 echo "tmux \$*" >> "\${STUB_LOG:-/dev/null}"
 case "\$*" in
   *@clux_muted*) echo "" ;;
-  *display-message*) echo "main|||editor|||\$1|||@win1" ;;
+  *display-message*) echo "default|||main|||editor|||\$1|||@win1" ;;
   *@claude-notify-file*) echo "$QUEUE_FILE" ;;
 esac
 exit 0

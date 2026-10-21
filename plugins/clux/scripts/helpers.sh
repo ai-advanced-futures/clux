@@ -16,6 +16,8 @@ get_tmux_option() {
 
 # Configuration defaults
 NOTIFY_FILE=$(get_tmux_option "@claude-notify-file" "$HOME/.config/tmux/claude_notification")
+# This is the base path. A caller adds the server name with
+# notify_file_for_server (path.sh) once it knows the server.
 NOTIFY_BG=$(get_tmux_option "@claude-notify-bg" "yellow")
 NOTIFY_FG=$(get_tmux_option "@claude-notify-fg" "black")
 NOTIFY_JUMP_KEY=$(get_tmux_option "@claude-notify-jump" "m")

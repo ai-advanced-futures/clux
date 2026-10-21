@@ -53,7 +53,7 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `@claude-notify-file` | `~/.config/tmux/claude_notification` | Queue file path |
+| `@claude-notify-file` | `~/.config/tmux/claude_notification` | Queue file path of the `default` server. Each other server adds its name: `<path>-<server name>` |
 | `@claude-notify-jump` | `N` | Jump to notification source |
 | `@claude-notify-dismiss` | `` ` `` | Dismiss top notification |
 | `@claude-notify-bg` | `yellow` | Background color |
@@ -63,6 +63,14 @@ set -g status-left "#(~/.tmux/plugins/clux/scripts/show-notification.sh) "
 | `@claude-notify-<type>-sound` | see below | `on`, `off`, or a custom command, for one type |
 | `@claude-notify-<type>-sound-file` | OS default | Sound file for one type |
 | `@clux-filter-mark` | `⊘ filtered` | The status-bar mark when the repo of the active pane has notification filters. An empty value turns it off |
+
+### One queue for each tmux server
+
+Each tmux server has its own queue, so a server shows only the notifications of its own sessions. The server name is the name the identity chip shows: the `@server_name` server option, or else the socket name (`tmux -L <name>`). The server named `default` (plain `tmux`) uses the path of `@claude-notify-file`. Another server adds `-<name>` to that path, for example `~/.config/tmux/claude_notification-work`.
+
+- A Claude in a tmux pane writes to the queue of its own server.
+- A background agent writes to the queue of the server that holds its `claude agents` dashboard. clux finds that server from the live `tmux` processes. When no dashboard matches, the notification goes to the `default` server.
+- A script that renames a server runs `~/.config/clux/scripts/rename-notify-file.sh OLD NEW` after the rename. The waiting notifications then move to the new name.
 
 `<type>` names what Claude Code told clux, and each one is a question in `/clux:setup`:
 

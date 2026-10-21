@@ -2,6 +2,24 @@
 
 All notable changes to clux are documented here.
 
+## [5.5.0]
+
+### Changed
+
+- **Each tmux server has its own notification queue.** A server shows only the notifications of its own sessions: the status bar, `prefix + m`, `prefix + M`, the dismiss key and the notifications pane all read the queue of their server. The server named `default` keeps `~/.config/tmux/claude_notification` (the path of `@claude-notify-file`). Any other server adds its name, for example `claude_notification-work`
+- The server name is the name the identity chip shows: the `@server_name` server option, or else the socket name (`tmux -L <name>`). A name with a space, `/`, or one of `' " \ ; : #` keeps the `default` queue
+- A Claude in a tmux pane writes to the queue of its own server. A background agent writes to the queue of the server that holds its `claude agents` dashboard. clux finds that server from the live `tmux` processes, not from the socket folder. With no dashboard that matches, the notification goes to the `default` server, as before
+- `dismiss-notification.sh` now finds its queue the same way as the other readers. Before, it read only `CLUX_NOTIFY_FILE`
+
+### Added
+
+- `scripts/rename-notify-file.sh OLD NEW` moves the queue of a server to its new name. When the new name already has a queue, the old lines go at its end. A script that renames a server runs it after the rename. Run `/clux:upgrade` to copy it to `~/.config/clux/scripts/`
+
+### Upgrade note
+
+- After the upgrade, a server that is not named `default` starts with an empty queue. To keep the waiting notifications of such a server, run `~/.config/clux/scripts/rename-notify-file.sh default <server name>` one time
+- A notifications pane that was open before the upgrade reads the old queue. Restart that Claude session
+
 ## [5.4.0]
 
 ### Added

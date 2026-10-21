@@ -6,13 +6,14 @@
 # The path resolvers — resolve_notify_file(), resolve_agent_state_dir() — are
 # pure: they read env vars and a sidecar file and print a path.
 #
-# FOUR functions here are deliberately NOT pure. reap_agent_state_dir() calls
+# SIX functions here are deliberately NOT pure. reap_agent_state_dir() calls
 # tmux and deletes files; refresh_agent_bar() calls tmux;
-# resolve_agent_server_key() calls tmux; resolve_agents_pane_by_cwd() calls
-# tmux and ps. All live in this file so their callers share one copy instead
+# resolve_agent_server_key() calls tmux; clux_server_name() calls tmux;
+# resolve_agents_pane_by_cwd() and resolve_agents_pane_any_server() call tmux
+# and ps. All live in this file so their callers share one copy instead
 # of each rolling its own, and all do that work only when CALLED — sourcing
-# still costs nothing. Do not add a fifth impure function here without saying
-# so in this header.
+# still costs nothing. Do not add a seventh impure function here without
+# saying so in this header.
 # (resolve_agents_pane_by_cwd moved here from helpers.sh: helpers.sh runs five
 # get_tmux_option calls at SOURCE time, and hooks/agent-state.sh must stay
 # cheap, so it can only source this file.)
@@ -20,7 +21,54 @@
 _CLUX_SIDECAR="${HOME}/.config/clux/notify-file-path"
 _CLUX_AGENT_SIDECAR="${HOME}/.config/clux/agent-state-dir"
 
+# The tmux format of the server name: the name the status bar shows. tmux has
+# no server name of its own. The name is the socket file name, and prefix + T
+# (rename-server.sh) moves the socket and keeps the new name in @server_name,
+# because #{socket_path} keeps the start path.
+CLUX_SERVER_NAME_FMT='#{?@server_name,#{@server_name},#{b:socket_path}}'
+
+# clux_server_name [SOCKET] — the name of the server at SOCKET, or with no
+# SOCKET of the server of this pane. Empty outside tmux with no SOCKET, and
+# when no server answers: the caller then keeps the base queue and makes no
+# tmux call.
+clux_server_name() {
+    [ -n "${1:-}" ] || [ -n "${TMUX:-}" ] || return 0
+    tmux ${1:+-S "$1"} display-message -p "$CLUX_SERVER_NAME_FMT" 2>/dev/null
+}
+
+# The folder tmux keeps its sockets in, and the socket of the server plain
+# `tmux` starts: "default" in that folder.
+_clux_socket_dir() { printf '%s\n' "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"; }
+clux_default_socket() { printf '%s/default\n' "$(_clux_socket_dir)"; }
+
+# notify_file_for_server BASE NAME — the queue of the server NAME.
+#
+# Each tmux server has its own queue, so a server shows only the
+# notifications of its own sessions. The server named "default" (plain
+# `tmux`) keeps BASE, the path clux used before queues were per server. Any
+# other server adds its name: BASE-NAME. The separator is "-" and not ".",
+# because the lock and the temp files are BASE.lock, BASE.flock and BASE.tmp,
+# and a server named "lock" must not get the lock of another queue. An empty
+# NAME (no server answered) keeps BASE too, and so does a NAME that
+# rename-server.sh refuses: a space, "/", or one of ' " \ ; : #. A NAME that
+# ends in .lock, .flock or .tmp keeps BASE too: else the server "work.tmp"
+# gets the temp file of the queue of the server "work".
+notify_file_for_server() {
+    case "$2" in
+        ''|default|*[[:space:][:cntrl:]/\'\"\\\;:#]*|*.lock|*.flock|*.tmp) printf '%s\n' "$1" ;;
+        *)              printf '%s-%s\n' "$1" "$2" ;;
+    esac
+}
+
+# resolve_notify_file [NAME] — the queue of the server NAME (see
+# notify_file_for_server). The three tiers below give the base path; with no
+# NAME the answer is the base path itself. This function stays pure: a caller
+# gets NAME from clux_server_name, or from a tmux call it already makes.
 resolve_notify_file() {
+    notify_file_for_server "$(_clux_notify_base)" "${1:-}"
+}
+
+_clux_notify_base() {
     # Tier 1: explicit env var (set by tmux setenv -g in claude-notify.tmux)
     if [ -n "${CLUX_NOTIFY_FILE:-}" ]; then
         echo "$CLUX_NOTIFY_FILE"
@@ -222,9 +270,10 @@ reap_agent_state_dir() {
 
 # Resolve the tmux pane of the `claude agents` dashboard that OWNS a given cwd.
 # Echoes "<session_id> <window_id> <pane_id>" (space-separated, one line) on a
-# match, or nothing on no match / no tmux server. Used by BOTH the write side
-# (notify-tmux.sh, detached with TMUX unset, over the default socket) and the
-# jump side (agent_jump re-resolve).
+# match, or nothing on no match / no tmux server. Asks the server plain `tmux`
+# reaches: the jump side (agent_jump re-resolve) and the detached writers'
+# fallback. The detached notify hook asks every live server through
+# resolve_agents_pane_any_server below.
 #
 #   $1 = cwd of the agent session (the .cwd hook field)
 #
@@ -270,12 +319,83 @@ _clux_canon_path() {
 }
 
 resolve_agents_pane_by_cwd() {
-    local cwd="$1"
+    local found
+    found=$(_clux_agents_pane_scan "$1" "")
+    [ -n "$found" ] && printf '%s\n' "${found#* }"
+    return 0
+}
+
+# The sockets of the live tmux servers, one for each line. A detached hook has
+# no $TMUX, so it cannot know which server holds the dashboard. The process
+# table holds the answer: each live server, and each client, is a `tmux`
+# process whose arguments name its socket (-S PATH, -L NAME, or neither for
+# "default"). This reads only live processes, never the socket folder, which
+# can hold hundreds of stale sockets that each cost a failed connect. The
+# options -c, -f and -T take a value, so the value is not a command name, and
+# -L and -S can hold the value in the same word (-Lwork).
+#
+# A renamed server (prefix + T) keeps a link at its start path, so the path
+# its arguments name still connects.
+#
+# stdin: a "<pid> <ppid> <args...>" snapshot, the one the scan reads too.
+_clux_live_tmux_sockets() {
+    awk -v dir="$(_clux_socket_dir)" '
+        {
+            n = split($3, p, "/")
+            if (p[n] != "tmux") next
+            sock = dir "/default"
+            for (i = 4; i <= NF; i++) {
+                o = substr($i, 1, 2)
+                if ((o == "-S" || o == "-L") && length($i) > 2) { v = substr($i, 3) }
+                else if ((o == "-S" || o == "-L") && i < NF) { v = $(i + 1) }
+                else if ($i == "-c" || $i == "-f" || $i == "-T") { i++; continue }
+                else if ($i ~ /^-/) continue
+                else break
+                sock = (o == "-S") ? v : dir "/" v
+                break
+            }
+            if (!(sock in seen)) { seen[sock] = 1; print sock }
+        }'
+}
+
+# resolve_agents_pane_any_server CWD — the same answer as
+# resolve_agents_pane_by_cwd, from whichever live tmux server holds the
+# dashboard that owns CWD. Echoes "<session_id> <window_id> <pane_id> <socket>"
+# or nothing. For the detached hook only: a caller inside tmux already knows
+# its server and must stay on it.
+resolve_agents_pane_any_server() {
+    local cwd="$1" procs sock found best="" best_len=-1
+    [ -z "$cwd" ] && return 0
+    # One process snapshot for every server: the socket list and each scan
+    # read it. With no dashboard at all there is nothing to ask a server.
+    procs=$(ps -A -ww -o pid=,ppid=,args= 2>/dev/null)
+    printf '%s\n' "$procs" | grep -qE '(^|[[:space:]/])claude[[:space:]](.*[[:space:]])?agents([[:space:]]|$)' || return 0
+    while IFS= read -r sock; do
+        [ -S "$sock" ] || continue
+        found=$(_clux_agents_pane_scan "$cwd" "$sock" "$procs")
+        [ -n "$found" ] || continue
+        if [ "${found%% *}" -gt "$best_len" ]; then
+            best_len=${found%% *}
+            best="${found#* } $sock"
+        fi
+    done <<EOF
+$(printf '%s\n' "$procs" | _clux_live_tmux_sockets)
+EOF
+    [ -n "$best" ] && printf '%s\n' "$best"
+    return 0
+}
+
+# _clux_agents_pane_scan CWD SOCKET [PROCS] — the body of the two resolvers
+# above. Echoes "<root length> <session_id> <window_id> <pane_id>", so a
+# caller can compare the matches of two servers. An empty SOCKET is the server
+# plain `tmux` reaches. PROCS is a process snapshot the caller already took.
+_clux_agents_pane_scan() {
+    local cwd="$1" sock="$2"
     [ -z "$cwd" ] && return 0
     cwd=$(_clux_canon_path "$cwd")
 
     local panes procs
-    panes=$(tmux list-panes -a \
+    panes=$(tmux ${sock:+-S "$sock"} list-panes -a \
              -F '#{pane_pid}	#{session_id}	#{window_id}	#{pane_id}	#{pane_current_path}' \
              2>/dev/null)
     [ -z "$panes" ] && return 0
@@ -291,7 +411,8 @@ resolve_agents_pane_by_cwd() {
     # -ww disables column truncation: BSD ps clips args to the terminal width
     # (80 when not a tty, i.e. inside a hook), which lands mid-path on a real
     # `claude agents --cwd …` line and leaves $aroot a partial directory.
-    procs=$(ps -A -ww -o pid=,ppid=,args= 2>/dev/null)
+    procs=${3-}
+    [ -n "$procs" ] || procs=$(ps -A -ww -o pid=,ppid=,args= 2>/dev/null)
     [ -z "$procs" ] && return 0
 
     local best_len=-1 best_sid="" best_wid="" best_pid="" IFS_save=$IFS
@@ -344,7 +465,7 @@ EOF
     IFS=$IFS_save
 
     [ -z "$best_wid" ] && return 0
-    printf '%s %s %s\n' "$best_sid" "$best_wid" "$best_pid"
+    printf '%s %s %s %s\n' "$best_len" "$best_sid" "$best_wid" "$best_pid"
 }
 
 # Ask tmux to redraw whatever shows agent state. Shared by the two writers so

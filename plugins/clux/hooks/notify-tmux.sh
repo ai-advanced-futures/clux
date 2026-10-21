@@ -146,12 +146,6 @@ _agent_handle_event() {
     # never ran /clux:setup §3.6 sees no change.
     [ "$(get_notification_visual_enabled "$TYPE")" != "off" ] || return 0
 
-    # Resolve queue file for the agent (detached) path only.
-    # Must NOT run on the interactive path — helpers.sh's source-time
-    # get_tmux_option value for NOTIFY_FILE is correct there.
-    NOTIFY_FILE=$(resolve_notify_file)
-    recompute_lock_target
-
     # Display label = "<window name> / <session name>", where <session name> is
     # the name shown in the `claude agents` view (the transcript's
     # custom-title). The window name marks where the agents view lives and
@@ -165,18 +159,32 @@ _agent_handle_event() {
     # 3.7.0 form — their marker already says everything.
     local NAME LABEL MSG TEXT PREFIX
     # Resolve the owning dashboard pane by longest-prefix cwd match so the
-    # jump can fast-path straight to it. Runs detached (TMUX unset) over the
-    # default socket (prototype P1). When no dashboard / no tmux server is
-    # reachable the resolver echoes empty cleanly → seg2 stays empty (@@@@)
-    # and the jump side re-resolves by CWD at click time.
-    local _coords seg2 sid wid pid entry_id
-    _coords=$(resolve_agents_pane_by_cwd "$CWD")
+    # jump can fast-path straight to it. Runs detached (TMUX unset), so it
+    # asks every live tmux server, and the server that holds the dashboard
+    # owns the notification. When no server has a match it asks the default
+    # socket alone, as before (prototype P1). When no dashboard / no tmux
+    # server is reachable the resolver echoes empty cleanly → seg2 stays
+    # empty (@@@@) and the jump side re-resolves by CWD at click time.
+    local _coords seg2="" sid wid pid sock="" entry_id
+    _coords=$(resolve_agents_pane_any_server "$CWD")
     if [ -n "$_coords" ]; then
-        read -r sid wid pid <<< "$_coords"
-        seg2="${sid}:${wid}:${pid}"
+        read -r sid wid pid sock <<< "$_coords"
+        # From here every tmux call of this event goes to that server: the
+        # window name below, and the server name that picks the queue.
+        tmux() { command tmux -S "$sock" "$@"; }
     else
-        seg2=""
+        _coords=$(resolve_agents_pane_by_cwd "$CWD")
+        [ -n "$_coords" ] && read -r sid wid pid <<< "$_coords"
+        sock=$(clux_default_socket)
+        [ -S "$sock" ] || sock=""
     fi
+    [ -n "$_coords" ] && seg2="${sid}:${wid}:${pid}"
+
+    # The queue of the server that owns the notification (the default
+    # server when no dashboard matched). The interactive path below finds
+    # its queue from the tmux call it already makes.
+    NOTIFY_FILE=$(resolve_notify_file "$([ -n "$sock" ] && clux_server_name "$sock")")
+    recompute_lock_target
     # The prefix is the name of the window that holds the agents view, so
     # the label reads "plugins / pr-flow" and not "agents / pr-flow". When
     # no window is found, the prefix stays "agents".
@@ -242,8 +250,13 @@ fi
 _CLUX_MUTED="$(tmux show-option -gqv @clux_muted)"
 [ "$_CLUX_MUTED" = "1" ] && exit 0
 
-# Single tmux IPC call for all 4 identifiers
-_TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}')"
+# Single tmux IPC call for the server name and all 4 identifiers. The name
+# picks the queue of this server (notify_file_for_server, path.sh). It comes
+# first, as in show-notification.sh: a window name can hold "|||", and then
+# only the fields after it move, never the queue.
+_TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p "${CLUX_SERVER_NAME_FMT}|||#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}")"
+NOTIFY_FILE=$(notify_file_for_server "$NOTIFY_FILE" "${_TMUX_INFO%%|||*}"); _TMUX_INFO="${_TMUX_INFO#*|||}"
+recompute_lock_target
 SESSION="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
 WINDOW_NAME="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
 SESSION_ID="${_TMUX_INFO%%|||*}"

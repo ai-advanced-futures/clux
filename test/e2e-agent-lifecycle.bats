@@ -29,8 +29,8 @@ case "\$1" in
         [ -n $quoted_win ] && printf '%s\n' $quoted_win
         ;;
     display-message)
-        # show-notification.sh needs: session_id|||window_id|||session_name|||window_name
-        echo "\$sess_dummy|||\${wdummy}|||dummy-session|||dummy-window"
+        # show-notification.sh needs: server_name|||session_id|||window_id|||session_name|||window_name
+        echo "default|||\$sess_dummy|||\${wdummy}|||dummy-session|||dummy-window"
         ;;
 esac
 exit 0
