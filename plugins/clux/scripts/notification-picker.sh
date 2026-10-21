@@ -8,7 +8,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/path.sh"
-NOTIFY_FILE=$(resolve_notify_file)
+NOTIFY_FILE=$(resolve_notify_file "$(clux_server_name)")
 
 # Check fzf is installed
 if ! command -v fzf &>/dev/null; then

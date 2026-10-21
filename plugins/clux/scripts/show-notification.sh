@@ -9,14 +9,17 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/path.sh"
-NOTIFY_FILE=$(resolve_notify_file)
 NOTIFY_BG="${CLUX_NOTIFY_BG:-#EBCB8B}"
 NOTIFY_FG="${CLUX_NOTIFY_FG:-#2E3440}"
 
+# Single tmux IPC call for the server name and all 4 identifiers (was 4
+# separate calls @ ~230ms each). The name picks the queue of this server, so
+# the call comes before the file check.
+TMUX_INFO="$(tmux display-message -p "${CLUX_SERVER_NAME_FMT}|||#{session_id}|||#{window_id}|||#{session_name}|||#{window_name}")"
+NOTIFY_FILE=$(resolve_notify_file "${TMUX_INFO%%|||*}"); TMUX_INFO="${TMUX_INFO#*|||}"
+
 [ -f "$NOTIFY_FILE" ] || exit 0
 
-# Single tmux IPC call for all 4 identifiers (was 4 separate calls @ ~230ms each)
-TMUX_INFO="$(tmux display-message -p '#{session_id}|||#{window_id}|||#{session_name}|||#{window_name}')"
 CURRENT_SESSION_ID="${TMUX_INFO%%|||*}"; TMUX_INFO="${TMUX_INFO#*|||}"
 CURRENT_WINDOW_ID="${TMUX_INFO%%|||*}"; TMUX_INFO="${TMUX_INFO#*|||}"
 CURRENT_SESSION="${TMUX_INFO%%|||*}"

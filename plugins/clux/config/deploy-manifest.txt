@@ -30,6 +30,7 @@ dismiss-notification.sh
 notification-picker.sh
 notify-sound.sh
 notify-filter.sh
+rename-notify-file.sh
 truncate-title.sh
 
 # Agent state

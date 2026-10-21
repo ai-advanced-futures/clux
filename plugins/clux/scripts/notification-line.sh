@@ -15,7 +15,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./path.sh
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/path.sh"
-NOTIFY_FILE=$(resolve_notify_file)
+NOTIFY_FILE=$(resolve_notify_file "$(clux_server_name)")
 LOCKDIR="${NOTIFY_FILE}.lock"
 
 VERB="${1:-}"
@@ -150,7 +150,7 @@ esac
 # line: the pane then says it could not jump, as it does for a window line.
 tmux list-sessions >/dev/null 2>&1 || exit 1
 
-_AGENT_QUEUE="$NOTIFY_FILE"   # the queue the three tiers resolved
+_AGENT_QUEUE="$NOTIFY_FILE"   # the queue of this server
 # shellcheck source=./helpers.sh
 # shellcheck disable=SC1091
 source "$CURRENT_DIR/helpers.sh"

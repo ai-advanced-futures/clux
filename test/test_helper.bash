@@ -140,7 +140,12 @@ stop_holders() {
     rm -f "$BATS_TEST_TMPDIR/holders"
 }
 
-setup() {
+# The shared setup and teardown. A file with its own setup() or teardown()
+# calls these first, so a change here reaches every file.
+setup() { clux_setup; }
+teardown() { clux_teardown; }
+
+clux_setup() {
     install_stubs
     # A run from a Claude Code Bash call gets the session of that call. Each
     # test selects its owner: a pane (TMUX and TMUX_PANE) or a session that
@@ -151,7 +156,7 @@ setup() {
     export CLUX_NOTIFY_FILE="$QUEUE_FILE"   # agent path resolves via resolve_notify_file() -> CLUX_NOTIFY_FILE (tier 1)
 }
 
-teardown() {
+clux_teardown() {
     stop_fake_clef
     stop_holders
     rm -rf "$BATS_TEST_TMPDIR"

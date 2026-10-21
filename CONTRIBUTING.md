@@ -63,6 +63,7 @@ plugins/clux/
 │   ├── notification-picker.sh   # Interactive notification picker
 │   ├── notify-sound.sh          # Sound playback per notification type
 │   ├── notify-filter.sh         # The per-repo filter file: parse, check, edit
+│   ├── rename-notify-file.sh    # Moves a server's queue when the server gets a new name
 │   ├── truncate-title.sh        # Per-OS safe title truncation
 │   │                            # Agent state — readers only, they never write
 │   ├── agent-query.sh           # Reads one session's rolled-up agent state
@@ -121,10 +122,11 @@ After making changes to hook scripts, test them without Claude Code running.
 
 Hook scripts read JSON from stdin. To simulate a Stop event, write a JSON object with `hook_event_name` set to `"Stop"` and a `message` field, then pipe it to `plugins/clux/hooks/notify-tmux.sh`. Do the same with `"Notification"` for that event type.
 
-After running, inspect the notification queue:
+After running, inspect the notification queue. The `default` server uses the path below; any other server adds `-<server name>`:
 
 ```bash
 cat "$HOME/.config/tmux/claude_notification"
+cat "$HOME/.config/tmux/claude_notification-work"
 ```
 
 To check the overall setup, run `/clux:validate` inside Claude Code. It is read-only.

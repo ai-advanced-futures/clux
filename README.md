@@ -50,7 +50,7 @@ The pane is a function-hooks mod (`hooks/sessions/`). It needs Claude Code 2.1.2
 
 ## Notifications pane
 
-`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. `/clux:notifications` again closes it. `ctrl+x n` does the same from anywhere, also while you write a message, after you bind it (see below).
+`/clux:notifications` opens one pane for the clux notification queue — the list the tmux status bar and the `prefix + M` popup show. Each tmux server has its own queue, so a server shows only the notifications of its own sessions (see the [reference](docs/reference.md#one-queue-for-each-tmux-server)). `/clux:notifications` again closes it. `ctrl+x n` does the same from anywhere, also while you write a message, after you bind it (see below).
 
 ```
 Notifications · 3  |  Filters · 2 q: hide  j: down  k: up  x: remove  f: filters

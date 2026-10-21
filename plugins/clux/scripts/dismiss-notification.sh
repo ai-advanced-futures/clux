@@ -2,7 +2,11 @@
 
 # Dismiss the top notification without jumping to it
 
-NOTIFY_FILE="${CLUX_NOTIFY_FILE:-$HOME/.config/tmux/claude_notification}"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./path.sh
+# shellcheck disable=SC1091
+source "$CURRENT_DIR/path.sh"
+NOTIFY_FILE=$(resolve_notify_file "$(clux_server_name)")
 LOCKDIR="${NOTIFY_FILE}.lock"
 
 [ -f "$NOTIFY_FILE" ] || exit 0
