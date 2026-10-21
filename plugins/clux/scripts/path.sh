@@ -50,10 +50,12 @@ clux_default_socket() { printf '%s/default\n' "$(_clux_socket_dir)"; }
 # because the lock and the temp files are BASE.lock, BASE.flock and BASE.tmp,
 # and a server named "lock" must not get the lock of another queue. An empty
 # NAME (no server answered) keeps BASE too, and so does a NAME that
-# rename-server.sh refuses: a space, "/", or one of ' " \ ; : #.
+# rename-server.sh refuses: a space, "/", or one of ' " \ ; : #. A NAME that
+# ends in .lock, .flock or .tmp keeps BASE too: else the server "work.tmp"
+# gets the temp file of the queue of the server "work".
 notify_file_for_server() {
     case "$2" in
-        ''|default|*[[:space:][:cntrl:]/\'\"\\\;:#]*) printf '%s\n' "$1" ;;
+        ''|default|*[[:space:][:cntrl:]/\'\"\\\;:#]*|*.lock|*.flock|*.tmp) printf '%s\n' "$1" ;;
         *)              printf '%s-%s\n' "$1" "$2" ;;
     esac
 }
@@ -328,7 +330,9 @@ resolve_agents_pane_by_cwd() {
 # table holds the answer: each live server, and each client, is a `tmux`
 # process whose arguments name its socket (-S PATH, -L NAME, or neither for
 # "default"). This reads only live processes, never the socket folder, which
-# can hold hundreds of stale sockets that each cost a failed connect.
+# can hold hundreds of stale sockets that each cost a failed connect. The
+# options -c, -f and -T take a value, so the value is not a command name, and
+# -L and -S can hold the value in the same word (-Lwork).
 #
 # A renamed server (prefix + T) keeps a link at its start path, so the path
 # its arguments name still connects.
@@ -341,9 +345,14 @@ _clux_live_tmux_sockets() {
             if (p[n] != "tmux") next
             sock = dir "/default"
             for (i = 4; i <= NF; i++) {
-                if ($i == "-S" && i < NF) { sock = $(i + 1); break }
-                if ($i == "-L" && i < NF) { sock = dir "/" $(i + 1); break }
-                if ($i !~ /^-/) break
+                o = substr($i, 1, 2)
+                if ((o == "-S" || o == "-L") && length($i) > 2) { v = substr($i, 3) }
+                else if ((o == "-S" || o == "-L") && i < NF) { v = $(i + 1) }
+                else if ($i == "-c" || $i == "-f" || $i == "-T") { i++; continue }
+                else if ($i ~ /^-/) continue
+                else break
+                sock = (o == "-S") ? v : dir "/" v
+                break
             }
             if (!(sock in seen)) { seen[sock] = 1; print sock }
         }'
@@ -360,7 +369,7 @@ resolve_agents_pane_any_server() {
     # One process snapshot for every server: the socket list and each scan
     # read it. With no dashboard at all there is nothing to ask a server.
     procs=$(ps -A -ww -o pid=,ppid=,args= 2>/dev/null)
-    printf '%s\n' "$procs" | grep -qE '(^|[[:space:]/])claude[[:space:]].*[[:space:]]agents([[:space:]]|$)' || return 0
+    printf '%s\n' "$procs" | grep -qE '(^|[[:space:]/])claude[[:space:]](.*[[:space:]])?agents([[:space:]]|$)' || return 0
     while IFS= read -r sock; do
         [ -S "$sock" ] || continue
         found=$(_clux_agents_pane_scan "$cwd" "$sock" "$procs")

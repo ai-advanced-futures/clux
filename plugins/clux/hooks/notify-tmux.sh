@@ -250,15 +250,17 @@ fi
 _CLUX_MUTED="$(tmux show-option -gqv @clux_muted)"
 [ "$_CLUX_MUTED" = "1" ] && exit 0
 
-# Single tmux IPC call for all 4 identifiers and the server name. The name
-# picks the queue of this server (notify_file_for_server, path.sh).
-_TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p "#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}|||${CLUX_SERVER_NAME_FMT}")"
+# Single tmux IPC call for the server name and all 4 identifiers. The name
+# picks the queue of this server (notify_file_for_server, path.sh). It comes
+# first, as in show-notification.sh: a window name can hold "|||", and then
+# only the fields after it move, never the queue.
+_TMUX_INFO="$(tmux display-message -t "$TMUX_PANE" -p "${CLUX_SERVER_NAME_FMT}|||#{session_name}|||#{window_name}|||#{session_id}|||#{window_id}")"
+NOTIFY_FILE=$(notify_file_for_server "$NOTIFY_FILE" "${_TMUX_INFO%%|||*}"); _TMUX_INFO="${_TMUX_INFO#*|||}"
+recompute_lock_target
 SESSION="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
 WINDOW_NAME="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
-SESSION_ID="${_TMUX_INFO%%|||*}"; _TMUX_INFO="${_TMUX_INFO#*|||}"
-WINDOW_ID="${_TMUX_INFO%%|||*}"
-NOTIFY_FILE=$(notify_file_for_server "$NOTIFY_FILE" "${_TMUX_INFO#*|||}")
-recompute_lock_target
+SESSION_ID="${_TMUX_INFO%%|||*}"
+WINDOW_ID="${_TMUX_INFO#*|||}"
 
 [ -n "$SESSION" ] && [ -n "$WINDOW_NAME" ] || exit 0
 

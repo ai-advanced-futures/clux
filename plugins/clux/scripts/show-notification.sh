@@ -12,11 +12,21 @@ source "$CURRENT_DIR/path.sh"
 NOTIFY_BG="${CLUX_NOTIFY_BG:-#EBCB8B}"
 NOTIFY_FG="${CLUX_NOTIFY_FG:-#2E3440}"
 
+# The fast path of the status bar: with no queue file of any server there is
+# nothing to show, so make no tmux call. The glob costs no process.
+_BASE=$(_clux_notify_base)
+_QUEUED=""
+for _f in "$_BASE" "$_BASE"-*; do
+    case "$_f" in *.lock|*.flock|*.tmp) continue ;; esac
+    [ -f "$_f" ] && { _QUEUED=1; break; }
+done
+[ -n "$_QUEUED" ] || exit 0
+
 # Single tmux IPC call for the server name and all 4 identifiers (was 4
 # separate calls @ ~230ms each). The name picks the queue of this server, so
 # the call comes before the file check.
 TMUX_INFO="$(tmux display-message -p "${CLUX_SERVER_NAME_FMT}|||#{session_id}|||#{window_id}|||#{session_name}|||#{window_name}")"
-NOTIFY_FILE=$(resolve_notify_file "${TMUX_INFO%%|||*}"); TMUX_INFO="${TMUX_INFO#*|||}"
+NOTIFY_FILE=$(notify_file_for_server "$_BASE" "${TMUX_INFO%%|||*}"); TMUX_INFO="${TMUX_INFO#*|||}"
 
 [ -f "$NOTIFY_FILE" ] || exit 0
 

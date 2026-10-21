@@ -67,13 +67,13 @@ teardown() {
     [ "${lines[3]}" = "/q/base-lock" ]
 }
 
-@test "notify_file_for_server: a name rename-server.sh refuses keeps the base" {
+@test "notify_file_for_server: a name rename-server.sh refuses, or a lock or temp name, keeps the base" {
     run bash -c "
         source '$PATH_SH'
-        for n in 'a b' 'a/b' 'a;b' 'a:b' 'a#b' 'a\"b' \"a'b\" 'a\\\\b'; do notify_file_for_server /q/base \"\$n\"; done
+        for n in 'a b' 'a/b' 'a;b' 'a:b' 'a#b' 'a\"b' \"a'b\" 'a\\\\b' w.lock w.flock w.tmp; do notify_file_for_server /q/base \"\$n\"; done
     "
     [ "$status" -eq 0 ]
-    [ "${#lines[@]}" -eq 8 ]
+    [ "${#lines[@]}" -eq 11 ]
     for l in "${lines[@]}"; do [ "$l" = "/q/base" ]; done
 }
 
@@ -144,6 +144,37 @@ teardown() {
     grep -qF "|||agent:ag-1@@" "$QUEUE_FILE-beta"
     [ ! -e "$QUEUE_FILE-alpha" ]
     [ ! -e "$QUEUE_FILE" ]
+}
+
+@test "agent path: a plain 'claude agents --cwd' dashboard is found too" {
+    local proj="$BATS_TEST_TMPDIR/proj"; mkdir -p "$proj/sub"
+    # Nothing between "claude" and "agents", the shape `claude agents` has.
+    printf '#!/usr/bin/env bash\nexec -a "claude agents --cwd $1" sleep 300\n' \
+        > "$BATS_TEST_TMPDIR/dash.sh"
+    chmod +x "$BATS_TEST_TMPDIR/dash.sh"
+    _start b beta "$BATS_TEST_TMPDIR/dash.sh $proj"
+    local i=0
+    until "$REAL_PS" -A -ww -o args= | grep -qF "claude agents --cwd $proj"; do
+        i=$((i + 1)); [ "$i" -lt 50 ] || false; sleep 0.1
+    done
+
+    local JSON="{\"hook_event_name\":\"Notification\",\"notification_type\":\"permission_prompt\",\"session_id\":\"ag-3\",\"cwd\":\"$proj/sub\",\"message\":\"needs you\"}"
+    run env PATH="$REAL_PATH" bash -c "printf '%s' '$JSON' | '$NOTIFY_HOOK'"
+    [ "$status" -eq 0 ]
+    grep -qF "|||agent:ag-3@@" "$QUEUE_FILE-beta"
+    [ ! -e "$QUEUE_FILE" ]
+}
+
+@test "_clux_live_tmux_sockets: reads -L and -S after -f FILE and in one word" {
+    run bash -c "
+        source '$PATH_SH'
+        _clux_socket_dir() { echo /d; }
+        printf '%s\n' '1 1 tmux -f /x/conf -L work new' '2 1 tmux -Lfoo' \
+            '3 1 /bin/tmux -S/s/q' '4 1 tmux attach' '5 1 vim tmux' \
+            | _clux_live_tmux_sockets
+    "
+    [ "$status" -eq 0 ]
+    [ "$output" = $'/d/work\n/d/foo\n/s/q\n/d/default' ]
 }
 
 @test "agent path: with no dashboard and no default server the base queue gets it" {
